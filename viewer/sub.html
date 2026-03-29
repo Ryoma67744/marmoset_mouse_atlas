@@ -1,0 +1,889 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marmoset Brain Atlas Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
+        .roi-item { cursor: pointer; transition: background-color 0.2s; }
+        .roi-item:hover, .roi-item.active { background-color: #e0f2fe; border-left-color: #3b82f6; }
+        .color-swatch { width: 1rem; height: 1rem; border-radius: 0.25rem; display: inline-block; margin-right: 0.5rem; vertical-align: middle; border: 1px solid #ccc; }
+        .thumbnail {
+          width: 100%;
+          height: auto;
+          display: block;
+          width: 100%;
+          height: auto;
+          max-height: 100%;
+          cursor: pointer;
+          border: 2px solid transparent;
+          transition: border-color 0.2s;
+          width: 200px;             
+          height: auto;             
+          max-height: 200px;        
+          object-fit: contain;      
+          border-radius: 0.375rem;
+          background-color: transparent;  
+          display: block;           
+        }
+        .heif-thumb {
+          width: 100%;
+          height: auto;
+          max-width: 100%;
+          max-height: 100%;
+          object-fit: contain;
+          display: block;
+        }
+        .msi-thumb {
+          width: 200px  !important;
+          height: auto !important;
+          max-width: 100% !important;
+          max-height: 100% !important;
+          background-color: transparent !important;
+          object-fit: contain;
+          display: inline-block;
+        }
+        .thumbnail.active, .thumbnail:hover { border-color: #3b82f6; }
+        .settings-panel input[type="range"] {
+            -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
+            background: #d1d5db; border-radius: 2px; outline: none;
+        }
+        .settings-panel input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
+            background: #3b82f6; cursor: pointer; border-radius: 50%;
+        }
+        .settings-panel input[type="range"]::-moz-range-thumb {
+            width: 14px; height: 14px; background: #3b82f6; cursor: pointer;
+            border-radius: 50%; border: none;
+        }
+    </style>
+</head>
+<body class="text-gray-800">
+
+    <div class="container mx-auto p-4">
+        <header class="mb-4">
+            <h1 id="atlas-title" class="text-3xl font-bold text-gray-900">Marmoset Brain Atlas</h1>
+            <p class="text-lg text-gray-600">ROI-based Analysis Viewer</p>
+        </header>
+
+        <div class="grid grid-cols-12 gap-6">
+            <!-- Left Sidebar -->
+            <aside class="col-span-12 lg:col-span-3 space-y-6">
+                <!-- Metadata Panel -->
+                <div class="bg-white p-4 rounded-lg shadow-md">
+                    <h2 class="text-xl font-semibold mb-3 border-b pb-2">Specimen Details</h2>
+                    <div class="space-y-2 text-sm">
+                        <div class="flex justify-between"><span class="font-semibold text-gray-600">Specimen ID:</span> <span id="meta-specimen">2004</span></div>
+                        <div class="flex justify-between"><span class="font-semibold text-gray-600">Organism:</span> <span id="meta-organism">Callithrix jacchus</span></div>
+                        <div class="flex justify-between"><span class="font-semibold text-gray-600">Strain:</span> <span id="meta-strain">C57BL/6J</span></div>
+                        <div class="flex justify-between"><span class="font-semibold text-gray-600">Age:</span> <span id="meta-age">56</span></div>
+                        <div class="flex justify-between"><span class="font-semibold text-gray-600">Sex:</span> <span id="meta-sex">Male</span></div>
+                    </div>
+                </div>
+
+                <!-- ROI List Panel -->
+                <div class="bg-white p-4 rounded-lg shadow-md">
+                    <h2 class="text-xl font-semibold mb-3 border-b pb-2">ROI List</h2>
+                    <div id="roi-list" class="space-y-2 max-h-96 overflow-y-auto">
+                        <p class="text-gray-500">No ROI data loaded.</p>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="col-span-12 lg:col-span-9">
+                <div class="bg-white p-4 rounded-lg shadow-md">
+                    <div class="flex justify-between items-center mb-4 flex-wrap">
+                        <h2 class="text-xl font-semibold">Image Viewer</h2>
+                         <div id="image-selector-container" class="relative inline-block text-left">
+                            <button type="button" id="image-selector-button" class="inline-flex justify-center w-full rounded-md border border-gray-300 shadow-sm px-4 py-2 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                                Select Images
+                            </button>
+                            <div id="image-selector-menu" class="origin-top-right absolute right-0 mt-2 w-72 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none hidden z-10" role="menu">
+                                <div class="py-1" id="image-selector-options">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="image-viewer" class="relative w-full border border-gray-300 rounded-md bg-black">
+                        <img id="sizing-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'%3E%3Crect fill='%23000' width='1200' height='900'/%3E%3C/svg%3E" alt="Sizing reference" class="w-full h-auto opacity-0">
+                        <canvas id="display-canvas" class="absolute top-0 left-0 w-full h-full"></canvas>
+                        <canvas id="roi-canvas" class="absolute top-0 left-0 w-full h-full pointer-events-none"></canvas>
+                    </div>
+                </div>
+            </main>
+        </div>
+        
+        <div class="mt-6 bg-white p-4 rounded-lg shadow-md">
+            <div id="toggle-image-selection" class="flex justify-between items-center cursor-pointer">
+                <h2 class="text-xl font-semibold">Image Selection</h2>
+                <svg id="icon-image-selection" class="w-6 h-6 transition-transform transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+                </svg>
+            </div>
+            <div id="thumbnail-container" class="mt-4 grid grid-cols-4 gap-4">
+                <p class="text-gray-500">No images found in data.</p>
+            </div>
+        </div>
+
+        <div class="mt-6 bg-white p-4 rounded-lg shadow-md">
+            <div id="toggle-analysis-graph" class="flex justify-between items-center cursor-pointer">
+                <h2 class="text-xl font-semibold">Analysis Graph</h2>
+                <svg id="icon-analysis-graph" class="w-6 h-6 transition-transform transform" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
+                </svg>
+            </div>
+            <div id="analysis-graph-content" class="mt-4">
+                <div class="flex justify-end items-center mb-4 flex-wrap">
+                    <div id="graph-comparison-selector" class="flex items-center gap-2 text-sm">
+                        <select id="graph-select-1" class="border-gray-300 rounded-md shadow-sm text-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50"></select>
+                        <span class="text-gray-500">vs</span>
+                        <select id="graph-select-2" class="border-gray-300 rounded-md shadow-sm text-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50"></select>
+                    </div>
+                </div>
+                <div id="graph-container" class="flex items-center justify-center min-h-[250px] border border-gray-300 rounded-md">
+                     <img id="graph-image" src="https://placehold.co/600x450/f0f0f0/333333?text=Select+an+ROI" alt="Analysis Graph" class="w-full h-auto max-h-[400px] object-contain">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let atlasData = {
+            "meta": { "format": "roi_bundle_v1" },
+            "roi": {
+                "roi_items": {"sample_roi": [{"poly_msi": [[100, 100], [200, 100], [150, 200]]}]},
+                "roi_names": {"sample_roi": "サンプルROI"},
+                "palette": {"sample_roi": [255, 0, 0, 255]}
+            },
+            "images": {
+                "HE_Stain": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+                "IF_Stain": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+                "MSI_DA": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+                "MSI_5-HT": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=",
+                "MSI_NE": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+            }
+        };
+
+        const graphData = {
+            'IF_Stain': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
+            'MSI_DA': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
+            'MSI_5-HT': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
+            'MSI_NE': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
+            'comparison': {}
+        };
+
+        const sizingImage = document.getElementById('sizing-image');
+        const roiCanvas = document.getElementById('roi-canvas');
+        const displayCanvas = document.getElementById('display-canvas');
+        let roiCtx = null;
+        let displayCtx = null;
+        let imageSources = {};
+        let imageSettings = {};
+        let isRendering = false;
+
+        // DOMContentLoaded でコンテキスト初期化 → resolve で IIFE に通知
+        function initCanvasContexts() {
+            if (!roiCtx)    roiCtx    = roiCanvas.getContext('2d');
+            if (!displayCtx) displayCtx = displayCanvas.getContext('2d', { willReadFrequently: true });
+        }
+        const domReady = new Promise(resolve => {
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', function() { initCanvasContexts(); resolve(); });
+            } else {
+                initCanvasContexts(); resolve();
+            }
+        });
+
+        async function initializeViewer() {
+            populateRoiList();
+            populateThumbnails();
+            await loadAllImages();
+            await analyzeAndInitializeSettings();
+            setupCheckboxDropdown();
+            setupGraphSelector();
+            setupCollapsibleSections();
+            const firstRoiKey = (atlasData.roi && atlasData.roi.roi_items) ? Object.keys(atlasData.roi.roi_items)[0] : null;
+            if (firstRoiKey) {
+                setTimeout(() => {
+                    const firstRoiElement = document.querySelector('.roi-item[data-roi-key="' + firstRoiKey + '"]');
+                    if (firstRoiElement) firstRoiElement.click();
+                }, 0);
+            }
+        }
+
+function loadAllImages() {
+    const imageKeys = atlasData.images ? Object.keys(atlasData.images) : [];
+    const promises = imageKeys.map(key => {
+        return new Promise((resolve) => {
+            if (!atlasData.images[key]) return resolve();
+            const img = new Image();
+            img.crossOrigin = "Anonymous";
+            imageSources[key] = img;
+            img.onload = () => resolve({ key, ok: true });
+            img.onerror = () => {
+                console.warn(`[loadAllImages] Failed to load image: ${key} ->`, atlasData.images[key]);
+                resolve({ key, ok: false });
+            };
+            const src = atlasData.images[key];
+            img.src = src;
+        });
+    });
+    return Promise.allSettled(promises);
+}
+
+        async function analyzeAndInitializeSettings() {
+            const imageKeys = Object.keys(atlasData.images || {});
+            for (const key of imageKeys) {
+                const sourceImg = imageSources[key];
+                if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) {
+                     imageSettings[key] = { opacity: 1.0, vmin: 0, vmax: 255, actualMin: 0, actualMax: 255 };
+                     continue;
+                }
+
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = sourceImg.naturalWidth;
+                tempCanvas.height = sourceImg.naturalHeight;
+                const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+                tempCtx.drawImage(sourceImg, 0, 0);
+                
+                const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                const data = imageData.data;
+                let min = 255, max = 0;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const lum = Math.round(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]);
+                    if (lum < min) min = lum;
+                    if (lum > max) max = lum;
+                }
+                
+                imageSettings[key] = {
+                    opacity: 1.0,
+                    vmin: min,
+                    vmax: max,
+                    actualMin: min,
+                    actualMax: max,
+                };
+            }
+        }
+
+        function formatDisplayName(key) {
+            if (key.startsWith("MSI_")) {
+                return `MSI (${key.substring(4).replace('_', '-')})`;
+            }
+            if (key.includes("HE")) return "HE Stain";
+            if (key.includes("IF")) return "IF Stain";
+            return key.replace(/_/g, ' ').replace('.png', '').replace(' with ROI', '');
+        }
+
+        // <<< added: サムネイルのハイライト/スクロール制御
+        function focusThumbnail(key) {
+            const thumbs = document.querySelectorAll('#thumbnail-container img.thumbnail');
+            thumbs.forEach(t => t.classList.remove('active'));
+            const target = document.querySelector(`#thumbnail-container img.thumbnail[data-key="${CSS.escape(key)}"]`);
+            if (target) {
+                target.classList.add('active');
+                // サムネイルが折りたたまれている場合は開く
+                const container = document.getElementById('thumbnail-container');
+                if (container.classList.contains('hidden')) {
+                    // 見えるようにトグル（上部のUIと一貫）
+                    document.getElementById('toggle-image-selection').click();
+                }
+                target.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            }
+        }
+
+        function setupCheckboxDropdown() {
+            const container = document.getElementById('image-selector-container');
+            const button = document.getElementById('image-selector-button');
+            const menu = document.getElementById('image-selector-menu');
+            const optionsContainer = document.getElementById('image-selector-options');
+            if (!container || !button || !menu || !optionsContainer) return;
+
+            optionsContainer.innerHTML = '';
+            const imageKeys = atlasData.images ? Object.keys(atlasData.images) : [];
+
+            imageKeys.forEach((key, index) => {
+                if (!atlasData.images[key] || !imageSettings[key]) return;
+                
+                const settings = imageSettings[key];
+                const optionDiv = document.createElement('div');
+                optionDiv.className = 'px-3 py-2 border-b border-gray-200 last:border-b-0';
+                
+                const topRow = document.createElement('div');
+                topRow.className = 'flex items-center justify-between';
+                const label = document.createElement('label');
+                label.className = 'flex items-center text-sm font-medium text-gray-800 cursor-pointer';
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                checkbox.value = key;
+                checkbox.className = 'mr-3 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
+                checkbox.checked = index === 0;
+                label.append(checkbox, document.createTextNode(formatDisplayName(key)));
+                
+                const settingsButton = document.createElement('button');
+                settingsButton.className = 'p-1 rounded-full hover:bg-gray-200 focus:outline-none';
+                settingsButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0l-.1.41a1.5 1.5 0 01-2.1 1.45l-.4-.17c-1.5-.65-3.22.8-2.57 2.3l.17.4a1.5 1.5 0 01-1.45 2.1l-.41.1c-1.56.38-1.56 2.6 0 2.98l.41.1a1.5 1.5 0 011.45 2.1l-.17.4c.65 1.5 1.07 3 2.57 2.3l.4-.17a1.5 1.5 0 012.1 1.45l.1.41c.38 1.56 2.6 1.56 2.98 0l.1-.41a1.5 1.5 0 012.1-1.45l.4.17c1.5.65 3.22-.8 2.57-2.3l-.17-.4a1.5 1.5 0 011.45-2.1l.41-.1c-1.56-.38-1.56-2.6 0-2.98l-.41-.1a1.5 1.5 0 01-1.45-2.1l.17-.4c.65-1.5-1.07-3-2.57-2.3l-.4.17a1.5 1.5 0 01-2.1-1.45l-.1-.41zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" /></svg>`;
+                topRow.append(label, settingsButton);
+
+                const settingsPanel = document.createElement('div');
+                settingsPanel.className = 'settings-panel hidden pl-7 mt-3 space-y-3';
+                
+                const opacityDiv = document.createElement('div');
+                opacityDiv.innerHTML = `<div class="flex justify-between items-center text-xs text-gray-600 mb-1">
+                                            <label>Opacity</label>
+                                            <div class="flex items-center">
+                                                <input type="number" min="0" max="100" step="1" value="${Math.round(settings.opacity * 100)}" class="w-16 text-right border border-gray-300 rounded-sm p-0.5 text-xs opacity-input">
+                                                <span class="ml-1">%</span>
+                                            </div>
+                                        </div>`;
+                const rangeDiv = document.createElement('div');
+                rangeDiv.innerHTML = `<label class="text-xs text-gray-600 block mb-1">Intensity Range (Abs)</label>
+                    <div class="flex items-center space-x-2">
+                        <input type="number" min="${settings.actualMin}" max="${settings.actualMax}" value="${settings.vmin}" class="w-20 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmin-input">
+                        <span class="text-gray-500">-</span>
+                        <input type="number" min="${settings.actualMin}" max="${settings.actualMax}" value="${settings.vmax}" class="w-20 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmax-input">
+                    </div>`;
+
+                settingsPanel.append(opacityDiv, rangeDiv);
+                optionDiv.append(topRow, settingsPanel);
+                optionsContainer.appendChild(optionDiv);
+
+                // <<< modified: プルダウン選択で Image Viewer 合成 + サムネイル連動
+                checkbox.addEventListener('change', () => { 
+                    updateButtonText(); 
+                    renderCompositeImage(); 
+                    if (checkbox.checked) { 
+                        focusThumbnail(key);   // サムネイルをハイライト＆スクロール
+                    } else {
+                        // 解除時は、他にチェックが残っていればそちらをハイライト
+                        const remain = document.querySelector('#image-selector-options input[type="checkbox"]:checked');
+                        if (remain) focusThumbnail(remain.value);
+                        else {
+                            // 何も選ばれていなければハイライト解除
+                            const thumbs = document.querySelectorAll('#thumbnail-container img.thumbnail');
+                            thumbs.forEach(t => t.classList.remove('active'));
+                        }
+                    }
+                });
+
+                settingsButton.addEventListener('click', (e) => { e.stopPropagation(); settingsPanel.classList.toggle('hidden'); });
+                
+                const opacityInput = optionDiv.querySelector('.opacity-input');
+                opacityInput.addEventListener('change', () => {
+                    let percentValue = parseInt(opacityInput.value);
+                    if (isNaN(percentValue)) percentValue = 100;
+                    percentValue = Math.max(0, Math.min(100, percentValue));
+                    opacityInput.value = percentValue;
+                    settings.opacity = percentValue / 100.0;
+                    renderCompositeImage();
+                });
+
+                const vminInput = optionDiv.querySelector('.vmin-input');
+                const vmaxInput = optionDiv.querySelector('.vmax-input');
+                vminInput.addEventListener('change', () => {
+                    let vmin = parseInt(vminInput.value);
+                    let vmax = parseInt(vmaxInput.value);
+                    if (vmin >= vmax) { vmin = vmax - 1; vminInput.value = vmin; }
+                    settings.vmin = vmin;
+                    renderCompositeImage();
+                });
+                vmaxInput.addEventListener('change', () => {
+                    let vmin = parseInt(vminInput.value);
+                    let vmax = parseInt(vmaxInput.value);
+                    if (vmax <= vmin) { vmax = vmin + 1; vmaxInput.value = vmax; }
+                    settings.vmax = vmax;
+                    renderCompositeImage();
+                });
+
+                optionDiv.addEventListener('click', (e) => e.stopPropagation());
+            });
+
+            button.addEventListener('click', () => menu.classList.toggle('hidden'));
+            document.addEventListener('click', (e) => { if (!container.contains(e.target)) menu.classList.add('hidden'); });
+
+            if (imageKeys.length > 0) {
+                const firstKey = imageKeys.find(k => atlasData.images[k]);
+                if (firstKey) {
+                    const firstImage = imageSources[firstKey];
+                    const setCanvasSize = () => {
+                        const w = firstImage.naturalWidth;
+                        const h = firstImage.naturalHeight;
+                        [displayCanvas, roiCanvas].forEach(c => { c.width = w; c.height = h; });
+                        if (sizingImage) {
+                            sizingImage.src = `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='${w}' height='${h}'%3E%3C/svg%3E`;
+                        }
+                        updateButtonText();
+                        renderCompositeImage();
+                        drawAllRois();
+                        focusThumbnail(firstKey); // <<< added: 初期フォーカス
+                    };
+                    if (firstImage && firstImage.complete && firstImage.naturalWidth > 0) setCanvasSize();
+                    else if (firstImage) firstImage.addEventListener('load', setCanvasSize, { once: true });
+                }
+            }
+        }
+
+        function updateButtonText() {
+            const checkboxes = document.querySelectorAll('#image-selector-options input[type="checkbox"]:checked');
+            const button = document.getElementById('image-selector-button');
+            const selectedNames = Array.from(checkboxes).map(cb => formatDisplayName(cb.value));
+            if (button) button.textContent = selectedNames.length > 0 ? selectedNames.join(' + ') : 'Select Images';
+        }
+
+        function renderCompositeImage() {
+            if (isRendering || !displayCtx) return;
+            isRendering = true;
+            
+            const checkedCheckboxes = document.querySelectorAll('#image-selector-options input[type="checkbox"]:checked');
+            const keysToRender = Array.from(checkedCheckboxes).map(cb => cb.value);
+
+            displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
+            
+            for (const key of keysToRender) {
+                const settings = imageSettings[key];
+                const sourceImg = imageSources[key];
+                if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) continue;
+
+                const tempCanvas = document.createElement('canvas');
+                tempCanvas.width = sourceImg.naturalWidth;
+                tempCanvas.height = sourceImg.naturalHeight;
+                const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+                tempCtx.drawImage(sourceImg, 0, 0);
+
+                const imageData = tempCtx.getImageData(0, 0, tempCanvas.width, tempCanvas.height);
+                const data = imageData.data;
+                const { vmin, vmax } = settings;
+                const range = vmax - vmin;
+
+                if (range > 0) {
+                    for (let i = 0; i < data.length; i += 4) {
+                        const r = data[i], g = data[i+1], b = data[i+2];
+                        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+                        const normalized = Math.max(0, Math.min(1, (lum - vmin) / range));
+                        const targetLum = normalized * 255;
+                        if (lum < 1) {
+                            const v = Math.round(targetLum);
+                            data[i] = v; data[i+1] = v; data[i+2] = v;
+                        } else {
+                            const scale = targetLum / lum;
+                            data[i] = Math.min(255, Math.max(0, Math.round(r * scale)));
+                            data[i+1] = Math.min(255, Math.max(0, Math.round(g * scale)));
+                            data[i+2] = Math.min(255, Math.max(0, Math.round(b * scale)));
+                        }
+                    }
+                }
+                tempCtx.putImageData(imageData, 0, 0);
+
+                displayCtx.globalAlpha = settings.opacity;
+                displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
+            }
+            
+            displayCtx.globalAlpha = 1.0;
+            isRendering = false;
+        }
+
+        function populateThumbnails() {
+            const container = document.getElementById('thumbnail-container');
+            container.innerHTML = ''; 
+
+            const allKeys = atlasData.images ? Object.keys(atlasData.images) : [];
+            const heKeys = allKeys.filter(k => k.toUpperCase().includes('HE_STAIN'));
+            const ifKeys = allKeys.filter(k => k.toUpperCase().includes('IF_STAIN'));
+            const msiKeys = allKeys.filter(k => k.toUpperCase().includes('MSI_')).sort();
+
+            const slots = [
+                heKeys[0] || null, ifKeys[0] || null, ifKeys[1] || null, ifKeys[2] || null,
+                msiKeys[0] || null, msiKeys[1] || null, msiKeys[2] || null, msiKeys[3] || null
+            ];
+
+            slots.forEach((key, index) => {
+                const slotWrapper = document.createElement('div');
+                slotWrapper.className = 'flex flex-col group items-stretch overflow-visible relative w-full';
+                slotWrapper.dataset.slotNumber = index + 1;
+
+                if (key && atlasData.images[key]) {
+                    const thumb = document.createElement('img');
+                    const src = atlasData.images[key];
+                    thumb.src = src;
+                    thumb.alt = formatDisplayName(key);
+                    thumb.className = 'thumbnail'; 
+                    thumb.dataset.key = key;
+                    thumb.onclick = () => setActiveImage(key);
+
+                    if (typeof key === 'string' && (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN'))) {
+                      thumb.classList.add('heif-thumb');
+                    }
+                    if (typeof key === 'string' && key.startsWith('MSI_')) {
+                      thumb.addEventListener('load', () => {
+                         const BOX_W = 200;
+                         const BOX_H = 200;
+                         const iw = thumb.naturalWidth;
+                         const ih = thumb.naturalHeight;
+                         const scale = Math.min(BOX_W / ih, BOX_H / iw);
+                         thumb.style.position = 'relative';
+                         thumb.style.left = '50%';
+                         thumb.style.transformOrigin = 'center center';
+                         thumb.style.transform = `translateX(-50%) rotate(-90deg) scale(1.1)`;
+                         const BRIGHTNESS_BY_KEY = {
+                           'MSI_5-HT':3,
+                           'MSI_DA':  5,
+                           'MSI_NE':  5,
+                         };
+                         const b = BRIGHTNESS_BY_KEY[key] ?? 1;
+                         thumb.style.filter = b === 1 ? '' : `brightness(${b})`;
+                         thumb.classList.add('msi-thumb');
+                       }, { once: true });
+                     }
+                    slotWrapper.appendChild(thumb);
+                    
+                    const titleOverlay = document.createElement('div');
+                    titleOverlay.className = 'w-full px-2 py-1 bg-gray-700 text-white text-xs text-center rounded';
+                    titleOverlay.textContent = formatDisplayName(key);
+                    slotWrapper.appendChild(titleOverlay);
+
+                } else {
+                    const placeholder = document.createElement('div');
+                    placeholder.className = 'thumbnail bg-gray-200 flex items-center justify-center text-center text-gray-500 text-sm border-2 border-dashed border-gray-300';
+                    let placeholderText = '';
+                    if (index === 0) placeholderText = 'HE Stain';
+                    else if (index >= 1 && index <= 3) placeholderText = `IF Stain ${index}`;
+                    else if (index >= 4 && index <= 7) placeholderText = `MSI Image ${index - 3}`;
+                    placeholder.innerHTML = `<span class="leading-tight">${placeholderText}<br>(No Image)</span>`;
+                    slotWrapper.appendChild(placeholder);
+                }
+                container.appendChild(slotWrapper);
+            });
+        }
+
+        function setActiveImage(imageKey) {
+            const checkbox = document.querySelector(`#image-selector-options input[value="${imageKey}"]`);
+            if (checkbox) {
+                checkbox.checked = !checkbox.checked;
+                updateButtonText();
+                renderCompositeImage();
+                if (checkbox.checked) {
+                    focusThumbnail(imageKey); // <<< added: サムネイル側も同期
+                } else {
+                    const remain = document.querySelector('#image-selector-options input[type="checkbox"]:checked');
+                    if (remain) focusThumbnail(remain.value);
+                    else {
+                        const thumbs = document.querySelectorAll('#thumbnail-container img.thumbnail');
+                        thumbs.forEach(t => t.classList.remove('active'));
+                    }
+                }
+            }
+        }
+
+        function populateRoiList() {
+            const roiList = document.getElementById('roi-list');
+            roiList.innerHTML = '';
+            const roiItems = (atlasData.roi && atlasData.roi.roi_items) ? atlasData.roi.roi_items : {};
+            const roiNames = (atlasData.roi && atlasData.roi.roi_names) ? atlasData.roi.roi_names : {};
+            const palette  = (atlasData.roi && atlasData.roi.palette)   ? atlasData.roi.palette   : {};
+
+            Object.keys(roiItems).forEach(key => {
+                const name = roiNames[key] || key;
+                const rgba = palette[key]  || [128,128,128,255];
+
+                const el = document.createElement('div');
+                el.className = 'roi-item p-2 rounded-md flex items-center border-l-4 border-transparent';
+                el.dataset.roiKey = key;
+
+                el.innerHTML = `<span class="color-swatch" style="background-color: rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3]/255})"></span><span>${name}</span>`;
+                
+                el.addEventListener('click', () => {
+                    displayGraphForRoi(key);
+                    drawAllRois(key);
+                    document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
+                    el.classList.add('active');
+                });
+                roiList.appendChild(el);
+            });
+        }
+        
+        function drawAllRois(highlightKey = null) {
+            if (!roiCtx || roiCanvas.width === 0) return;
+
+            roiCtx.clearRect(0, 0, roiCanvas.width, roiCanvas.height);
+            const roiItems = (atlasData.roi && atlasData.roi.roi_items) ? atlasData.roi.roi_items : {};
+            const palette = (atlasData.roi && atlasData.roi.palette) ? atlasData.roi.palette : {};
+
+            Object.keys(roiItems).forEach(roiKey => {
+                const isHighlight = roiKey === highlightKey;
+                const rgba = palette[roiKey];
+                if (!roiItems[roiKey] || !roiItems[roiKey][0] || !roiItems[roiKey][0].poly_msi || !rgba) return;
+
+                const poly = roiItems[roiKey][0].poly_msi;
+
+                roiCtx.beginPath();
+                if(poly.length > 0) roiCtx.moveTo(poly[0][0], poly[0][1]);
+                for (let i = 1; i < poly.length; i++) {
+                    roiCtx.lineTo(poly[i][0], poly[i][1]);
+                }
+                roiCtx.closePath();
+                
+                roiCtx.strokeStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, 0.9)`;
+                roiCtx.fillStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, ${isHighlight ? 0.5 : 0.25})`;
+                roiCtx.lineWidth = isHighlight ? 4 : 2;
+                roiCtx.fill();
+                roiCtx.stroke();
+            });
+        }
+
+        function setupGraphSelector() {
+            const select1 = document.getElementById('graph-select-1');
+            const select2 = document.getElementById('graph-select-2');
+            const graphKeys = Object.keys(graphData).filter(k => k !== 'comparison' && Object.keys(graphData[k]).length > 0);
+            
+            [select1, select2].forEach(s => s.innerHTML = '');
+
+            graphKeys.forEach(key => select1.add(new Option(formatDisplayName(key), key)));
+            select2.add(new Option('-', 'none'));
+            graphKeys.forEach(key => select2.add(new Option(formatDisplayName(key), key)));
+
+            const updateGraph = () => {
+                const activeRoi = document.querySelector('.roi-item.active');
+                if (activeRoi) displayGraphForRoi(activeRoi.dataset.roiKey);
+            };
+
+            select1.addEventListener('change', updateGraph);
+            select2.addEventListener('change', updateGraph);
+        }
+
+        function displayGraphForRoi(roiKey) {
+            const graphImage = document.getElementById('graph-image');
+            const select1 = document.getElementById('graph-select-1').value;
+            const select2 = document.getElementById('graph-select-2').value;
+
+            let base64String = null;
+
+            if (select2 === 'none' || select1 === select2) {
+                const graphSet = graphData[select1];
+                if (graphSet) base64String = graphSet[roiKey];
+            } else {
+                const keys = [select1, select2].sort();
+                const comparisonKey = `${keys[0]}_vs_${keys[1]}`;
+                const comparisonSet = graphData.comparison[comparisonKey];
+                if (comparisonSet) base64String = comparisonSet[roiKey];
+            }
+            
+            graphImage.src = base64String || `https://placehold.co/600x450/f0f0f0/333333?text=Graph+for+'${roiKey}'+not+found`;
+        }
+        
+        function setupCollapsibleSections() {
+            const setupToggle = (toggleId, contentId, iconId) => {
+                const toggleEl = document.getElementById(toggleId);
+                const contentEl = document.getElementById(contentId);
+                const iconEl = document.getElementById(iconId);
+                
+                if (toggleEl && contentEl && iconEl) {
+                    contentEl.classList.remove('hidden');
+                    iconEl.classList.add('rotate-180');
+                    toggleEl.addEventListener('click', () => {
+                        contentEl.classList.toggle('hidden');
+                        iconEl.classList.toggle('rotate-180');
+                    });
+                }
+            };
+
+            setupToggle('toggle-image-selection', 'thumbnail-container', 'icon-image-selection');
+            setupToggle('toggle-analysis-graph', 'analysis-graph-content', 'icon-analysis-graph');
+        }
+    </script>
+
+    <script>
+    async function loadAtlasJsonExternal() {
+      const params = new URLSearchParams(location.search);
+      const atlasId = params.get('atlas') || null;
+      if (!atlasId) return null;
+      const url = `../datasets/${atlasId}/atlas.json`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`atlas.json fetch failed: ${res.status} ${url}`);
+      return await res.json();
+    }
+
+    async function buildPngFromTxt(def) {
+      /* 省略（元のまま） */
+      /* …中略…  */
+      // 元の関数本文はそのままです
+      const res = await fetch(def.src);
+      if (!res.ok) throw new Error(`txt fetch failed: ${res.status} ${def.src}`);
+      const raw = await res.text();
+      const linesAll = raw.split(/\r?\n/);
+      const lines = linesAll.filter(s => s.trim().length > 0);
+      if (lines.length < 1) throw new Error(`no content in ${def.src}`);
+      const isAnalyte = /^\s*Analyte\s*\(converted from imzML\)\s*$/i.test(lines[0]);
+      let rows = [];
+      let valueColIndex = null;
+      if (isAnalyte) {
+        if (lines.length < 5) throw new Error(`Analyte format too short: ${def.src}`);
+        const precs = lines[2].trim().split(/\s+/).map(Number).filter(Number.isFinite);
+        const prods = lines[3].trim().split(/\s+/).map(Number).filter(Number.isFinite);
+        const nCh = Math.min(precs.length, prods.length);
+        if (typeof def.v_index === "number" && def.v_index >= 0 && def.v_index < nCh) {
+          valueColIndex = 3 + def.v_index;
+        } else {
+          const targetMz = (typeof def.v_mz === "number") ? def.v_mz : null;
+          const targetPair = (def.v_mz_pair && Array.isArray(def.v_mz_pair) && def.v_mz_pair.length === 2)
+            ? def.v_mz_pair.map(Number) : null;
+          let pick = 0;
+          if (Number.isFinite(targetMz)) {
+            let best = Infinity;
+            for (let i = 0; i < nCh; i++) {
+              const d = Math.abs(precs[i] - targetMz);
+              if (d < best) { best = d; pick = i; }
+            }
+          } else if (targetPair && targetPair.every(Number.isFinite)) {
+            let best = Infinity;
+            for (let i = 0; i < nCh; i++) {
+              const d = Math.abs(precs[i] - targetPair[0]) + Math.abs(prods[i] - targetPair[1]);
+              if (d < best) { best = d; pick = i; }
+            }
+          }
+          valueColIndex = 3 + pick;
+        }
+        for (let i = 4; i < lines.length; i++) {
+          const tok = lines[i].trim().split(/\s+/).map(t => Number(t));
+          if (tok.length >= 4 && tok.slice(0, 4).every(Number.isFinite)) {
+            const x  = tok[1];
+            const y  = tok[2];
+            const v  = tok[valueColIndex] ?? tok[3];
+            if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) {
+              rows.push({ x, y, v });
+            }
+          }
+        }
+        if (!rows.length) throw new Error(`no numeric rows (Analyte) in ${def.src}`);
+      } else {
+        const rawHeader = lines[0];
+        const sep = (def.sep === "\\t" || def.sep === "\t") ? "\t"
+                  : (def.sep === "," ? "," : null);
+        const detectSep = sep || (rawHeader.includes("\t") ? "\t"
+                             : (rawHeader.includes(",") ? ","
+                             : "ws"));
+        const splitBy = (s) => (detectSep === "ws" ? s.trim().split(/\s+/)
+                                                   : s.split(detectSep));
+        const header = splitBy(rawHeader).map(s => s.trim());
+        const findIdx = (name) => {
+          const i = header.indexOf(name);
+          if (i < 0) throw new Error(`column '${name}' not found in ${def.src}`);
+          return i;
+        };
+        const xi = findIdx(def.x);
+        const yi = findIdx(def.y);
+        const valueNames = def.v ? [def.v] : (def.v_cols || []);
+        const vi = valueNames.map(findIdx);
+        if (vi.length === 0) throw new Error(`no value column (v or v_cols) defined for ${def.src}`);
+        const valueIndex = vi[0];
+        for (let i = 1; i < lines.length; i++) {
+          const cols = splitBy(lines[i]);
+          if (cols.length < header.length) continue;
+          const x = Number(cols[xi]), y = Number(cols[yi]), v = Number(cols[valueIndex]);
+          if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) {
+            rows.push({ x, y, v });
+          }
+        }
+        if (!rows.length) throw new Error(`no numeric rows in ${def.src}`);
+      }
+      const xs = [...new Set(rows.map(r => r.x))].sort((a,b) => a - b);
+      const ys = [...new Set(rows.map(r => r.y))].sort((a,b) => a - b);
+      const W = xs.length, H = ys.length;
+      const xIndex = new Map(xs.map((v,i) => [v, i]));
+      const yIndex = new Map(ys.map((v,i) => [v, i]));
+      const grid = Array(H).fill(0).map(() => Array(W).fill(NaN));
+      const cnt  = Array(H).fill(0).map(() => Array(W).fill(0));
+      for (const r of rows) {
+        const ci = xIndex.get(r.x), ri = yIndex.get(r.y);
+        if (ci == null || ri == null) continue;
+        const old = grid[ri][ci];
+        grid[ri][ci] = (Number.isFinite(old) ? old : 0) + r.v;
+        cnt[ri][ci]  = (cnt[ri][ci] || 0) + 1;
+      }
+      let vmin = +Infinity, vmax = -Infinity;
+      for (let i = 0; i < H; i++) {
+        for (let j = 0; j < W; j++) {
+          if (cnt[i][j] > 0) {
+            grid[i][j] /= cnt[i][j];
+            const val = grid[i][j];
+            if (val < vmin) vmin = val;
+            if (val > vmax) vmax = val;
+          }
+        }
+      }
+      if (def.range && def.range.length === 2) {
+        vmin = def.range[0]; vmax = def.range[1];
+        if (!(vmax > vmin)) vmax = vmin + 1e-9;
+      } else {
+        if (!(vmax > vmin)) { vmin = 0; vmax = 1; }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const imgData = ctx.createImageData(W, H);
+      let p = 0;
+      for (let i = 0; i < H; i++) {
+        for (let j = 0; j < W; j++) {
+          const val = grid[i][j];
+          if (!Number.isFinite(val)) {
+            imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; // 欠損→透明
+          } else {
+            const n = Math.max(0, Math.min(1, (val - vmin) / (vmax - vmin)));
+            const g = Math.round(n * 255);
+            imgData.data[p++] = g; imgData.data[p++] = g; imgData.data[p++] = g; imgData.data[p++] = 255;
+          }
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+      return canvas.toDataURL("image/png");
+    }
+
+    (async () => {
+      try {
+        const external = await loadAtlasJsonExternal();
+        await domReady; // DOM初期化完了を待つ
+        if (!external) {
+          await initializeViewer();
+          return;
+        }
+        const params2 = new URLSearchParams(location.search);
+        const atlasId2 = params2.get('atlas') || '';
+        const baseDir = atlasId2 ? `../datasets/${atlasId2}/` : '';
+        atlasData = {
+          meta: external.meta || { format: "roi_bundle_v1" },
+          roi: external.roi || {},
+          images: {},
+          world_coords: external.world_coords || {}
+        };
+        for (const [k, v] of Object.entries(external.images || {})) {
+          if (typeof v === "string" && !/^data:|^https?:|^\.\.\//.test(v)) {
+            atlasData.images[k] = baseDir + v;
+          } else {
+            atlasData.images[k] = v;
+          }
+        }
+        const series = external.txt_series || {};
+        for (const [key, def] of Object.entries(series)) {
+          try {
+            const defFixed = Object.assign({}, def);
+            if (defFixed && typeof defFixed.src === "string" && !/^https?:|^data:|^\.\.\//.test(defFixed.src)) {
+              defFixed.src = baseDir + defFixed.src;
+            }
+            const pngUrl = await buildPngFromTxt(defFixed);
+            atlasData.images[key] = pngUrl;
+          } catch (e) {
+            console.warn("txt -> PNG 生成に失敗:", key, e);
+          }
+        }
+        await initializeViewer();
+      } catch (e) {
+        console.error(e);
+        try { await initializeViewer(); } catch (_) {}
+      }
+    })();</script>
+
+
+</body>
+</html>
