@@ -845,6 +845,11 @@ function loadAllImages() {
             select3.add(new Option('-', 'none'));
             graphKeys.forEach(key => select3.add(new Option(formatDisplayName(key), key)));
 
+            const msiKeys = graphKeys.filter(k => k.startsWith('MSI_'));
+            if (msiKeys.length >= 1) select1.value = msiKeys[0];
+            if (msiKeys.length >= 2) select2.value = msiKeys[1];
+            if (msiKeys.length >= 3) select3.value = msiKeys[2];
+
             const updateGraph = () => {
                 const activeRoi = document.querySelector('.roi-item.active');
                 if (activeRoi) displayGraphForRoi(activeRoi.dataset.roiKey);
