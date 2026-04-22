@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Marmoset Brain Atlas Viewer</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -257,18 +259,28 @@
 
 function loadAllImages() {
     const imageKeys = atlasData.images ? Object.keys(atlasData.images) : [];
-    const promises = imageKeys.map(key => {
+    const promises = imageKeys.map(async (key) => {
+        const rawSrc = atlasData.images[key];
+        if (!rawSrc) return { key, ok: false };
+        let src = rawSrc;
+        if (typeof src === "string" && /\.(tiff?)(\?|#|$)/i.test(src)) {
+            try {
+                src = await decodeTiffToPngDataUrl(src);
+                atlasData.images[key] = src;
+            } catch (e) {
+                console.warn(`[loadAllImages] TIFF decode failed for ${key}:`, e);
+                return { key, ok: false };
+            }
+        }
         return new Promise((resolve) => {
-            if (!atlasData.images[key]) return resolve();
             const img = new Image();
             img.crossOrigin = "Anonymous";
             imageSources[key] = img;
             img.onload = () => resolve({ key, ok: true });
             img.onerror = () => {
-                console.warn(`[loadAllImages] Failed to load image: ${key} ->`, atlasData.images[key]);
+                console.warn(`[loadAllImages] Failed to load image: ${key} ->`, rawSrc);
                 resolve({ key, ok: false });
             };
-            const src = atlasData.images[key];
             img.src = src;
         });
     });
@@ -611,7 +623,12 @@ function loadAllImages() {
             const allKeys = atlasData.images ? Object.keys(atlasData.images) : [];
             const heKeys = allKeys.filter(k => k.toUpperCase().includes('HE_STAIN'));
             const ifKeys = allKeys.filter(k => k.toUpperCase().includes('IF_STAIN'));
-            const msiKeys = allKeys.filter(k => k.toUpperCase().includes('MSI_')).sort();
+            const rawMsi = allKeys.filter(k => k.toUpperCase().includes('MSI_'));
+            const orderSpec = Array.isArray(atlasData.thumbnail_order) ? atlasData.thumbnail_order : [];
+            const orderSet = new Set(orderSpec);
+            const ordered = orderSpec.filter(k => rawMsi.includes(k));
+            const rest = rawMsi.filter(k => !orderSet.has(k)).sort();
+            const msiKeys = ordered.concat(rest);
 
             const slots = [
                 heKeys[0] || null, ifKeys[0] || null, ifKeys[1] || null, ifKeys[2] || null,
@@ -1320,6 +1337,10 @@ function loadAllImages() {
         }
         if (!rows.length) throw new Error(`no numeric rows in ${def.src}`);
       }
+      return rasterRowsToPngDataUrl(rows, def.range);
+    }
+
+    function rasterRowsToPngDataUrl(rows, range) {
       const xs = [...new Set(rows.map(r => r.x))].sort((a,b) => a - b);
       const ys = [...new Set(rows.map(r => r.y))].sort((a,b) => a - b);
       const W = xs.length, H = ys.length;
@@ -1345,8 +1366,8 @@ function loadAllImages() {
           }
         }
       }
-      if (def.range && def.range.length === 2) {
-        vmin = def.range[0]; vmax = def.range[1];
+      if (range && range.length === 2) {
+        vmin = range[0]; vmax = range[1];
         if (!(vmax > vmin)) vmax = vmin + 1e-9;
       } else {
         if (!(vmax > vmin)) { vmin = 0; vmax = 1; }
@@ -1360,7 +1381,7 @@ function loadAllImages() {
         for (let j = 0; j < W; j++) {
           const val = grid[i][j];
           if (!Number.isFinite(val)) {
-            imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; // 透明 = データなし
+            imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0;
           } else {
             const n = Math.max(0, Math.min(1, (val - vmin) / (vmax - vmin)));
             const g = Math.round(n * 255);
@@ -1368,6 +1389,77 @@ function loadAllImages() {
           }
         }
       }
+      ctx.putImageData(imgData, 0, 0);
+      return canvas.toDataURL("image/png");
+    }
+
+    const xlsxWorkbookCache = new Map();
+    async function fetchXlsxWorkbook(url) {
+      if (xlsxWorkbookCache.has(url)) return xlsxWorkbookCache.get(url);
+      const p = (async () => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`xlsx fetch failed: ${res.status} ${url}`);
+        const buf = await res.arrayBuffer();
+        if (typeof XLSX === "undefined") throw new Error("SheetJS (XLSX) library not loaded");
+        return XLSX.read(new Uint8Array(buf), { type: "array" });
+      })();
+      xlsxWorkbookCache.set(url, p);
+      return p;
+    }
+
+    function a1ColToIndex(colRef) {
+      if (typeof colRef === "number") return colRef;
+      const s = String(colRef).toUpperCase();
+      let n = 0;
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c < 65 || c > 90) return NaN;
+        n = n * 26 + (c - 64);
+      }
+      return n - 1;
+    }
+
+    async function buildPngFromXlsx(def) {
+      const wb = await fetchXlsxWorkbook(def.src);
+      const sheetName = def.sheet || wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      if (!sheet) throw new Error(`sheet '${sheetName}' not found in ${def.src}`);
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+      const startIdx = Math.max(0, (def.data_start_row || 1) - 1);
+      const xi = a1ColToIndex(def.col_x);
+      const yi = a1ColToIndex(def.col_y);
+      const vi = a1ColToIndex(def.col_v);
+      if (!Number.isFinite(xi) || !Number.isFinite(yi) || !Number.isFinite(vi)) {
+        throw new Error(`invalid column refs in xlsx def: ${JSON.stringify(def)}`);
+      }
+      const rows = [];
+      for (let i = startIdx; i < aoa.length; i++) {
+        const r = aoa[i];
+        if (!r) continue;
+        const x = Number(r[xi]), y = Number(r[yi]), v = Number(r[vi]);
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) {
+          rows.push({ x, y, v });
+        }
+      }
+      if (!rows.length) throw new Error(`no numeric rows in xlsx ${def.src} (sheet=${sheetName})`);
+      return rasterRowsToPngDataUrl(rows, def.range);
+    }
+
+    async function decodeTiffToPngDataUrl(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`tiff fetch failed: ${res.status} ${url}`);
+      const buf = await res.arrayBuffer();
+      if (typeof UTIF === "undefined") throw new Error("UTIF library not loaded");
+      const ifds = UTIF.decode(buf);
+      if (!ifds || !ifds.length) throw new Error(`no IFDs in ${url}`);
+      UTIF.decodeImage(buf, ifds[0]);
+      const rgba = UTIF.toRGBA8(ifds[0]);
+      const W = ifds[0].width, H = ifds[0].height;
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(W, H);
+      imgData.data.set(rgba);
       ctx.putImageData(imgData, 0, 0);
       return canvas.toDataURL("image/png");
     }
@@ -1387,11 +1479,12 @@ function loadAllImages() {
           meta: external.meta || { format: "roi_bundle_v1" },
           roi: external.roi || {},
           images: {},
-          world_coords: external.world_coords || {}
+          world_coords: external.world_coords || {},
+          thumbnail_order: Array.isArray(external.thumbnail_order) ? external.thumbnail_order : []
         };
         for (const [k, v] of Object.entries(external.images || {})) {
           if (typeof v === "string" && !/^data:|^https?:|^\.\.\//.test(v)) {
-            atlasData.images[k] = baseDir + v;
+            atlasData.images[k] = baseDir + encodeURI(v);
           } else {
             atlasData.images[k] = v;
           }
@@ -1401,12 +1494,25 @@ function loadAllImages() {
           try {
             const defFixed = Object.assign({}, def);
             if (defFixed && typeof defFixed.src === "string" && !/^https?:|^data:|^\.\.\//.test(defFixed.src)) {
-              defFixed.src = baseDir + defFixed.src;
+              defFixed.src = baseDir + encodeURI(defFixed.src);
             }
             const pngUrl = await buildPngFromTxt(defFixed);
             atlasData.images[key] = pngUrl;
           } catch (e) {
             console.warn("txt -> PNG 生成に失敗:", key, e);
+          }
+        }
+        const xlsxSeries = external.xlsx_series || {};
+        for (const [key, def] of Object.entries(xlsxSeries)) {
+          try {
+            const defFixed = Object.assign({}, def);
+            if (defFixed && typeof defFixed.src === "string" && !/^https?:|^data:|^\.\.\//.test(defFixed.src)) {
+              defFixed.src = baseDir + encodeURI(defFixed.src);
+            }
+            const pngUrl = await buildPngFromXlsx(defFixed);
+            atlasData.images[key] = pngUrl;
+          } catch (e) {
+            console.warn("xlsx -> PNG 生成に失敗:", key, e);
           }
         }
         await initializeViewer();
