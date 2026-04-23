@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Marmoset Brain Atlas Viewer</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -240,8 +242,8 @@
 
         async function initializeViewer() {
             populateRoiList();
-            populateThumbnails();
             await loadAllImages();
+            populateThumbnails();
             await analyzeAndInitializeSettings();
             setupCheckboxDropdown();
             setupGraphSelector();
@@ -257,18 +259,28 @@
 
 function loadAllImages() {
     const imageKeys = atlasData.images ? Object.keys(atlasData.images) : [];
-    const promises = imageKeys.map(key => {
+    const promises = imageKeys.map(async (key) => {
+        const rawSrc = atlasData.images[key];
+        if (!rawSrc) return { key, ok: false };
+        let src = rawSrc;
+        if (typeof src === "string" && /\.(tiff?)(\?|#|$)/i.test(src)) {
+            try {
+                src = await decodeTiffToPngDataUrl(src);
+                atlasData.images[key] = src;
+            } catch (e) {
+                console.warn(`[loadAllImages] TIFF decode failed for ${key}:`, e);
+                return { key, ok: false };
+            }
+        }
         return new Promise((resolve) => {
-            if (!atlasData.images[key]) return resolve();
             const img = new Image();
             img.crossOrigin = "Anonymous";
             imageSources[key] = img;
             img.onload = () => resolve({ key, ok: true });
             img.onerror = () => {
-                console.warn(`[loadAllImages] Failed to load image: ${key} ->`, atlasData.images[key]);
+                console.warn(`[loadAllImages] Failed to load image: ${key} ->`, rawSrc);
                 resolve({ key, ok: false });
             };
-            const src = atlasData.images[key];
             img.src = src;
         });
     });
@@ -467,13 +479,28 @@ function loadAllImages() {
             document.addEventListener('click', (e) => { if (!container.contains(e.target)) menu.classList.add('hidden'); });
 
             if (imageKeys.length > 0) {
-                const firstKey = imageKeys.find(k => atlasData.images[k]);
+                // MSI 座標系をキャンバスの基準にする。MSI が無ければ HE/IF → なんでも の順でフォールバック
+                const msiKey0 = imageKeys.find(k => /^MSI_/i.test(k) && atlasData.images[k]);
+                const heKey0  = imageKeys.find(k => /HE_STAIN|IF_STAIN/i.test(k) && atlasData.images[k]);
+                const firstKey = msiKey0 || heKey0 || imageKeys.find(k => atlasData.images[k]);
                 if (firstKey) {
                     const firstImage = imageSources[firstKey];
+                    const refIsMsi = !!msiKey0 && firstKey === msiKey0;
+                    const heImage  = heKey0 ? imageSources[heKey0] : null;
                     const setCanvasSize = () => {
-                        const w = firstImage.naturalWidth;
-                        const h = firstImage.naturalHeight;
-                        // Canvas内部解像度を画像サイズに設定
+                        let w = firstImage.naturalWidth;
+                        let h = firstImage.naturalHeight;
+                        // MSI を基準に採る場合は CCW90° 回転後のランドスケープ寸法をキャンバス内部解像度に
+                        if (refIsMsi) { const tmp = w; w = h; h = tmp; }
+                        // HE が MSI より高解像なら、HE のディテール保持のためキャンバス内部解像度を倍率アップ
+                        let renderScale = 1;
+                        if (refIsMsi && heImage && heImage.naturalWidth > 0) {
+                            const ratio = Math.max(heImage.naturalWidth / firstImage.naturalWidth,
+                                                   heImage.naturalHeight / firstImage.naturalHeight);
+                            renderScale = Math.max(1, Math.min(8, Math.ceil(ratio)));
+                        }
+                        w = Math.round(w * renderScale);
+                        h = Math.round(h * renderScale);
                         [displayCanvas, roiCanvas].forEach(c => { c.width = w; c.height = h; });
 
                         // コンテナにフィットしつつアスペクト比を完全に維持するCSS寸法を計算
@@ -509,6 +536,17 @@ function loadAllImages() {
 
                     // ウィンドウリサイズ時にアスペクト比を再計算
                     window.addEventListener('resize', () => { setCanvasSize(); });
+
+                    // サムネ load 後の IMAGES 行拡張やパネル折畳みで
+                    // #image-viewer 自体のサイズが変わった場合も再計算する
+                    if (typeof ResizeObserver !== 'undefined') {
+                        let rafId = 0;
+                        const ro = new ResizeObserver(() => {
+                            if (rafId) cancelAnimationFrame(rafId);
+                            rafId = requestAnimationFrame(() => { rafId = 0; setCanvasSize(); });
+                        });
+                        ro.observe(document.getElementById('image-viewer'));
+                    }
                 }
             }
         }
@@ -558,9 +596,11 @@ function loadAllImages() {
                                 // 透明またはほぼゼロ → 透明のまま
                                 data[i] = 0; data[i+1] = 0; data[i+2] = 0; data[i+3] = 0;
                             } else {
-                                data[i]   = Math.min(255, Math.round(msiColor[0] * normalized));
-                                data[i+1] = Math.min(255, Math.round(msiColor[1] * normalized));
-                                data[i+2] = Math.min(255, Math.round(msiColor[2] * normalized));
+                                // サムネイルと同じ γ=0.5 でミッドトーンを持ち上げ、弱信号の脳辺縁を可視化
+                                const bright = Math.pow(normalized, 0.5);
+                                data[i]   = Math.min(255, Math.round(msiColor[0] * bright));
+                                data[i+1] = Math.min(255, Math.round(msiColor[1] * bright));
+                                data[i+2] = Math.min(255, Math.round(msiColor[2] * bright));
                                 data[i+3] = 255;
                             }
                         } else {
@@ -583,19 +623,43 @@ function loadAllImages() {
                 displayCtx.globalAlpha = settings.opacity;
                 // MSI画像は加算合成（lighter）で重ねる → 複数MSIの色が混ざって見える
                 const isMsiLayer = /^MSI/i.test(key);
+                const isHeLike   = /HE_STAIN|IF_STAIN/i.test(key);
                 displayCtx.globalCompositeOperation = isMsiLayer ? 'lighter' : 'source-over';
 
-                const isLandscape = sourceImg.naturalWidth > sourceImg.naturalHeight;
-                if (isLandscape) {
-                    // 横長画像（HE/IF染色）→ そのまま描画（キャンバスも横長）
-                    displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
-                } else {
-                    // 縦長画像（MSI等）→ CCW90°回転して横長キャンバスにフィット
+                const T = atlasData.world_coords && atlasData.world_coords.T_he_to_msi;
+                const isPortrait = sourceImg.naturalHeight > sourceImg.naturalWidth;
+                const msiRef = getMsiRefSize();
+
+                if (T && isHeLike && isPortrait && msiRef && msiRef.w > 0 && msiRef.h > 0) {
+                    // HE/IF を T_he_to_msi で MSI 座標系へ変換してから CCW90° でキャンバスに描画
+                    displayCtx.save();
+                    displayCtx.translate(0, displayCanvas.height);
+                    displayCtx.rotate(-Math.PI / 2);
+                    // 現在の local frame は MSI ピクセル空間。キャンバス内部解像度に合わせてスケール
+                    displayCtx.scale(displayCanvas.height / msiRef.w, displayCanvas.width / msiRef.h);
+                    // T_he_to_msi を適用:local frame が HE ピクセル空間になる
+                    displayCtx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]);
+                    displayCtx.drawImage(tempCanvas, 0, 0);
+                    displayCtx.restore();
+                } else if (isMsiLayer) {
+                    // MSI portrait → CCW90° 回転でキャンバス全面にフィット
                     displayCtx.save();
                     displayCtx.translate(0, displayCanvas.height);
                     displayCtx.rotate(-Math.PI / 2);
                     displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.height, displayCanvas.width);
                     displayCtx.restore();
+                } else {
+                    // フォールバック(test1 互換): 従来の landscape/portrait 自動判定
+                    const isLandscape = sourceImg.naturalWidth > sourceImg.naturalHeight;
+                    if (isLandscape) {
+                        displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
+                    } else {
+                        displayCtx.save();
+                        displayCtx.translate(0, displayCanvas.height);
+                        displayCtx.rotate(-Math.PI / 2);
+                        displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.height, displayCanvas.width);
+                        displayCtx.restore();
+                    }
                 }
             }
 
@@ -611,7 +675,12 @@ function loadAllImages() {
             const allKeys = atlasData.images ? Object.keys(atlasData.images) : [];
             const heKeys = allKeys.filter(k => k.toUpperCase().includes('HE_STAIN'));
             const ifKeys = allKeys.filter(k => k.toUpperCase().includes('IF_STAIN'));
-            const msiKeys = allKeys.filter(k => k.toUpperCase().includes('MSI_')).sort();
+            const rawMsi = allKeys.filter(k => k.toUpperCase().includes('MSI_'));
+            const orderSpec = Array.isArray(atlasData.thumbnail_order) ? atlasData.thumbnail_order : [];
+            const orderSet = new Set(orderSpec);
+            const ordered = orderSpec.filter(k => rawMsi.includes(k));
+            const rest = rawMsi.filter(k => !orderSet.has(k)).sort();
+            const msiKeys = ordered.concat(rest);
 
             const slots = [
                 heKeys[0] || null, ifKeys[0] || null, ifKeys[1] || null, ifKeys[2] || null,
@@ -634,6 +703,25 @@ function loadAllImages() {
 
                     if (typeof key === 'string' && (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN'))) {
                       thumb.classList.add('heif-thumb');
+                    }
+                    if (typeof key === 'string' && key.toUpperCase().includes('HE_STAIN')) {
+                      thumb.addEventListener('load', function onHeThumbLoad() {
+                         thumb.removeEventListener('load', onHeThumbLoad);
+                         const iw = thumb.naturalWidth;
+                         const ih = thumb.naturalHeight;
+                         if (!iw || !ih) return;
+                         const rotC = document.createElement('canvas');
+                         rotC.width = ih; rotC.height = iw;
+                         const rctx = rotC.getContext('2d');
+                         rctx.translate(ih, 0);
+                         rctx.rotate(Math.PI / 2);
+                         rctx.drawImage(thumb, 0, 0);
+                         thumb.src = rotC.toDataURL();
+                         thumb.style.width = '100%';
+                         thumb.style.height = 'auto';
+                         thumb.style.maxHeight = '200px';
+                         thumb.style.objectFit = 'contain';
+                      }, { once: true });
                     }
                     if (typeof key === 'string' && key.startsWith('MSI_')) {
                       thumb.addEventListener('load', function onMsiThumbLoad() {
@@ -803,6 +891,10 @@ function loadAllImages() {
             const sxFactor = roiCanvas.height / msiRef.w;  // MSI-x → canvas-y方向
             const syFactor = roiCanvas.width  / msiRef.h;  // MSI-y → canvas-x方向
 
+            // キャンバス内部解像度 → CSS 表示サイズ比から、CSS 1px 相当の線幅を算出
+            const cssW = roiCanvas.offsetWidth || roiCanvas.width;
+            const pxPerCss = roiCanvas.width / Math.max(1, cssW);
+
             Object.keys(roiItems).forEach(roiKey => {
                 const isHighlight = roiKey === highlightKey;
                 const rgba = palette[roiKey];
@@ -823,10 +915,9 @@ function loadAllImages() {
                 }
                 roiCtx.closePath();
 
-                roiCtx.strokeStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, 0.9)`;
-                roiCtx.fillStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, ${isHighlight ? 0.5 : 0.25})`;
-                roiCtx.lineWidth = isHighlight ? 4 : 2;
-                roiCtx.fill();
+                roiCtx.strokeStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, 0.95)`;
+                // CSS 表示で 1〜2px になるよう内部座標の lineWidth を計算
+                roiCtx.lineWidth = (isHighlight ? 2.0 : 1.0) * pxPerCss;
                 roiCtx.stroke();
             });
         }
@@ -1320,6 +1411,10 @@ function loadAllImages() {
         }
         if (!rows.length) throw new Error(`no numeric rows in ${def.src}`);
       }
+      return rasterRowsToPngDataUrl(rows, def.range);
+    }
+
+    function rasterRowsToPngDataUrl(rows, range) {
       const xs = [...new Set(rows.map(r => r.x))].sort((a,b) => a - b);
       const ys = [...new Set(rows.map(r => r.y))].sort((a,b) => a - b);
       const W = xs.length, H = ys.length;
@@ -1345,8 +1440,8 @@ function loadAllImages() {
           }
         }
       }
-      if (def.range && def.range.length === 2) {
-        vmin = def.range[0]; vmax = def.range[1];
+      if (range && range.length === 2) {
+        vmin = range[0]; vmax = range[1];
         if (!(vmax > vmin)) vmax = vmin + 1e-9;
       } else {
         if (!(vmax > vmin)) { vmin = 0; vmax = 1; }
@@ -1360,7 +1455,7 @@ function loadAllImages() {
         for (let j = 0; j < W; j++) {
           const val = grid[i][j];
           if (!Number.isFinite(val)) {
-            imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; // 透明 = データなし
+            imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0;
           } else {
             const n = Math.max(0, Math.min(1, (val - vmin) / (vmax - vmin)));
             const g = Math.round(n * 255);
@@ -1368,6 +1463,77 @@ function loadAllImages() {
           }
         }
       }
+      ctx.putImageData(imgData, 0, 0);
+      return canvas.toDataURL("image/png");
+    }
+
+    const xlsxWorkbookCache = new Map();
+    async function fetchXlsxWorkbook(url) {
+      if (xlsxWorkbookCache.has(url)) return xlsxWorkbookCache.get(url);
+      const p = (async () => {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`xlsx fetch failed: ${res.status} ${url}`);
+        const buf = await res.arrayBuffer();
+        if (typeof XLSX === "undefined") throw new Error("SheetJS (XLSX) library not loaded");
+        return XLSX.read(new Uint8Array(buf), { type: "array" });
+      })();
+      xlsxWorkbookCache.set(url, p);
+      return p;
+    }
+
+    function a1ColToIndex(colRef) {
+      if (typeof colRef === "number") return colRef;
+      const s = String(colRef).toUpperCase();
+      let n = 0;
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charCodeAt(i);
+        if (c < 65 || c > 90) return NaN;
+        n = n * 26 + (c - 64);
+      }
+      return n - 1;
+    }
+
+    async function buildPngFromXlsx(def) {
+      const wb = await fetchXlsxWorkbook(def.src);
+      const sheetName = def.sheet || wb.SheetNames[0];
+      const sheet = wb.Sheets[sheetName];
+      if (!sheet) throw new Error(`sheet '${sheetName}' not found in ${def.src}`);
+      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
+      const startIdx = Math.max(0, (def.data_start_row || 1) - 1);
+      const xi = a1ColToIndex(def.col_x);
+      const yi = a1ColToIndex(def.col_y);
+      const vi = a1ColToIndex(def.col_v);
+      if (!Number.isFinite(xi) || !Number.isFinite(yi) || !Number.isFinite(vi)) {
+        throw new Error(`invalid column refs in xlsx def: ${JSON.stringify(def)}`);
+      }
+      const rows = [];
+      for (let i = startIdx; i < aoa.length; i++) {
+        const r = aoa[i];
+        if (!r) continue;
+        const x = Number(r[xi]), y = Number(r[yi]), v = Number(r[vi]);
+        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) {
+          rows.push({ x, y, v });
+        }
+      }
+      if (!rows.length) throw new Error(`no numeric rows in xlsx ${def.src} (sheet=${sheetName})`);
+      return rasterRowsToPngDataUrl(rows, def.range);
+    }
+
+    async function decodeTiffToPngDataUrl(url) {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`tiff fetch failed: ${res.status} ${url}`);
+      const buf = await res.arrayBuffer();
+      if (typeof UTIF === "undefined") throw new Error("UTIF library not loaded");
+      const ifds = UTIF.decode(buf);
+      if (!ifds || !ifds.length) throw new Error(`no IFDs in ${url}`);
+      UTIF.decodeImage(buf, ifds[0]);
+      const rgba = UTIF.toRGBA8(ifds[0]);
+      const W = ifds[0].width, H = ifds[0].height;
+      const canvas = document.createElement('canvas');
+      canvas.width = W; canvas.height = H;
+      const ctx = canvas.getContext('2d');
+      const imgData = ctx.createImageData(W, H);
+      imgData.data.set(rgba);
       ctx.putImageData(imgData, 0, 0);
       return canvas.toDataURL("image/png");
     }
@@ -1387,11 +1553,12 @@ function loadAllImages() {
           meta: external.meta || { format: "roi_bundle_v1" },
           roi: external.roi || {},
           images: {},
-          world_coords: external.world_coords || {}
+          world_coords: external.world_coords || {},
+          thumbnail_order: Array.isArray(external.thumbnail_order) ? external.thumbnail_order : []
         };
         for (const [k, v] of Object.entries(external.images || {})) {
           if (typeof v === "string" && !/^data:|^https?:|^\.\.\//.test(v)) {
-            atlasData.images[k] = baseDir + v;
+            atlasData.images[k] = baseDir + encodeURI(v);
           } else {
             atlasData.images[k] = v;
           }
@@ -1401,12 +1568,25 @@ function loadAllImages() {
           try {
             const defFixed = Object.assign({}, def);
             if (defFixed && typeof defFixed.src === "string" && !/^https?:|^data:|^\.\.\//.test(defFixed.src)) {
-              defFixed.src = baseDir + defFixed.src;
+              defFixed.src = baseDir + encodeURI(defFixed.src);
             }
             const pngUrl = await buildPngFromTxt(defFixed);
             atlasData.images[key] = pngUrl;
           } catch (e) {
             console.warn("txt -> PNG 生成に失敗:", key, e);
+          }
+        }
+        const xlsxSeries = external.xlsx_series || {};
+        for (const [key, def] of Object.entries(xlsxSeries)) {
+          try {
+            const defFixed = Object.assign({}, def);
+            if (defFixed && typeof defFixed.src === "string" && !/^https?:|^data:|^\.\.\//.test(defFixed.src)) {
+              defFixed.src = baseDir + encodeURI(defFixed.src);
+            }
+            const pngUrl = await buildPngFromXlsx(defFixed);
+            atlasData.images[key] = pngUrl;
+          } catch (e) {
+            console.warn("xlsx -> PNG 生成に失敗:", key, e);
           }
         }
         await initializeViewer();
