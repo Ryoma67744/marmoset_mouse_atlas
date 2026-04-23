@@ -486,11 +486,21 @@ function loadAllImages() {
                 if (firstKey) {
                     const firstImage = imageSources[firstKey];
                     const refIsMsi = !!msiKey0 && firstKey === msiKey0;
+                    const heImage  = heKey0 ? imageSources[heKey0] : null;
                     const setCanvasSize = () => {
                         let w = firstImage.naturalWidth;
                         let h = firstImage.naturalHeight;
                         // MSI を基準に採る場合は CCW90° 回転後のランドスケープ寸法をキャンバス内部解像度に
                         if (refIsMsi) { const tmp = w; w = h; h = tmp; }
+                        // HE が MSI より高解像なら、HE のディテール保持のためキャンバス内部解像度を倍率アップ
+                        let renderScale = 1;
+                        if (refIsMsi && heImage && heImage.naturalWidth > 0) {
+                            const ratio = Math.max(heImage.naturalWidth / firstImage.naturalWidth,
+                                                   heImage.naturalHeight / firstImage.naturalHeight);
+                            renderScale = Math.max(1, Math.min(8, Math.ceil(ratio)));
+                        }
+                        w = Math.round(w * renderScale);
+                        h = Math.round(h * renderScale);
                         [displayCanvas, roiCanvas].forEach(c => { c.width = w; c.height = h; });
 
                         // コンテナにフィットしつつアスペクト比を完全に維持するCSS寸法を計算
@@ -681,6 +691,25 @@ function loadAllImages() {
                     if (typeof key === 'string' && (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN'))) {
                       thumb.classList.add('heif-thumb');
                     }
+                    if (typeof key === 'string' && key.toUpperCase().includes('HE_STAIN')) {
+                      thumb.addEventListener('load', function onHeThumbLoad() {
+                         thumb.removeEventListener('load', onHeThumbLoad);
+                         const iw = thumb.naturalWidth;
+                         const ih = thumb.naturalHeight;
+                         if (!iw || !ih) return;
+                         const rotC = document.createElement('canvas');
+                         rotC.width = ih; rotC.height = iw;
+                         const rctx = rotC.getContext('2d');
+                         rctx.translate(ih, 0);
+                         rctx.rotate(Math.PI / 2);
+                         rctx.drawImage(thumb, 0, 0);
+                         thumb.src = rotC.toDataURL();
+                         thumb.style.width = '100%';
+                         thumb.style.height = 'auto';
+                         thumb.style.maxHeight = '200px';
+                         thumb.style.objectFit = 'contain';
+                      }, { once: true });
+                    }
                     if (typeof key === 'string' && key.startsWith('MSI_')) {
                       thumb.addEventListener('load', function onMsiThumbLoad() {
                          thumb.removeEventListener('load', onMsiThumbLoad); // 再帰防止
@@ -849,6 +878,10 @@ function loadAllImages() {
             const sxFactor = roiCanvas.height / msiRef.w;  // MSI-x → canvas-y方向
             const syFactor = roiCanvas.width  / msiRef.h;  // MSI-y → canvas-x方向
 
+            // キャンバス内部解像度 → CSS 表示サイズ比から、CSS 1px 相当の線幅を算出
+            const cssW = roiCanvas.offsetWidth || roiCanvas.width;
+            const pxPerCss = roiCanvas.width / Math.max(1, cssW);
+
             Object.keys(roiItems).forEach(roiKey => {
                 const isHighlight = roiKey === highlightKey;
                 const rgba = palette[roiKey];
@@ -869,10 +902,9 @@ function loadAllImages() {
                 }
                 roiCtx.closePath();
 
-                roiCtx.strokeStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, 0.9)`;
-                roiCtx.fillStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, ${isHighlight ? 0.5 : 0.25})`;
-                roiCtx.lineWidth = isHighlight ? 4 : 2;
-                roiCtx.fill();
+                roiCtx.strokeStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, 0.95)`;
+                // CSS 表示で 1〜2px になるよう内部座標の lineWidth を計算
+                roiCtx.lineWidth = (isHighlight ? 2.0 : 1.0) * pxPerCss;
                 roiCtx.stroke();
             });
         }
