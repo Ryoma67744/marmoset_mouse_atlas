@@ -536,6 +536,17 @@ function loadAllImages() {
 
                     // ウィンドウリサイズ時にアスペクト比を再計算
                     window.addEventListener('resize', () => { setCanvasSize(); });
+
+                    // サムネ load 後の IMAGES 行拡張やパネル折畳みで
+                    // #image-viewer 自体のサイズが変わった場合も再計算する
+                    if (typeof ResizeObserver !== 'undefined') {
+                        let rafId = 0;
+                        const ro = new ResizeObserver(() => {
+                            if (rafId) cancelAnimationFrame(rafId);
+                            rafId = requestAnimationFrame(() => { rafId = 0; setCanvasSize(); });
+                        });
+                        ro.observe(document.getElementById('image-viewer'));
+                    }
                 }
             }
         }
