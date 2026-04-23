@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -66,7 +67,13 @@
         <!-- Header (compact) -->
         <header class="flex items-center justify-between px-4 py-1 bg-white border-b shrink-0">
             <h1 id="atlas-title" class="text-lg font-bold text-gray-900 truncate">Marmoset Brain Atlas</h1>
-            <span class="text-sm text-gray-500">ROI-based Analysis Viewer</span>
+            <div class="flex items-center gap-3">
+                <button id="download-bundle" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="Download ZIP bundle (atlas.json + raw data)">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
+                    Download
+                </button>
+                <span class="text-sm text-gray-500">ROI-based Analysis Viewer</span>
+            </div>
         </header>
 
         <!-- Three-column full-height layout -->
@@ -88,16 +95,19 @@
 
                 <!-- ROI List Panel -->
                 <div class="bg-white p-2 rounded shadow-sm flex-1 flex flex-col overflow-hidden min-h-0">
-                    <div class="flex items-center justify-between mb-1 border-b pb-1 shrink-0">
+                    <div class="flex items-center justify-between mb-1 border-b pb-1 shrink-0 gap-1">
                         <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">ROI List</h2>
-                        <label class="flex items-center cursor-pointer select-none">
-                            <span class="text-xs text-gray-500 mr-1">Show</span>
-                            <div class="relative">
-                                <input type="checkbox" id="roi-toggle" class="sr-only" checked>
-                                <div class="w-9 h-5 bg-gray-300 rounded-full shadow-inner transition-colors" id="roi-toggle-bg"></div>
-                                <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform" id="roi-toggle-dot"></div>
-                            </div>
-                        </label>
+                        <div class="flex items-center gap-2">
+                            <button id="roi-draw-toggle" class="text-xs px-2 py-0.5 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="Draw new ROI polygon">+ 新規</button>
+                            <label class="flex items-center cursor-pointer select-none">
+                                <span class="text-xs text-gray-500 mr-1">Show</span>
+                                <div class="relative">
+                                    <input type="checkbox" id="roi-toggle" class="sr-only" checked>
+                                    <div class="w-9 h-5 bg-gray-300 rounded-full shadow-inner transition-colors" id="roi-toggle-bg"></div>
+                                    <div class="absolute left-0.5 top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform" id="roi-toggle-dot"></div>
+                                </div>
+                            </label>
+                        </div>
                     </div>
                     <div id="roi-list" class="space-y-1 overflow-y-auto flex-1 min-h-0 text-xs">
                         <p class="text-gray-500">No ROI data loaded.</p>
@@ -211,6 +221,14 @@
         let imageSettings = {};
         let isRendering = false;
 
+        // MSI サムネイル要素を key → <img> で保持(輝度変更時に再描画するため)
+        const msiThumbRefs = new Map();
+        // ユーザー描画 ROI の内部キーは "user_" プレフィックス
+        const USER_ROI_PREFIX = 'user_';
+        // 描画モードの状態
+        let drawingMode = false;
+        let drawingVertices = [];
+
         // MSI化合物ごとの色マッピング（同じ化合物は常に同じ色）
         const MSI_COMPOUND_COLORS = {
             'DA':   [255, 0,   0  ],  // 赤
@@ -227,6 +245,56 @@
             return MSI_COMPOUND_COLORS[compound] || null;
         }
 
+        // MSI サムネイルを imageSources から着色+CCW90°回転で再描画する。
+        // vmin/vmax が変わるたびに呼び直すために抽出。
+        function renderMsiThumbnail(key, thumbEl) {
+            if (!thumbEl) return;
+            const source = imageSources[key];
+            if (!source || !source.complete || source.naturalWidth === 0) return;
+            const color = getMsiColor(key);
+            const iw = source.naturalWidth;
+            const ih = source.naturalHeight;
+            const tc = document.createElement('canvas');
+            tc.width = iw; tc.height = ih;
+            const tctx = tc.getContext('2d', { willReadFrequently: true });
+            tctx.drawImage(source, 0, 0);
+            const imgData = tctx.getImageData(0, 0, iw, ih);
+            const d = imgData.data;
+            const st = imageSettings[key] || { vmin: 0, vmax: 255 };
+            const lumMin = st.vmin;
+            const lumRange = (st.vmax - st.vmin) || 1;
+            const gamma = 0.5;
+            for (let i = 0; i < d.length; i += 4) {
+                if (d[i+3] === 0) continue;
+                const l = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
+                if (l < 1) { d[i] = 0; d[i+1] = 0; d[i+2] = 0; continue; }
+                const n = Math.max(0, Math.min(1, (l - lumMin) / lumRange));
+                const bright = Math.pow(n, gamma);
+                if (color) {
+                    d[i]   = Math.min(255, Math.round(color[0] * bright));
+                    d[i+1] = Math.min(255, Math.round(color[1] * bright));
+                    d[i+2] = Math.min(255, Math.round(color[2] * bright));
+                } else {
+                    const v = Math.min(255, Math.round(255 * bright));
+                    d[i] = v; d[i+1] = v; d[i+2] = v;
+                }
+            }
+            tctx.putImageData(imgData, 0, 0);
+            const rotC = document.createElement('canvas');
+            rotC.width = ih; rotC.height = iw;
+            const rctx = rotC.getContext('2d');
+            rctx.translate(0, iw);
+            rctx.rotate(-Math.PI / 2);
+            rctx.drawImage(tc, 0, 0);
+            thumbEl.src = rotC.toDataURL();
+            thumbEl.style.width = '100%';
+            thumbEl.style.height = 'auto';
+            thumbEl.style.maxHeight = '200px';
+            thumbEl.style.objectFit = 'contain';
+            thumbEl.style.transform = 'none';
+            thumbEl.classList.add('msi-thumb');
+        }
+
         // DOMContentLoaded でコンテキスト初期化 → resolve で IIFE に通知
         function initCanvasContexts() {
             if (!roiCtx)    roiCtx    = roiCanvas.getContext('2d');
@@ -241,6 +309,7 @@
         });
 
         async function initializeViewer() {
+            loadUserRois();
             populateRoiList();
             await loadAllImages();
             populateThumbnails();
@@ -248,6 +317,8 @@
             setupCheckboxDropdown();
             setupGraphSelector();
             setupCollapsibleSections();
+            setupDrawingHandlers();
+            setupDownloadButton();
             const firstRoiKey = (atlasData.roi && atlasData.roi.roi_items) ? Object.keys(atlasData.roi.roi_items)[0] : null;
             if (firstRoiKey) {
                 setTimeout(() => {
@@ -463,6 +534,7 @@ function loadAllImages() {
                     if (vmin >= vmax) { vmin = vmax - 1; vminInput.value = vmin; }
                     settings.vmin = vmin;
                     renderCompositeImage();
+                    if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
                 });
                 vmaxInput.addEventListener('change', () => {
                     let vmin = parseInt(vminInput.value);
@@ -470,6 +542,7 @@ function loadAllImages() {
                     if (vmax <= vmin) { vmax = vmin + 1; vmaxInput.value = vmax; }
                     settings.vmax = vmax;
                     renderCompositeImage();
+                    if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
                 });
 
                 optionDiv.addEventListener('click', (e) => e.stopPropagation());
@@ -724,60 +797,18 @@ function loadAllImages() {
                       }, { once: true });
                     }
                     if (typeof key === 'string' && key.startsWith('MSI_')) {
-                      thumb.addEventListener('load', function onMsiThumbLoad() {
-                         thumb.removeEventListener('load', onMsiThumbLoad); // 再帰防止
-                         // MSIサムネイルをCanvasで着色して回転
-                         const color = getMsiColor(key);
-                         const iw = thumb.naturalWidth;
-                         const ih = thumb.naturalHeight;
-
-                         // 着色用キャンバス
-                         const tc = document.createElement('canvas');
-                         tc.width = iw; tc.height = ih;
-                         const tctx = tc.getContext('2d', { willReadFrequently: true });
-                         tctx.drawImage(thumb, 0, 0);
-                         const imgData = tctx.getImageData(0, 0, iw, ih);
-                         const d = imgData.data;
-                         // imageSettingsの98パーセンタイルvmin/vmaxを使用
-                         const st = imageSettings[key] || { vmin: 0, vmax: 255 };
-                         const lumMin = st.vmin;
-                         const lumRange = (st.vmax - st.vmin) || 1;
-                         // ガンマ補正でサムネイルを明るく（γ=0.5 → 中間調を引き上げ）
-                         const gamma = 0.5;
-                         for (let i = 0; i < d.length; i += 4) {
-                             if (d[i+3] === 0) continue;
-                             const l = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
-                             if (l < 1) { d[i] = 0; d[i+1] = 0; d[i+2] = 0; continue; }
-                             const n = Math.max(0, Math.min(1, (l - lumMin) / lumRange));
-                             const bright = Math.pow(n, gamma); // ガンマ補正で明るく
-                             if (color) {
-                                 d[i]   = Math.min(255, Math.round(color[0] * bright));
-                                 d[i+1] = Math.min(255, Math.round(color[1] * bright));
-                                 d[i+2] = Math.min(255, Math.round(color[2] * bright));
-                             } else {
-                                 const v = Math.min(255, Math.round(255 * bright));
-                                 d[i] = v; d[i+1] = v; d[i+2] = v;
-                             }
-                         }
-                         tctx.putImageData(imgData, 0, 0);
-
-                         // 回転（CCW 90°）して横長にし、data URLで差し替え
-                         const rotC = document.createElement('canvas');
-                         rotC.width = ih; rotC.height = iw; // 回転後サイズ
-                         const rctx = rotC.getContext('2d');
-                         rctx.translate(0, iw);
-                         rctx.rotate(-Math.PI / 2);
-                         rctx.drawImage(tc, 0, 0);
-                         thumb.src = rotC.toDataURL();
-
-                         thumb.style.width = '100%';
-                         thumb.style.height = 'auto';
-                         thumb.style.maxHeight = '200px';
-                         thumb.style.objectFit = 'contain';
-                         thumb.style.transform = 'none';
-                         thumb.classList.add('msi-thumb');
-                       }, { once: true });
-                     }
+                      msiThumbRefs.set(key, thumb);
+                      // 元 MSI PNG が load されたら着色+回転パイプラインを起動
+                      const runOnce = () => {
+                          thumb.removeEventListener('load', runOnce);
+                          renderMsiThumbnail(key, thumb);
+                      };
+                      if (thumb.complete && thumb.naturalWidth > 0) {
+                          renderMsiThumbnail(key, thumb);
+                      } else {
+                          thumb.addEventListener('load', runOnce);
+                      }
+                    }
                     slotWrapper.appendChild(thumb);
                     
                     const titleOverlay = document.createElement('div');
@@ -836,13 +867,33 @@ function loadAllImages() {
             Object.keys(roiItems).forEach(key => {
                 const name = roiNames[key] || key;
                 const rgba = palette[key]  || [128,128,128,255];
+                const isUser = typeof key === 'string' && key.startsWith(USER_ROI_PREFIX);
 
                 const el = document.createElement('div');
-                el.className = 'roi-item p-2 rounded-md flex items-center border-l-4 border-transparent';
+                el.className = 'roi-item p-2 rounded-md flex items-center justify-between border-l-4 border-transparent';
                 el.dataset.roiKey = key;
 
-                el.innerHTML = `<span class="color-swatch" style="background-color: rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3]/255})"></span><span>${name}</span>`;
-                
+                const label = document.createElement('div');
+                label.className = 'flex items-center min-w-0 flex-1';
+                label.innerHTML = `<span class="color-swatch" style="background-color: rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3]/255})"></span><span class="truncate">${name}</span>`;
+                el.appendChild(label);
+
+                if (isUser) {
+                    const delBtn = document.createElement('button');
+                    delBtn.type = 'button';
+                    delBtn.className = 'ml-2 text-xs text-gray-400 hover:text-red-600 opacity-0 group-hover:opacity-100';
+                    delBtn.title = 'Delete user ROI';
+                    delBtn.textContent = '✕';
+                    delBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        deleteUserRoi(key);
+                    });
+                    el.classList.add('group');
+                    // 常時表示にして見つけやすく
+                    delBtn.classList.remove('opacity-0', 'group-hover:opacity-100');
+                    el.appendChild(delBtn);
+                }
+
                 el.addEventListener('click', () => {
                     displayGraphForRoi(key);
                     drawAllRois(key);
@@ -1310,6 +1361,308 @@ function loadAllImages() {
 
             setupToggle('toggle-image-selection', 'thumbnail-container', 'icon-image-selection');
             setupToggle('toggle-analysis-graph', 'analysis-graph-content', 'icon-analysis-graph');
+        }
+
+        // =======================================================================
+        // ユーザー描画 ROI 機能
+        // =======================================================================
+
+        function userRoiStorageKey() {
+            const id = (atlasData && atlasData.meta && atlasData.meta.dataset_id) || 'default';
+            return `marmoset_atlas_user_rois_${id}`;
+        }
+
+        function persistUserRois() {
+            try {
+                const out = {};
+                const items = (atlasData.roi && atlasData.roi.roi_items) || {};
+                const names = (atlasData.roi && atlasData.roi.roi_names) || {};
+                const palette = (atlasData.roi && atlasData.roi.palette) || {};
+                for (const key of Object.keys(items)) {
+                    if (!key.startsWith(USER_ROI_PREFIX)) continue;
+                    out[key] = {
+                        poly_msi: (items[key][0] && items[key][0].poly_msi) || [],
+                        name: names[key] || key,
+                        rgba: palette[key] || [128,128,128,255],
+                    };
+                }
+                localStorage.setItem(userRoiStorageKey(), JSON.stringify(out));
+            } catch (e) {
+                console.warn('[persistUserRois] failed:', e);
+            }
+        }
+
+        function loadUserRois() {
+            try {
+                const raw = localStorage.getItem(userRoiStorageKey());
+                if (!raw) return;
+                const data = JSON.parse(raw);
+                if (!data || typeof data !== 'object') return;
+                atlasData.roi = atlasData.roi || {};
+                atlasData.roi.roi_items = atlasData.roi.roi_items || {};
+                atlasData.roi.roi_names = atlasData.roi.roi_names || {};
+                atlasData.roi.palette   = atlasData.roi.palette   || {};
+                atlasData.roi.roi_show_flags = atlasData.roi.roi_show_flags || {};
+                for (const [key, rec] of Object.entries(data)) {
+                    if (!rec || !Array.isArray(rec.poly_msi)) continue;
+                    atlasData.roi.roi_items[key] = [{ poly_msi: rec.poly_msi }];
+                    atlasData.roi.roi_names[key] = rec.name || key;
+                    atlasData.roi.palette[key]   = rec.rgba || [128,128,128,255];
+                    atlasData.roi.roi_show_flags[key] = true;
+                }
+            } catch (e) {
+                console.warn('[loadUserRois] failed:', e);
+            }
+        }
+
+        function pickUnusedPaletteColor() {
+            const palette = (atlasData.roi && atlasData.roi.palette) || {};
+            const items   = (atlasData.roi && atlasData.roi.roi_items) || {};
+            for (const [name, rgba] of Object.entries(palette)) {
+                if (!items[name] || !items[name].length) return rgba.slice();
+            }
+            // フォールバック: ランダム彩度高め
+            const h = Math.floor(Math.random() * 360);
+            const rgb = (() => {
+                const s = 0.75, l = 0.55;
+                const c = (1 - Math.abs(2*l - 1)) * s;
+                const hp = h / 60;
+                const x = c * (1 - Math.abs(hp % 2 - 1));
+                let r=0,g=0,b=0;
+                if      (hp < 1) { r=c; g=x; }
+                else if (hp < 2) { r=x; g=c; }
+                else if (hp < 3) { g=c; b=x; }
+                else if (hp < 4) { g=x; b=c; }
+                else if (hp < 5) { r=x; b=c; }
+                else             { r=c; b=x; }
+                const m = l - c/2;
+                return [Math.round((r+m)*255), Math.round((g+m)*255), Math.round((b+m)*255)];
+            })();
+            return [rgb[0], rgb[1], rgb[2], 255];
+        }
+
+        function canvasToMsi(canvasX, canvasY) {
+            const msiRef = getMsiRefSize();
+            const sxFactor = roiCanvas.height / msiRef.w;
+            const syFactor = roiCanvas.width  / msiRef.h;
+            const mx = (roiCanvas.height - canvasY) / sxFactor;
+            const my = canvasX / syFactor;
+            return [mx, my];
+        }
+
+        function drawDrawingPreview() {
+            if (!roiCtx) return;
+            drawAllRois(document.querySelector('.roi-item.active')?.dataset.roiKey || null);
+            if (!drawingVertices.length) return;
+            const msiRef = getMsiRefSize();
+            const sxFactor = roiCanvas.height / msiRef.w;
+            const syFactor = roiCanvas.width  / msiRef.h;
+            const pts = drawingVertices.map(([mx, my]) => [my * syFactor, roiCanvas.height - mx * sxFactor]);
+            const cssW = roiCanvas.offsetWidth || roiCanvas.width;
+            const pxPerCss = roiCanvas.width / Math.max(1, cssW);
+            roiCtx.save();
+            roiCtx.strokeStyle = 'rgba(255, 255, 255, 0.95)';
+            roiCtx.lineWidth = 1.5 * pxPerCss;
+            roiCtx.setLineDash([4 * pxPerCss, 3 * pxPerCss]);
+            roiCtx.beginPath();
+            roiCtx.moveTo(pts[0][0], pts[0][1]);
+            for (let i = 1; i < pts.length; i++) roiCtx.lineTo(pts[i][0], pts[i][1]);
+            roiCtx.stroke();
+            roiCtx.setLineDash([]);
+            roiCtx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+            const r = 3 * pxPerCss;
+            for (const [x, y] of pts) {
+                roiCtx.beginPath();
+                roiCtx.arc(x, y, r, 0, 2 * Math.PI);
+                roiCtx.fill();
+            }
+            roiCtx.restore();
+        }
+
+        function toggleDrawingMode(on) {
+            drawingMode = (on === undefined) ? !drawingMode : !!on;
+            const btn = document.getElementById('roi-draw-toggle');
+            if (drawingMode) {
+                drawingVertices = [];
+                roiCanvas.style.pointerEvents = 'auto';
+                roiCanvas.style.cursor = 'crosshair';
+                if (btn) { btn.textContent = '中止'; btn.classList.add('bg-red-100', 'text-red-700', 'border-red-300'); }
+            } else {
+                drawingVertices = [];
+                roiCanvas.style.pointerEvents = 'none';
+                roiCanvas.style.cursor = '';
+                if (btn) { btn.textContent = '+ 新規'; btn.classList.remove('bg-red-100', 'text-red-700', 'border-red-300'); }
+                const activeKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
+                drawAllRois(activeKey);
+            }
+        }
+
+        function finalizeDrawing() {
+            const verts = drawingVertices.slice();
+            if (verts.length < 3) { toggleDrawingMode(false); return; }
+            const name = (prompt('新しい ROI の名前を入力してください', `User ROI ${new Date().toLocaleTimeString()}`) || '').trim();
+            if (!name) { toggleDrawingMode(false); return; }
+            const newKey = `${USER_ROI_PREFIX}${Date.now()}`;
+            const rgba = pickUnusedPaletteColor();
+            atlasData.roi = atlasData.roi || {};
+            atlasData.roi.roi_items = atlasData.roi.roi_items || {};
+            atlasData.roi.roi_names = atlasData.roi.roi_names || {};
+            atlasData.roi.palette   = atlasData.roi.palette   || {};
+            atlasData.roi.roi_show_flags = atlasData.roi.roi_show_flags || {};
+            atlasData.roi.roi_items[newKey] = [{ poly_msi: verts }];
+            atlasData.roi.roi_names[newKey] = name;
+            atlasData.roi.palette[newKey]   = rgba;
+            atlasData.roi.roi_show_flags[newKey] = true;
+            persistUserRois();
+            toggleDrawingMode(false);
+            populateRoiList();
+            drawAllRois(newKey);
+        }
+
+        function deleteUserRoi(key) {
+            if (!key || !key.startsWith(USER_ROI_PREFIX)) return;
+            if (!confirm('この ROI を削除しますか?')) return;
+            if (atlasData.roi) {
+                delete atlasData.roi.roi_items[key];
+                delete atlasData.roi.roi_names[key];
+                delete atlasData.roi.palette[key];
+                if (atlasData.roi.roi_show_flags) delete atlasData.roi.roi_show_flags[key];
+            }
+            persistUserRois();
+            populateRoiList();
+            drawAllRois();
+        }
+
+        function setupDrawingHandlers() {
+            const btn = document.getElementById('roi-draw-toggle');
+            if (btn) btn.addEventListener('click', () => toggleDrawingMode());
+
+            roiCanvas.addEventListener('click', (e) => {
+                if (!drawingMode) return;
+                const sxCss = roiCanvas.width  / (roiCanvas.offsetWidth || 1);
+                const syCss = roiCanvas.height / (roiCanvas.offsetHeight || 1);
+                const canvasX = e.offsetX * sxCss;
+                const canvasY = e.offsetY * syCss;
+                // 最初の頂点を再クリックしたら閉じる(近接判定)
+                if (drawingVertices.length >= 3) {
+                    const msiRef = getMsiRefSize();
+                    const sxFactor = roiCanvas.height / msiRef.w;
+                    const syFactor = roiCanvas.width  / msiRef.h;
+                    const [mx0, my0] = drawingVertices[0];
+                    const cx0 = my0 * syFactor;
+                    const cy0 = roiCanvas.height - mx0 * sxFactor;
+                    const dx = canvasX - cx0, dy = canvasY - cy0;
+                    const threshold = 8 * sxCss;
+                    if (Math.sqrt(dx*dx + dy*dy) < threshold) { finalizeDrawing(); return; }
+                }
+                const [mx, my] = canvasToMsi(canvasX, canvasY);
+                drawingVertices.push([mx, my]);
+                drawDrawingPreview();
+            });
+
+            roiCanvas.addEventListener('dblclick', (e) => {
+                if (!drawingMode) return;
+                e.preventDefault();
+                finalizeDrawing();
+            });
+
+            document.addEventListener('keydown', (e) => {
+                if (!drawingMode) return;
+                if (e.key === 'Escape') { toggleDrawingMode(false); }
+                else if (e.key === 'Enter') { finalizeDrawing(); }
+            });
+        }
+
+        // =======================================================================
+        // ZIP ダウンロード機能
+        // =======================================================================
+
+        function exportUserRoiPixelsCsv() {
+            const roiItems = (atlasData.roi && atlasData.roi.roi_items) || {};
+            const roiNames = (atlasData.roi && atlasData.roi.roi_names) || {};
+            const userKeys = Object.keys(roiItems).filter(k => k.startsWith(USER_ROI_PREFIX));
+            if (!userKeys.length) return null;
+            const msiRef = getMsiRefSize();
+            const W = msiRef.w, H = msiRef.h;
+            const header = ['Image_X', 'Image_Y', ...userKeys.map(k => (roiNames[k] || k).replace(/,/g, ' '))];
+            const lines = [header.join(',')];
+            for (let y = 1; y <= H; y++) {
+                for (let x = 1; x <= W; x++) {
+                    const row = [x, y];
+                    for (const k of userKeys) {
+                        const poly = roiItems[k][0]?.poly_msi || [];
+                        // poly_msi 座標は MSI 1-origin 浮動小数。ピクセル中心判定
+                        const inside = pointInPolygon(x, y, poly) ? 1 : 0;
+                        row.push(inside);
+                    }
+                    lines.push(row.join(','));
+                }
+            }
+            return lines.join('\n');
+        }
+
+        async function fetchAsBlob(url) {
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`fetch failed: ${res.status} ${url}`);
+            return await res.blob();
+        }
+
+        async function downloadBundle() {
+            if (typeof JSZip === 'undefined') { alert('JSZip が読み込まれていません。'); return; }
+            const btn = document.getElementById('download-bundle');
+            const originalText = btn ? btn.textContent : '';
+            try {
+                if (btn) { btn.disabled = true; btn.textContent = 'Preparing...'; }
+                const zip = new JSZip();
+
+                // 1. atlas.json(ユーザー ROI を含む現時点の状態)
+                const atlasJsonText = JSON.stringify(atlasData, null, 2);
+                zip.file('atlas.json', atlasJsonText);
+
+                // 2. 生データ(meta に記録されたパスを baseDir 経由で取得)
+                const meta = atlasData.meta || {};
+                const params = new URLSearchParams(location.search);
+                const atlasId = params.get('atlas') || '';
+                const baseDir = atlasId ? `../datasets/${atlasId}/` : '';
+                const sourceMap = {
+                    source_msi: meta.source_msi,
+                    source_he: meta.source_he,
+                    source_overlay: meta.source_overlay,
+                };
+                for (const [label, relPath] of Object.entries(sourceMap)) {
+                    if (!relPath) continue;
+                    try {
+                        const url = /^https?:|^data:|^\.\.\//.test(relPath) ? relPath : baseDir + encodeURI(relPath);
+                        const blob = await fetchAsBlob(url);
+                        zip.file(relPath, blob);
+                    } catch (e) {
+                        console.warn(`[downloadBundle] skip ${label}:`, e);
+                    }
+                }
+
+                // 3. ユーザー ROI の各ピクセルラベル CSV
+                const csv = exportUserRoiPixelsCsv();
+                if (csv) zip.file('data/user_roi_pixels.csv', csv);
+
+                const blob = await zip.generateAsync({ type: 'blob' });
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                const fname = `${meta.dataset_id || 'atlas'}_${ts}.zip`;
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = fname;
+                document.body.appendChild(a); a.click();
+                setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+            } catch (e) {
+                console.error('[downloadBundle] error:', e);
+                alert('ダウンロードに失敗しました: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = originalText; }
+            }
+        }
+
+        function setupDownloadButton() {
+            const btn = document.getElementById('download-bundle');
+            if (btn) btn.addEventListener('click', downloadBundle);
         }
     </script>
 
