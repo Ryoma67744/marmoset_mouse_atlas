@@ -585,9 +585,11 @@ function loadAllImages() {
                                 // 透明またはほぼゼロ → 透明のまま
                                 data[i] = 0; data[i+1] = 0; data[i+2] = 0; data[i+3] = 0;
                             } else {
-                                data[i]   = Math.min(255, Math.round(msiColor[0] * normalized));
-                                data[i+1] = Math.min(255, Math.round(msiColor[1] * normalized));
-                                data[i+2] = Math.min(255, Math.round(msiColor[2] * normalized));
+                                // サムネイルと同じ γ=0.5 でミッドトーンを持ち上げ、弱信号の脳辺縁を可視化
+                                const bright = Math.pow(normalized, 0.5);
+                                data[i]   = Math.min(255, Math.round(msiColor[0] * bright));
+                                data[i+1] = Math.min(255, Math.round(msiColor[1] * bright));
+                                data[i+2] = Math.min(255, Math.round(msiColor[2] * bright));
                                 data[i+3] = 255;
                             }
                         } else {
