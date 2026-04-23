@@ -62,6 +62,32 @@
         /* ROI toggle switch */
         #roi-toggle:checked ~ #roi-toggle-bg { background-color: #3b82f6; }
         #roi-toggle:checked ~ #roi-toggle-dot { transform: translateX(1rem); }
+        /* Image Viewer / IMAGES を反時計回りに 90° 追加回転するためのラッパ */
+        #image-viewer-rot {
+            position: absolute;
+            inset: 0;
+            transform-origin: 50% 50%;
+            transform: rotate(-90deg);
+        }
+        /* サムネイルを 90° 反時計回り回転するためのラッパ。
+           --rot-ar は元画像の h/w を転置した「ih / iw」を JS から与え、
+           回転後 bbox がセル幅に揃うようにする。 */
+        .thumb-rot-box {
+            position: relative;
+            width: 100%;
+            aspect-ratio: var(--rot-ar, 1 / 1);
+            overflow: hidden;
+        }
+        .thumb-rot-box > img,
+        .thumb-rot-box > .thumbnail {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            transform-origin: 50% 50%;
+            transform: rotate(-90deg);
+        }
     </style>
 </head>
 <body class="text-gray-800">
@@ -137,8 +163,10 @@
                     </div>
                     <div id="image-viewer" class="relative flex-1 min-h-0 border border-gray-300 rounded bg-black overflow-hidden">
                         <img id="sizing-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'%3E%3Crect width='1200' height='900' fill='%23000'/%3E%3C/svg%3E" alt="Sizing reference" class="absolute w-full h-full opacity-0 object-contain">
-                        <canvas id="display-canvas" class="absolute"></canvas>
-                        <canvas id="roi-canvas" class="absolute pointer-events-none"></canvas>
+                        <div id="image-viewer-rot">
+                            <canvas id="display-canvas" class="absolute"></canvas>
+                            <canvas id="roi-canvas" class="absolute pointer-events-none"></canvas>
+                        </div>
                     </div>
                 </div>
 
@@ -283,18 +311,9 @@
                 }
             }
             tctx.putImageData(imgData, 0, 0);
-            const rotC = document.createElement('canvas');
-            rotC.width = ih; rotC.height = iw;
-            const rctx = rotC.getContext('2d');
-            rctx.translate(0, iw);
-            rctx.rotate(-Math.PI / 2);
-            rctx.drawImage(tc, 0, 0);
-            thumbEl.src = rotC.toDataURL();
-            thumbEl.style.width = '100%';
-            thumbEl.style.height = 'auto';
-            thumbEl.style.maxHeight = '200px';
-            thumbEl.style.objectFit = 'contain';
-            thumbEl.style.transform = 'none';
+            // 回転は親 .thumb-rot-box の CSS transform に一本化。ここでは着色済み
+            // 非回転データ URL を src に差し替えるだけ。
+            thumbEl.src = tc.toDataURL();
             thumbEl.classList.add('msi-thumb');
         }
 
@@ -578,27 +597,40 @@ function loadAllImages() {
                         h = Math.round(h * renderScale);
                         [displayCanvas, roiCanvas].forEach(c => { c.width = w; c.height = h; });
 
-                        // コンテナにフィットしつつアスペクト比を完全に維持するCSS寸法を計算
+                        // コンテナにフィットしつつアスペクト比を完全に維持するCSS寸法を計算。
+                        // #image-viewer-rot が CSS で −90° 回転するため、可視 bbox は
+                        // キャンバス CSS 寸法の w/h を入れ替えた転置になる。
+                        // コンテナにフィットさせるのは「回転後の可視 bbox」なので、
+                        // h/w（転置アスペクト比）を基準に計算する。
                         const viewer = document.getElementById('image-viewer');
                         const cw = viewer.clientWidth;
                         const ch = viewer.clientHeight;
                         if (cw > 0 && ch > 0) {
-                            const imgRatio = w / h;
+                            const displayedRatio = h / w; // 回転後 visible width/height
                             const containerRatio = cw / ch;
                             let cssW, cssH;
-                            if (containerRatio > imgRatio) {
+                            if (containerRatio > displayedRatio) {
                                 cssH = ch;
-                                cssW = ch * imgRatio;
+                                cssW = ch / displayedRatio; // = ch * w/h
                             } else {
                                 cssW = cw;
-                                cssH = cw / imgRatio;
+                                cssH = cw * displayedRatio; // = cw * h/w
                             }
+                            // Canvas 自身は回転前のローカル座標系で配置する。
+                            // 中央合わせは回転ラッパ内部での配置として計算。
                             [displayCanvas, roiCanvas].forEach(c => {
                                 c.style.width = cssW + 'px';
                                 c.style.height = cssH + 'px';
                                 c.style.left = ((cw - cssW) / 2) + 'px';
                                 c.style.top = ((ch - cssH) / 2) + 'px';
                             });
+                            // 回転ラッパをコンテナ全面に合わせ、中心軸での −90° 回転が
+                            // そのままコンテナ中心で行われるようにする。
+                            const rotWrap = document.getElementById('image-viewer-rot');
+                            if (rotWrap) {
+                                rotWrap.style.width = cw + 'px';
+                                rotWrap.style.height = ch + 'px';
+                            }
                         }
 
                         updateButtonText();
@@ -767,40 +799,37 @@ function loadAllImages() {
                 slotWrapper.className = 'flex flex-col group items-stretch overflow-visible relative w-full';
                 slotWrapper.dataset.slotNumber = index + 1;
 
+                // 回転ラッパ。内部の画像は CSS で −90° 回転する。
+                // 回転後 bbox がセル幅に揃うよう、--rot-ar には元画像の ih/iw（転置アスペクト比）を与える。
+                const rotBox = document.createElement('div');
+                rotBox.className = 'thumb-rot-box';
+
                 if (key && atlasData.images[key]) {
                     const thumb = document.createElement('img');
                     const src = atlasData.images[key];
                     thumb.src = src;
                     thumb.alt = formatDisplayName(key);
-                    thumb.className = 'thumbnail'; 
+                    thumb.className = 'thumbnail';
                     thumb.dataset.key = key;
                     thumb.onclick = () => setActiveImage(key);
 
                     if (typeof key === 'string' && (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN'))) {
                       thumb.classList.add('heif-thumb');
                     }
-                    if (typeof key === 'string' && key.toUpperCase().includes('HE_STAIN')) {
-                      thumb.addEventListener('load', function onHeThumbLoad() {
-                         thumb.removeEventListener('load', onHeThumbLoad);
-                         const iw = thumb.naturalWidth;
-                         const ih = thumb.naturalHeight;
-                         if (!iw || !ih) return;
-                         const rotC = document.createElement('canvas');
-                         rotC.width = ih; rotC.height = iw;
-                         const rctx = rotC.getContext('2d');
-                         rctx.translate(ih, 0);
-                         rctx.rotate(Math.PI / 2);
-                         rctx.drawImage(thumb, 0, 0);
-                         thumb.src = rotC.toDataURL();
-                         thumb.style.width = '100%';
-                         thumb.style.height = 'auto';
-                         thumb.style.maxHeight = '200px';
-                         thumb.style.objectFit = 'contain';
-                      }, { once: true });
-                    }
+
+                    // --rot-ar を設定して、回転後のセル高さを元画像の転置アスペクトに合わせる。
+                    const applyRotAr = () => {
+                        const iw = thumb.naturalWidth;
+                        const ih = thumb.naturalHeight;
+                        if (!iw || !ih) return;
+                        rotBox.style.setProperty('--rot-ar', `${ih} / ${iw}`);
+                    };
+                    if (thumb.complete && thumb.naturalWidth > 0) applyRotAr();
+                    else thumb.addEventListener('load', applyRotAr, { once: true });
+
                     if (typeof key === 'string' && key.startsWith('MSI_')) {
                       msiThumbRefs.set(key, thumb);
-                      // 元 MSI PNG が load されたら着色+回転パイプラインを起動
+                      // 元 MSI PNG が load されたら着色パイプラインを起動（回転は CSS で行う）
                       const runOnce = () => {
                           thumb.removeEventListener('load', runOnce);
                           renderMsiThumbnail(key, thumb);
@@ -811,8 +840,9 @@ function loadAllImages() {
                           thumb.addEventListener('load', runOnce);
                       }
                     }
-                    slotWrapper.appendChild(thumb);
-                    
+                    rotBox.appendChild(thumb);
+                    slotWrapper.appendChild(rotBox);
+
                     const titleOverlay = document.createElement('div');
                     titleOverlay.className = 'w-full px-2 py-1 bg-gray-700 text-white text-xs text-center rounded flex items-center justify-center gap-1';
                     const msiCol = getMsiColor(key);
@@ -834,7 +864,8 @@ function loadAllImages() {
                     else if (index >= 1 && index <= 3) placeholderText = `IF Stain ${index}`;
                     else if (index >= 4 && index <= 7) placeholderText = `MSI Image ${index - 3}`;
                     placeholder.innerHTML = `<span class="leading-tight">${placeholderText}<br>(No Image)</span>`;
-                    slotWrapper.appendChild(placeholder);
+                    rotBox.appendChild(placeholder);
+                    slotWrapper.appendChild(rotBox);
                 }
                 container.appendChild(slotWrapper);
             });
