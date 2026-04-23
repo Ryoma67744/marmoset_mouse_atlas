@@ -312,7 +312,6 @@
         });
 
         async function initializeViewer() {
-            loadUserRois();
             populateRoiList();
             await loadAllImages();
             populateThumbnails();
@@ -892,7 +891,6 @@ function loadAllImages() {
                 showChk.addEventListener('click', (e) => e.stopPropagation());
                 showChk.addEventListener('change', () => {
                     showFlags[key] = showChk.checked;
-                    if (isUser) persistUserRois();
                     const activeKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
                     drawAllRois(activeKey);
                     displayGraphForRoi(activeKey);
@@ -918,7 +916,6 @@ function loadAllImages() {
                         const next = (prompt('ROI 名を入力してください', current) || '').trim();
                         if (!next || next === current) return;
                         atlasData.roi.roi_names[key] = next;
-                        persistUserRois();
                         populateRoiList();
                         const prev = document.querySelector(`.roi-item[data-roi-key="${key}"]`);
                         if (prev) {
@@ -1209,7 +1206,7 @@ function loadAllImages() {
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
 
-            const margin = { top: 45, right: 30, bottom: 70, left: 75 };
+            const margin = { top: 45, right: 30, bottom: 100, left: 75 };
             const pw = W - margin.left - margin.right;
             const ph = H - margin.top - margin.bottom;
 
@@ -1274,13 +1271,18 @@ function loadAllImages() {
                 ctx.lineWidth = isHighlight ? 2.5 : 1;
                 ctx.strokeRect(x, y, bw, barH);
 
-                // X軸ラベル（ROI名）
+                // X軸ラベル（ROI名） - 45°回転で長名でも隣と重ならないように描画
                 const cx = x + bw / 2;
                 ctx.fillStyle = isHighlight ? '#000' : '#444';
                 ctx.font = isHighlight ? 'bold 14px sans-serif' : '13px sans-serif';
-                ctx.textAlign = 'center';
                 const name = roiNames[rk] || rk;
-                ctx.fillText(name, cx, H - margin.bottom + 18);
+                ctx.save();
+                ctx.translate(cx, H - margin.bottom + 10);
+                ctx.rotate(-Math.PI / 4);
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(name, 0, 0);
+                ctx.restore();
             }
 
             // Y軸ラベル
@@ -1310,7 +1312,7 @@ function loadAllImages() {
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
 
-            const margin = { top: 50, right: 30, bottom: 80, left: 75 };
+            const margin = { top: 50, right: 30, bottom: 110, left: 75 };
             const pw = W - margin.left - margin.right;
             const ph = H - margin.top - margin.bottom;
 
@@ -1372,13 +1374,18 @@ function loadAllImages() {
                     ctx.strokeRect(bx, by, barW, barH);
                 }
 
-                // X軸ラベル
+                // X軸ラベル - 45°回転で長名でも隣と重ならないように描画
                 const cx = margin.left + ri * groupW + groupW / 2;
                 const name = roiNames[rk] || rk;
                 ctx.fillStyle = isHighlight ? '#000' : '#444';
                 ctx.font = isHighlight ? 'bold 14px sans-serif' : '13px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText(name, cx, H - margin.bottom + 18);
+                ctx.save();
+                ctx.translate(cx, H - margin.bottom + 10);
+                ctx.rotate(-Math.PI / 4);
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(name, 0, 0);
+                ctx.restore();
             }
 
             // Y軸ラベル
@@ -1444,56 +1451,6 @@ function loadAllImages() {
         // =======================================================================
         // ユーザー描画 ROI 機能
         // =======================================================================
-
-        function userRoiStorageKey() {
-            const id = (atlasData && atlasData.meta && atlasData.meta.dataset_id) || 'default';
-            return `marmoset_atlas_user_rois_${id}`;
-        }
-
-        function persistUserRois() {
-            try {
-                const out = {};
-                const items = (atlasData.roi && atlasData.roi.roi_items) || {};
-                const names = (atlasData.roi && atlasData.roi.roi_names) || {};
-                const palette = (atlasData.roi && atlasData.roi.palette) || {};
-                const showFlags = (atlasData.roi && atlasData.roi.roi_show_flags) || {};
-                for (const key of Object.keys(items)) {
-                    if (!key.startsWith(USER_ROI_PREFIX)) continue;
-                    out[key] = {
-                        poly_msi: (items[key][0] && items[key][0].poly_msi) || [],
-                        name: names[key] || key,
-                        rgba: palette[key] || [128,128,128,255],
-                        show: showFlags[key] !== false,
-                    };
-                }
-                localStorage.setItem(userRoiStorageKey(), JSON.stringify(out));
-            } catch (e) {
-                console.warn('[persistUserRois] failed:', e);
-            }
-        }
-
-        function loadUserRois() {
-            try {
-                const raw = localStorage.getItem(userRoiStorageKey());
-                if (!raw) return;
-                const data = JSON.parse(raw);
-                if (!data || typeof data !== 'object') return;
-                atlasData.roi = atlasData.roi || {};
-                atlasData.roi.roi_items = atlasData.roi.roi_items || {};
-                atlasData.roi.roi_names = atlasData.roi.roi_names || {};
-                atlasData.roi.palette   = atlasData.roi.palette   || {};
-                atlasData.roi.roi_show_flags = atlasData.roi.roi_show_flags || {};
-                for (const [key, rec] of Object.entries(data)) {
-                    if (!rec || !Array.isArray(rec.poly_msi)) continue;
-                    atlasData.roi.roi_items[key] = [{ poly_msi: rec.poly_msi }];
-                    atlasData.roi.roi_names[key] = rec.name || key;
-                    atlasData.roi.palette[key]   = rec.rgba || [128,128,128,255];
-                    atlasData.roi.roi_show_flags[key] = rec.show !== false;
-                }
-            } catch (e) {
-                console.warn('[loadUserRois] failed:', e);
-            }
-        }
 
         function pickUnusedPaletteColor() {
             const palette = (atlasData.roi && atlasData.roi.palette) || {};
@@ -1586,10 +1543,23 @@ function loadAllImages() {
             }
         }
 
+        function nextUserRoiNumber() {
+            const items = (atlasData.roi && atlasData.roi.roi_items) || {};
+            const names = (atlasData.roi && atlasData.roi.roi_names) || {};
+            const re = /^User ROI (\d+)$/;
+            let maxN = 0;
+            for (const k of Object.keys(items)) {
+                if (!k.startsWith(USER_ROI_PREFIX)) continue;
+                const m = (names[k] || '').match(re);
+                if (m) maxN = Math.max(maxN, parseInt(m[1], 10));
+            }
+            return maxN + 1;
+        }
+
         function finalizeDrawing() {
             const verts = drawingVertices.slice();
             if (verts.length < 3) { toggleDrawingMode(false); return; }
-            const name = (prompt('新しい ROI の名前を入力してください', `User ROI ${new Date().toLocaleTimeString()}`) || '').trim();
+            const name = (prompt('新しい ROI の名前を入力してください', `User ROI ${nextUserRoiNumber()}`) || '').trim();
             if (!name) { toggleDrawingMode(false); return; }
             const newKey = `${USER_ROI_PREFIX}${Date.now()}`;
             const rgba = pickUnusedPaletteColor();
@@ -1602,7 +1572,6 @@ function loadAllImages() {
             atlasData.roi.roi_names[newKey] = name;
             atlasData.roi.palette[newKey]   = rgba;
             atlasData.roi.roi_show_flags[newKey] = true;
-            persistUserRois();
             toggleDrawingMode(false);
             populateRoiList();
             // 新規作成した ROI を active 扱いにしてリストのハイライトも合わせる
@@ -1625,7 +1594,6 @@ function loadAllImages() {
                 delete atlasData.roi.palette[key];
                 if (atlasData.roi.roi_show_flags) delete atlasData.roi.roi_show_flags[key];
             }
-            persistUserRois();
             populateRoiList();
             // 削除した ROI が active なら残った先頭 ROI に切替、そうでなければ現在の active を維持
             const remaining = Object.keys((atlasData.roi && atlasData.roi.roi_items) || {});
@@ -2104,7 +2072,7 @@ function loadAllImages() {
     })();</script>
 
     <div id="buildTag" style="position:fixed;bottom:4px;right:6px;font-size:10px;color:#94a3b8;pointer-events:none;z-index:50;"></div>
-    <script>document.getElementById('buildTag').textContent = 'v:bffd263+cachebust';</script>
+    <script>document.getElementById('buildTag').textContent = 'v:labelfix';</script>
 
 </body>
 </html>
