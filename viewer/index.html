@@ -863,11 +863,15 @@ function loadAllImages() {
             const roiItems = (atlasData.roi && atlasData.roi.roi_items) ? atlasData.roi.roi_items : {};
             const roiNames = (atlasData.roi && atlasData.roi.roi_names) ? atlasData.roi.roi_names : {};
             const palette  = (atlasData.roi && atlasData.roi.palette)   ? atlasData.roi.palette   : {};
+            atlasData.roi = atlasData.roi || {};
+            atlasData.roi.roi_show_flags = atlasData.roi.roi_show_flags || {};
+            const showFlags = atlasData.roi.roi_show_flags;
 
             Object.keys(roiItems).forEach(key => {
                 const name = roiNames[key] || key;
                 const rgba = palette[key]  || [128,128,128,255];
                 const isUser = typeof key === 'string' && key.startsWith(USER_ROI_PREFIX);
+                if (showFlags[key] === undefined) showFlags[key] = true;
 
                 const el = document.createElement('div');
                 el.className = 'roi-item p-2 rounded-md flex items-center justify-between border-l-4 border-transparent';
@@ -875,22 +879,66 @@ function loadAllImages() {
 
                 const label = document.createElement('div');
                 label.className = 'flex items-center min-w-0 flex-1';
-                label.innerHTML = `<span class="color-swatch" style="background-color: rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3]/255})"></span><span class="truncate">${name}</span>`;
+
+                // 表示 ON/OFF チェックボックス(全 ROI 共通)
+                const showChk = document.createElement('input');
+                showChk.type = 'checkbox';
+                showChk.className = 'mr-1 accent-blue-600 cursor-pointer flex-none';
+                showChk.checked = showFlags[key] !== false;
+                showChk.title = '表示 ON/OFF';
+                showChk.addEventListener('click', (e) => e.stopPropagation());
+                showChk.addEventListener('change', () => {
+                    showFlags[key] = showChk.checked;
+                    if (isUser) persistUserRois();
+                    const activeKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
+                    drawAllRois(activeKey);
+                    displayGraphForRoi(activeKey);
+                });
+                label.appendChild(showChk);
+
+                const swatch = document.createElement('span');
+                swatch.className = 'color-swatch';
+                swatch.style.backgroundColor = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3]/255})`;
+                label.appendChild(swatch);
+
+                const nameSpan = document.createElement('span');
+                nameSpan.className = 'truncate';
+                nameSpan.textContent = name;
+                if (isUser) {
+                    // user ROI だけ名前クリックで改名できる
+                    nameSpan.classList.add('cursor-pointer', 'hover:underline');
+                    nameSpan.title = 'クリックで名前を変更';
+                    nameSpan.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const current = atlasData.roi.roi_names[key] || key;
+                        const next = (prompt('ROI 名を入力してください', current) || '').trim();
+                        if (!next || next === current) return;
+                        atlasData.roi.roi_names[key] = next;
+                        persistUserRois();
+                        populateRoiList();
+                        const prev = document.querySelector(`.roi-item[data-roi-key="${key}"]`);
+                        if (prev) {
+                            document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
+                            prev.classList.add('active');
+                        }
+                        drawAllRois(key);
+                        displayGraphForRoi(key);
+                    });
+                }
+                label.appendChild(nameSpan);
+
                 el.appendChild(label);
 
                 if (isUser) {
                     const delBtn = document.createElement('button');
                     delBtn.type = 'button';
-                    delBtn.className = 'ml-2 text-xs text-gray-400 hover:text-red-600 opacity-0 group-hover:opacity-100';
+                    delBtn.className = 'ml-2 text-xs text-gray-400 hover:text-red-600';
                     delBtn.title = 'Delete user ROI';
                     delBtn.textContent = '✕';
                     delBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
                         deleteUserRoi(key);
                     });
-                    el.classList.add('group');
-                    // 常時表示にして見つけやすく
-                    delBtn.classList.remove('opacity-0', 'group-hover:opacity-100');
                     el.appendChild(delBtn);
                 }
 
@@ -903,9 +951,10 @@ function loadAllImages() {
                 roiList.appendChild(el);
             });
 
-            // ROI表示トグル
+            // ROI表示トグル(全体マスター)
             const roiToggle = document.getElementById('roi-toggle');
-            if (roiToggle) {
+            if (roiToggle && !roiToggle.dataset.bound) {
+                roiToggle.dataset.bound = '1';
                 roiToggle.addEventListener('change', () => {
                     const activeRoi = document.querySelector('.roi-item.active');
                     drawAllRois(activeRoi ? activeRoi.dataset.roiKey : null);
@@ -935,6 +984,7 @@ function loadAllImages() {
 
             const roiItems = (atlasData.roi && atlasData.roi.roi_items) ? atlasData.roi.roi_items : {};
             const palette = (atlasData.roi && atlasData.roi.palette) ? atlasData.roi.palette : {};
+            const showFlags = (atlasData.roi && atlasData.roi.roi_show_flags) || {};
 
             // MSI座標(縦長)をCCW90°回転して横長キャンバスにマッピング
             // MSI(mx,my) → portrait(mx*sX, my*sY) → CCW90°→ landscape(my*sY2, canvasH - mx*sX2)
@@ -947,6 +997,7 @@ function loadAllImages() {
             const pxPerCss = roiCanvas.width / Math.max(1, cssW);
 
             Object.keys(roiItems).forEach(roiKey => {
+                if (showFlags[roiKey] === false) return;
                 const isHighlight = roiKey === highlightKey;
                 const rgba = palette[roiKey];
                 if (!roiItems[roiKey] || !roiItems[roiKey][0] || !roiItems[roiKey][0].poly_msi || !rgba) return;
@@ -1092,13 +1143,27 @@ function loadAllImages() {
             }
             if (graphImage) graphImage.style.display = 'none';
 
-            // 全ROIのキーとパレットを取得
+            // 全ROIのキーとパレットを取得(表示 OFF の ROI はグラフから除外)
             const roiItems = atlasData.roi?.roi_items || {};
             const roiNames = atlasData.roi?.roi_names || {};
             const palette = atlasData.roi?.palette || {};
-            const roiKeys = Object.keys(roiItems);
+            const showFlags = atlasData.roi?.roi_show_flags || {};
+            const roiKeys = Object.keys(roiItems).filter(k => showFlags[k] !== false);
 
-            if (roiKeys.length === 0) return;
+            if (roiKeys.length === 0) {
+                // 表示中 ROI が無いときはグラフを空にリセット
+                const ctx = graphCanvas.getContext('2d');
+                graphCanvas.width = graphCanvas.clientWidth || 400;
+                graphCanvas.height = graphCanvas.clientHeight || 200;
+                ctx.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
+                ctx.fillStyle = '#fafafa';
+                ctx.fillRect(0, 0, graphCanvas.width, graphCanvas.height);
+                ctx.fillStyle = '#888';
+                ctx.font = '13px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('表示中の ROI がありません', graphCanvas.width / 2, graphCanvas.height / 2);
+                return;
+            }
 
             // 選択されたチャネルを収集（重複除外）
             const channels = [select1Val];
@@ -1378,12 +1443,14 @@ function loadAllImages() {
                 const items = (atlasData.roi && atlasData.roi.roi_items) || {};
                 const names = (atlasData.roi && atlasData.roi.roi_names) || {};
                 const palette = (atlasData.roi && atlasData.roi.palette) || {};
+                const showFlags = (atlasData.roi && atlasData.roi.roi_show_flags) || {};
                 for (const key of Object.keys(items)) {
                     if (!key.startsWith(USER_ROI_PREFIX)) continue;
                     out[key] = {
                         poly_msi: (items[key][0] && items[key][0].poly_msi) || [],
                         name: names[key] || key,
                         rgba: palette[key] || [128,128,128,255],
+                        show: showFlags[key] !== false,
                     };
                 }
                 localStorage.setItem(userRoiStorageKey(), JSON.stringify(out));
@@ -1408,7 +1475,7 @@ function loadAllImages() {
                     atlasData.roi.roi_items[key] = [{ poly_msi: rec.poly_msi }];
                     atlasData.roi.roi_names[key] = rec.name || key;
                     atlasData.roi.palette[key]   = rec.rgba || [128,128,128,255];
-                    atlasData.roi.roi_show_flags[key] = true;
+                    atlasData.roi.roi_show_flags[key] = rec.show !== false;
                 }
             } catch (e) {
                 console.warn('[loadUserRois] failed:', e);
@@ -1418,8 +1485,17 @@ function loadAllImages() {
         function pickUnusedPaletteColor() {
             const palette = (atlasData.roi && atlasData.roi.palette) || {};
             const items   = (atlasData.roi && atlasData.roi.roi_items) || {};
+            // 既に ROI 本体が存在するキーに割り当てられている RGBA を「使用済み」として集める。
+            // これにより、atlas.json に残った空の palette 枠(Cyan 等)を 1 つずつ順番に消費できる。
+            const usedRgba = new Set();
+            for (const key of Object.keys(items)) {
+                const rgba = palette[key];
+                if (Array.isArray(rgba)) usedRgba.add(rgba.join(','));
+            }
             for (const [name, rgba] of Object.entries(palette)) {
-                if (!items[name] || !items[name].length) return rgba.slice();
+                if (!Array.isArray(rgba)) continue;
+                if (usedRgba.has(rgba.join(','))) continue;
+                return rgba.slice();
             }
             // フォールバック: ランダム彩度高め
             const h = Math.floor(Math.random() * 360);
@@ -1516,12 +1592,20 @@ function loadAllImages() {
             persistUserRois();
             toggleDrawingMode(false);
             populateRoiList();
+            // 新規作成した ROI を active 扱いにしてリストのハイライトも合わせる
+            const newItem = document.querySelector(`.roi-item[data-roi-key="${newKey}"]`);
+            if (newItem) {
+                document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
+                newItem.classList.add('active');
+            }
             drawAllRois(newKey);
+            displayGraphForRoi(newKey);
         }
 
         function deleteUserRoi(key) {
             if (!key || !key.startsWith(USER_ROI_PREFIX)) return;
             if (!confirm('この ROI を削除しますか?')) return;
+            const wasActive = document.querySelector(`.roi-item.active[data-roi-key="${key}"]`) !== null;
             if (atlasData.roi) {
                 delete atlasData.roi.roi_items[key];
                 delete atlasData.roi.roi_names[key];
@@ -1530,7 +1614,18 @@ function loadAllImages() {
             }
             persistUserRois();
             populateRoiList();
-            drawAllRois();
+            // 削除した ROI が active なら残った先頭 ROI に切替、そうでなければ現在の active を維持
+            const remaining = Object.keys((atlasData.roi && atlasData.roi.roi_items) || {});
+            let nextKey = null;
+            if (wasActive && remaining.length > 0) {
+                nextKey = remaining[0];
+                const nextItem = document.querySelector(`.roi-item[data-roi-key="${nextKey}"]`);
+                if (nextItem) nextItem.classList.add('active');
+            } else {
+                nextKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
+            }
+            drawAllRois(nextKey);
+            displayGraphForRoi(nextKey);
         }
 
         function setupDrawingHandlers() {
@@ -1577,34 +1672,74 @@ function loadAllImages() {
         // ZIP ダウンロード機能
         // =======================================================================
 
-        function exportUserRoiPixelsCsv() {
-            const roiItems = (atlasData.roi && atlasData.roi.roi_items) || {};
-            const roiNames = (atlasData.roi && atlasData.roi.roi_names) || {};
-            const userKeys = Object.keys(roiItems).filter(k => k.startsWith(USER_ROI_PREFIX));
-            if (!userKeys.length) return null;
-            const msiRef = getMsiRefSize();
-            const W = msiRef.w, H = msiRef.h;
-            const header = ['Image_X', 'Image_Y', ...userKeys.map(k => (roiNames[k] || k).replace(/,/g, ' '))];
-            const lines = [header.join(',')];
-            for (let y = 1; y <= H; y++) {
-                for (let x = 1; x <= W; x++) {
-                    const row = [x, y];
-                    for (const k of userKeys) {
-                        const poly = roiItems[k][0]?.poly_msi || [];
-                        // poly_msi 座標は MSI 1-origin 浮動小数。ピクセル中心判定
-                        const inside = pointInPolygon(x, y, poly) ? 1 : 0;
-                        row.push(inside);
-                    }
-                    lines.push(row.join(','));
-                }
-            }
-            return lines.join('\n');
-        }
-
         async function fetchAsBlob(url) {
             const res = await fetch(url);
             if (!res.ok) throw new Error(`fetch failed: ${res.status} ${url}`);
             return await res.blob();
+        }
+
+        // MSI_Data シートに user ROI 列を追加した xlsx ArrayBuffer を返す。
+        // 失敗時は null を返し、呼び出し側でオリジナル xlsx をそのまま使う。
+        async function buildMsiXlsxWithUserRois(url) {
+            if (typeof XLSX === 'undefined') return null;
+            const roiItems = (atlasData.roi && atlasData.roi.roi_items) || {};
+            const roiNames = (atlasData.roi && atlasData.roi.roi_names) || {};
+            const userKeys = Object.keys(roiItems).filter(k => k.startsWith(USER_ROI_PREFIX));
+            if (!userKeys.length) return null;
+
+            const res = await fetch(url);
+            if (!res.ok) throw new Error(`msi xlsx fetch failed: ${res.status}`);
+            const buf = await res.arrayBuffer();
+            const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
+            const sheetName = 'MSI_Data';
+            const sheet = wb.Sheets[sheetName];
+            if (!sheet || !sheet['!ref']) return null;
+
+            // 既存のヘッダ行(4 行目)と Image_X/Image_Y の列位置を特定する
+            // 期待レイアウト: H=Image_Y, I=Image_X, J=Tissue_ROI, K=Region_ROI(header row = 行 4)
+            const headerRow0 = 3; // 0-based(=行 4)
+            const origRange = XLSX.utils.decode_range(sheet['!ref']);
+            let xCol = -1, yCol = -1, lastHeaderCol = -1;
+            for (let c = origRange.s.c; c <= origRange.e.c; c++) {
+                const addr = XLSX.utils.encode_cell({ r: headerRow0, c });
+                const cell = sheet[addr];
+                if (!cell || cell.v === null || cell.v === undefined) continue;
+                const text = String(cell.v).trim();
+                if (text) lastHeaderCol = c;
+                if (text === 'Image_X') xCol = c;
+                else if (text === 'Image_Y') yCol = c;
+            }
+            if (xCol < 0 || yCol < 0) return null;
+
+            const firstNewCol = lastHeaderCol + 1;
+            const dataStart0 = headerRow0 + 1; // 行 5
+            const dataEnd0 = origRange.e.r;
+
+            // 各 user ROI のヘッダと 0/1 セルを書き込む
+            userKeys.forEach((key, idx) => {
+                const col = firstNewCol + idx;
+                const name = (roiNames[key] || key).replace(/[\r\n\t]/g, ' ');
+                const poly = (roiItems[key][0] && roiItems[key][0].poly_msi) || [];
+                sheet[XLSX.utils.encode_cell({ r: headerRow0, c: col })] = { t: 's', v: name };
+                for (let r = dataStart0; r <= dataEnd0; r++) {
+                    const xCell = sheet[XLSX.utils.encode_cell({ r, c: xCol })];
+                    const yCell = sheet[XLSX.utils.encode_cell({ r, c: yCol })];
+                    if (!xCell || !yCell) continue;
+                    const x = Number(xCell.v), y = Number(yCell.v);
+                    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                    const inside = pointInPolygon(x, y, poly) ? 1 : 0;
+                    sheet[XLSX.utils.encode_cell({ r, c: col })] = { t: 'n', v: inside };
+                }
+            });
+
+            // 範囲を更新
+            const newRange = {
+                s: { r: origRange.s.r, c: origRange.s.c },
+                e: { r: origRange.e.r, c: firstNewCol + userKeys.length - 1 },
+            };
+            sheet['!ref'] = XLSX.utils.encode_range(newRange);
+
+            return XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
         }
 
         async function downloadBundle() {
@@ -1633,16 +1768,22 @@ function loadAllImages() {
                     if (!relPath) continue;
                     try {
                         const url = /^https?:|^data:|^\.\.\//.test(relPath) ? relPath : baseDir + encodeURI(relPath);
+                        if (label === 'source_msi') {
+                            // MSI xlsx は user ROI 列を追加した版を書き出す(失敗時は生ファイル)
+                            let injected = null;
+                            try { injected = await buildMsiXlsxWithUserRois(url); }
+                            catch (e) { console.warn('[downloadBundle] xlsx inject failed:', e); }
+                            if (injected) {
+                                zip.file(relPath, injected);
+                                continue;
+                            }
+                        }
                         const blob = await fetchAsBlob(url);
                         zip.file(relPath, blob);
                     } catch (e) {
                         console.warn(`[downloadBundle] skip ${label}:`, e);
                     }
                 }
-
-                // 3. ユーザー ROI の各ピクセルラベル CSV
-                const csv = exportUserRoiPixelsCsv();
-                if (csv) zip.file('data/user_roi_pixels.csv', csv);
 
                 const blob = await zip.generateAsync({ type: 'blob' });
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
