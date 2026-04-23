@@ -3,6 +3,9 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <title>Marmoset Brain Atlas Viewer</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -885,7 +888,7 @@ function loadAllImages() {
                 showChk.type = 'checkbox';
                 showChk.className = 'mr-1 accent-blue-600 cursor-pointer flex-none';
                 showChk.checked = showFlags[key] !== false;
-                showChk.title = '表示 ON/OFF';
+                showChk.title = '表示 ON/OFF（クリックでトグル）';
                 showChk.addEventListener('click', (e) => e.stopPropagation());
                 showChk.addEventListener('change', () => {
                     showFlags[key] = showChk.checked;
@@ -904,6 +907,7 @@ function loadAllImages() {
                 const nameSpan = document.createElement('span');
                 nameSpan.className = 'truncate';
                 nameSpan.textContent = name;
+                let pencil = null;
                 if (isUser) {
                     // user ROI だけ名前クリックで改名できる
                     nameSpan.classList.add('cursor-pointer', 'hover:underline');
@@ -924,8 +928,17 @@ function loadAllImages() {
                         drawAllRois(key);
                         displayGraphForRoi(key);
                     });
+                    pencil = document.createElement('span');
+                    pencil.textContent = ' ✎';
+                    pencil.className = 'ml-1 text-slate-400 hover:text-slate-700 cursor-pointer flex-none';
+                    pencil.title = 'クリックで名前を変更';
+                    pencil.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        nameSpan.click();
+                    });
                 }
                 label.appendChild(nameSpan);
+                if (pencil) label.appendChild(pencil);
 
                 el.appendChild(label);
 
@@ -2090,6 +2103,8 @@ function loadAllImages() {
       }
     })();</script>
 
+    <div id="buildTag" style="position:fixed;bottom:4px;right:6px;font-size:10px;color:#94a3b8;pointer-events:none;z-index:50;"></div>
+    <script>document.getElementById('buildTag').textContent = 'v:bffd263+cachebust';</script>
 
 </body>
 </html>
