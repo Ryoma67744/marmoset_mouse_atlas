@@ -242,8 +242,8 @@
 
         async function initializeViewer() {
             populateRoiList();
-            populateThumbnails();
             await loadAllImages();
+            populateThumbnails();
             await analyzeAndInitializeSettings();
             setupCheckboxDropdown();
             setupGraphSelector();
@@ -479,13 +479,18 @@ function loadAllImages() {
             document.addEventListener('click', (e) => { if (!container.contains(e.target)) menu.classList.add('hidden'); });
 
             if (imageKeys.length > 0) {
-                const firstKey = imageKeys.find(k => atlasData.images[k]);
+                // MSI 座標系をキャンバスの基準にする。MSI が無ければ HE/IF → なんでも の順でフォールバック
+                const msiKey0 = imageKeys.find(k => /^MSI_/i.test(k) && atlasData.images[k]);
+                const heKey0  = imageKeys.find(k => /HE_STAIN|IF_STAIN/i.test(k) && atlasData.images[k]);
+                const firstKey = msiKey0 || heKey0 || imageKeys.find(k => atlasData.images[k]);
                 if (firstKey) {
                     const firstImage = imageSources[firstKey];
+                    const refIsMsi = !!msiKey0 && firstKey === msiKey0;
                     const setCanvasSize = () => {
-                        const w = firstImage.naturalWidth;
-                        const h = firstImage.naturalHeight;
-                        // Canvas内部解像度を画像サイズに設定
+                        let w = firstImage.naturalWidth;
+                        let h = firstImage.naturalHeight;
+                        // MSI を基準に採る場合は CCW90° 回転後のランドスケープ寸法をキャンバス内部解像度に
+                        if (refIsMsi) { const tmp = w; w = h; h = tmp; }
                         [displayCanvas, roiCanvas].forEach(c => { c.width = w; c.height = h; });
 
                         // コンテナにフィットしつつアスペクト比を完全に維持するCSS寸法を計算
@@ -595,19 +600,43 @@ function loadAllImages() {
                 displayCtx.globalAlpha = settings.opacity;
                 // MSI画像は加算合成（lighter）で重ねる → 複数MSIの色が混ざって見える
                 const isMsiLayer = /^MSI/i.test(key);
+                const isHeLike   = /HE_STAIN|IF_STAIN/i.test(key);
                 displayCtx.globalCompositeOperation = isMsiLayer ? 'lighter' : 'source-over';
 
-                const isLandscape = sourceImg.naturalWidth > sourceImg.naturalHeight;
-                if (isLandscape) {
-                    // 横長画像（HE/IF染色）→ そのまま描画（キャンバスも横長）
-                    displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
-                } else {
-                    // 縦長画像（MSI等）→ CCW90°回転して横長キャンバスにフィット
+                const T = atlasData.world_coords && atlasData.world_coords.T_he_to_msi;
+                const isPortrait = sourceImg.naturalHeight > sourceImg.naturalWidth;
+                const msiRef = getMsiRefSize();
+
+                if (T && isHeLike && isPortrait && msiRef && msiRef.w > 0 && msiRef.h > 0) {
+                    // HE/IF を T_he_to_msi で MSI 座標系へ変換してから CCW90° でキャンバスに描画
+                    displayCtx.save();
+                    displayCtx.translate(0, displayCanvas.height);
+                    displayCtx.rotate(-Math.PI / 2);
+                    // 現在の local frame は MSI ピクセル空間。キャンバス内部解像度に合わせてスケール
+                    displayCtx.scale(displayCanvas.height / msiRef.w, displayCanvas.width / msiRef.h);
+                    // T_he_to_msi を適用:local frame が HE ピクセル空間になる
+                    displayCtx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]);
+                    displayCtx.drawImage(tempCanvas, 0, 0);
+                    displayCtx.restore();
+                } else if (isMsiLayer) {
+                    // MSI portrait → CCW90° 回転でキャンバス全面にフィット
                     displayCtx.save();
                     displayCtx.translate(0, displayCanvas.height);
                     displayCtx.rotate(-Math.PI / 2);
                     displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.height, displayCanvas.width);
                     displayCtx.restore();
+                } else {
+                    // フォールバック(test1 互換): 従来の landscape/portrait 自動判定
+                    const isLandscape = sourceImg.naturalWidth > sourceImg.naturalHeight;
+                    if (isLandscape) {
+                        displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
+                    } else {
+                        displayCtx.save();
+                        displayCtx.translate(0, displayCanvas.height);
+                        displayCtx.rotate(-Math.PI / 2);
+                        displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.height, displayCanvas.width);
+                        displayCtx.restore();
+                    }
                 }
             }
 
