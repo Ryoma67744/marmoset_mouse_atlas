@@ -69,15 +69,16 @@
             transform-origin: 50% 50%;
             transform: rotate(-90deg);
         }
-        /* サムネイルを Image Viewer と同じ向き (ソースから −180°) で見せるためのラッパ。
-           180° 回転は aspect を保存するので --rot-ar はソースの iw/ih をそのまま使う。 */
+        /* サムネイルを Image Viewer と同じ向きで見せるラッパ。
+           MSI サムネだけ −180° 回転し、HE/IF は T_he_to_msi が画像内部で
+           既に 180° を吸収しているため 0° のまま表示する。 */
         .thumb-rot-box {
             position: relative;
             width: 100%;
             aspect-ratio: var(--rot-ar, 1 / 1);
+            max-height: 170px;
             overflow: hidden;
         }
-        /* 実画像のみ −180° 回転。placeholder (.thumbnail div) は水平のまま残す。 */
         .thumb-rot-box > img {
             position: absolute;
             inset: 0;
@@ -85,6 +86,8 @@
             height: 100%;
             object-fit: contain;
             transform-origin: 50% 50%;
+        }
+        .thumb-rot-box > img.msi-thumb {
             transform: rotate(-180deg);
         }
         .thumb-rot-box > .thumbnail {
@@ -205,7 +208,7 @@
                           <path stroke-linecap="round" stroke-linejoin="round" d="m4.5 15.75 7.5-7.5 7.5 7.5" />
                         </svg>
                     </div>
-                    <div id="thumbnail-container" class="grid grid-cols-4 gap-0.5" style="grid-auto-rows: minmax(0, 1fr);">
+                    <div id="thumbnail-container" class="flex flex-row flex-wrap items-start gap-0.5">
                         <p class="text-gray-500 text-xs">No images found.</p>
                     </div>
                 </div>
@@ -798,84 +801,82 @@ function loadAllImages() {
             const rest = rawMsi.filter(k => !orderSet.has(k)).sort();
             const msiKeys = ordered.concat(rest);
 
-            const slots = [
+            // 実画像のみ残す。 "No Image" placeholder はユーザー要件により描画しない。
+            const rawSlots = [
                 heKeys[0] || null, ifKeys[0] || null, ifKeys[1] || null, ifKeys[2] || null,
                 msiKeys[0] || null, msiKeys[1] || null, msiKeys[2] || null, msiKeys[3] || null
             ];
+            const slots = rawSlots.filter(key => key && atlasData.images[key]);
+
+            if (slots.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-xs">No images found.</p>';
+                return;
+            }
+
+            // 横 1 列に収まるよう、セル幅をおおよそ均等割りする (flex-basis を計算)。
+            // 実画像数が少ないほど 1 枚が大きくなる。max-height は .thumb-rot-box 側で 170px に抑える。
+            const cellBasis = `calc(${(100 / slots.length).toFixed(4)}% - 4px)`;
 
             slots.forEach((key, index) => {
                 const slotWrapper = document.createElement('div');
-                slotWrapper.className = 'flex flex-col group items-stretch overflow-visible relative w-full';
+                slotWrapper.className = 'flex flex-col group items-stretch overflow-visible relative';
+                slotWrapper.style.flex = `0 0 ${cellBasis}`;
+                slotWrapper.style.maxWidth = cellBasis;
                 slotWrapper.dataset.slotNumber = index + 1;
 
-                // 回転ラッパ。内部の画像は CSS で −90° 回転する。
-                // 回転後 bbox がセル幅に揃うよう、--rot-ar には元画像の ih/iw（転置アスペクト比）を与える。
+                // 回転ラッパ。MSI だけ CSS で −180° 回転。aspect は --rot-ar = iw/ih。
                 const rotBox = document.createElement('div');
                 rotBox.className = 'thumb-rot-box';
 
-                if (key && atlasData.images[key]) {
-                    const thumb = document.createElement('img');
-                    const src = atlasData.images[key];
-                    thumb.src = src;
-                    thumb.alt = formatDisplayName(key);
-                    thumb.className = 'thumbnail';
-                    thumb.dataset.key = key;
-                    thumb.onclick = () => setActiveImage(key);
+                const thumb = document.createElement('img');
+                const src = atlasData.images[key];
+                thumb.src = src;
+                thumb.alt = formatDisplayName(key);
+                thumb.className = 'thumbnail';
+                thumb.dataset.key = key;
+                thumb.onclick = () => setActiveImage(key);
 
-                    if (typeof key === 'string' && (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN'))) {
-                      thumb.classList.add('heif-thumb');
-                    }
-
-                    // --rot-ar はソースの aspect をそのまま渡す (−180° 回転は aspect 保存)
-                    const applyRotAr = () => {
-                        const iw = thumb.naturalWidth;
-                        const ih = thumb.naturalHeight;
-                        if (!iw || !ih) return;
-                        rotBox.style.setProperty('--rot-ar', `${iw} / ${ih}`);
-                    };
-                    if (thumb.complete && thumb.naturalWidth > 0) applyRotAr();
-                    else thumb.addEventListener('load', applyRotAr, { once: true });
-
-                    if (typeof key === 'string' && key.startsWith('MSI_')) {
-                      msiThumbRefs.set(key, thumb);
-                      // 元 MSI PNG が load されたら着色パイプラインを起動（回転は CSS で行う）
-                      const runOnce = () => {
-                          thumb.removeEventListener('load', runOnce);
-                          renderMsiThumbnail(key, thumb);
-                      };
-                      if (thumb.complete && thumb.naturalWidth > 0) {
-                          renderMsiThumbnail(key, thumb);
-                      } else {
-                          thumb.addEventListener('load', runOnce);
-                      }
-                    }
-                    rotBox.appendChild(thumb);
-                    slotWrapper.appendChild(rotBox);
-
-                    const titleOverlay = document.createElement('div');
-                    titleOverlay.className = 'w-full px-2 py-1 bg-gray-700 text-white text-xs text-center rounded flex items-center justify-center gap-1';
-                    const msiCol = getMsiColor(key);
-                    if (msiCol) {
-                        const dot = document.createElement('span');
-                        dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:rgb(${msiCol.join(',')});flex-shrink:0;`;
-                        titleOverlay.appendChild(dot);
-                    }
-                    const titleText = document.createElement('span');
-                    titleText.textContent = formatDisplayName(key);
-                    titleOverlay.appendChild(titleText);
-                    slotWrapper.appendChild(titleOverlay);
-
-                } else {
-                    const placeholder = document.createElement('div');
-                    placeholder.className = 'thumbnail bg-gray-200 flex items-center justify-center text-center text-gray-500 text-sm border-2 border-dashed border-gray-300';
-                    let placeholderText = '';
-                    if (index === 0) placeholderText = 'HE Stain';
-                    else if (index >= 1 && index <= 3) placeholderText = `IF Stain ${index}`;
-                    else if (index >= 4 && index <= 7) placeholderText = `MSI Image ${index - 3}`;
-                    placeholder.innerHTML = `<span class="leading-tight">${placeholderText}<br>(No Image)</span>`;
-                    rotBox.appendChild(placeholder);
-                    slotWrapper.appendChild(rotBox);
+                if (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN')) {
+                  thumb.classList.add('heif-thumb');
                 }
+
+                const applyRotAr = () => {
+                    const iw = thumb.naturalWidth;
+                    const ih = thumb.naturalHeight;
+                    if (!iw || !ih) return;
+                    rotBox.style.setProperty('--rot-ar', `${iw} / ${ih}`);
+                };
+                if (thumb.complete && thumb.naturalWidth > 0) applyRotAr();
+                else thumb.addEventListener('load', applyRotAr, { once: true });
+
+                if (key.startsWith('MSI_')) {
+                  msiThumbRefs.set(key, thumb);
+                  const runOnce = () => {
+                      thumb.removeEventListener('load', runOnce);
+                      renderMsiThumbnail(key, thumb);
+                  };
+                  if (thumb.complete && thumb.naturalWidth > 0) {
+                      renderMsiThumbnail(key, thumb);
+                  } else {
+                      thumb.addEventListener('load', runOnce);
+                  }
+                }
+                rotBox.appendChild(thumb);
+                slotWrapper.appendChild(rotBox);
+
+                const titleOverlay = document.createElement('div');
+                titleOverlay.className = 'w-full px-2 py-1 bg-gray-700 text-white text-xs text-center rounded flex items-center justify-center gap-1';
+                const msiCol = getMsiColor(key);
+                if (msiCol) {
+                    const dot = document.createElement('span');
+                    dot.style.cssText = `display:inline-block;width:8px;height:8px;border-radius:50%;background:rgb(${msiCol.join(',')});flex-shrink:0;`;
+                    titleOverlay.appendChild(dot);
+                }
+                const titleText = document.createElement('span');
+                titleText.textContent = formatDisplayName(key);
+                titleOverlay.appendChild(titleText);
+                slotWrapper.appendChild(titleOverlay);
+
                 container.appendChild(slotWrapper);
             });
         }
@@ -2112,7 +2113,7 @@ function loadAllImages() {
     })();</script>
 
     <div id="buildTag" style="position:fixed;bottom:4px;right:6px;font-size:10px;color:#94a3b8;pointer-events:none;z-index:50;"></div>
-    <script>document.getElementById('buildTag').textContent = 'v:labelfix';</script>
+    <script>document.getElementById('buildTag').textContent = 'v:rot-fix-2';</script>
 
 </body>
 </html>
