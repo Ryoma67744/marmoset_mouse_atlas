@@ -1,1 +1,82 @@
-<!DOCTYPE html><meta http-equiv="refresh" content="0;url=viewer/index.html?atlas=cor_slide_1_10">
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>Marmoset Brain Atlas</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
+        .card { transition: transform 0.15s, box-shadow 0.15s; }
+        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body class="text-gray-800">
+    <div class="min-h-screen flex flex-col">
+        <header class="bg-white border-b">
+            <div class="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
+                <div>
+                    <h1 class="text-xl font-bold text-gray-900">Marmoset Brain Atlas</h1>
+                    <p class="text-xs text-gray-500 mt-0.5">Interactive spatial metabolomics atlas of the developing mouse and marmoset brain</p>
+                </div>
+                <a href="USER_GUIDE.md" class="text-xs text-blue-600 hover:underline">User Guide</a>
+            </div>
+        </header>
+
+        <main class="flex-1 max-w-5xl w-full mx-auto px-6 py-8">
+            <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Available Datasets</h2>
+            <div id="dataset-list" class="grid gap-4 sm:grid-cols-2">
+                <p class="text-gray-500 text-sm col-span-full">Loading datasets…</p>
+            </div>
+
+            <p id="dataset-error" class="hidden mt-4 text-sm text-red-600"></p>
+        </main>
+
+        <footer class="border-t bg-white">
+            <div class="max-w-5xl mx-auto px-6 py-3 text-xs text-gray-400 flex items-center justify-between">
+                <span>Static viewer hosted on GitHub Pages</span>
+                <a href="https://github.com/Ryoma67744/marmoset_mouse_atlas" class="hover:underline">GitHub</a>
+            </div>
+        </footer>
+    </div>
+
+    <script>
+        (async () => {
+            const list = document.getElementById('dataset-list');
+            const err = document.getElementById('dataset-error');
+            try {
+                const res = await fetch('datasets/index.json', { cache: 'no-store' });
+                if (!res.ok) throw new Error(`datasets/index.json fetch failed: ${res.status}`);
+                const manifest = await res.json();
+                const items = Array.isArray(manifest.datasets) ? manifest.datasets : [];
+                if (items.length === 0) {
+                    list.innerHTML = '<p class="text-gray-500 text-sm col-span-full">No datasets registered.</p>';
+                    return;
+                }
+                list.innerHTML = '';
+                for (const ds of items) {
+                    const href = `viewer/index.html?atlas=${encodeURIComponent(ds.id)}`;
+                    const a = document.createElement('a');
+                    a.href = href;
+                    a.className = 'card block bg-white rounded-lg border border-gray-200 p-4 hover:border-blue-400';
+                    a.innerHTML = `
+                        <div class="text-xs text-gray-400 font-mono mb-1">${ds.id}</div>
+                        <div class="text-base font-semibold text-gray-900 mb-1">${ds.title || ds.id}</div>
+                        <div class="text-sm text-gray-600 leading-snug">${ds.description || ''}</div>
+                        <div class="mt-3 text-xs text-blue-600">Open viewer →</div>
+                    `;
+                    list.appendChild(a);
+                }
+            } catch (e) {
+                console.error(e);
+                list.innerHTML = '';
+                err.textContent = `データセット一覧の読み込みに失敗しました: ${e.message}`;
+                err.classList.remove('hidden');
+            }
+        })();
+    </script>
+</body>
+</html>
