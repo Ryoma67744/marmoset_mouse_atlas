@@ -1,0 +1,14 @@
+{
+  "datasets": [
+    {
+      "id": "cor_slide_1_10",
+      "title": "Coronal Slide 1-10 (HE + MSI)",
+      "description": "コモンマーモセット脳のコロナルスライス。HE 染色 TIFF と MSI 4 化合物（TIC / 5-HT / DA / NE）を重ね合わせて閲覧できます。"
+    },
+    {
+      "id": "test1",
+      "title": "Sample (HE / IF / Mam-Sagittal)",
+      "description": "サンプル用データセット。HE / IF 染色画像と txt 形式の MSI 3 化合物（5-HT / DA / NE）を含みます。"
+    }
+  ]
+}
