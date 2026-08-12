@@ -47,7 +47,11 @@
         <header class="bg-white border-b">
             <div class="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
                 <div>
-                    <h1 class="text-xl font-bold text-gray-900">Marmoset Brain Atlas — Master</h1>
+                    <div class="flex items-baseline gap-2">
+                        <h1 class="text-xl font-bold text-gray-900">Marmoset Brain Atlas — Master</h1>
+                        <!-- 数字は lib/version.js が入れる (直書きすると更新漏れが起きる) -->
+                        <span class="app-version text-xs font-normal text-gray-400" title="アプリのバージョン"></span>
+                    </div>
                     <p class="text-xs text-gray-500 mt-0.5">データ登録と一括管理</p>
                 </div>
                 <a href="USER_GUIDE.md" class="text-xs text-blue-600 hover:underline">User Guide</a>
@@ -142,6 +146,7 @@
         </footer>
     </div>
 
+    <script src="lib/version.js"></script>
     <script src="lib/storage.js"></script>
     <script src="lib/otsu.js"></script>
     <script src="lib/align.js"></script>
