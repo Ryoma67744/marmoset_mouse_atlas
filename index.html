@@ -13,8 +13,6 @@
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
-        .card { transition: transform 0.15s, box-shadow 0.15s; }
-        .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1); }
         .drop-zone { border: 2px dashed #cbd5e1; transition: border-color .15s, background-color .15s; }
         .drop-zone.over { border-color: #3b82f6; background-color: #eff6ff; }
         .btn { display:inline-flex; align-items:center; gap:.35rem; padding:.35rem .75rem; font-size:.75rem;
@@ -101,15 +99,6 @@
                     <p class="text-gray-500 text-sm">読み込み中…</p>
                 </div>
                 <p id="storage-note" class="mt-4 text-xs text-gray-400"></p>
-            </section>
-
-            <!-- ============ 同梱データセット ============ -->
-            <section class="bg-white rounded-lg border border-gray-200 p-5">
-                <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">同梱データセット</h2>
-                <div id="dataset-list" class="grid gap-3 sm:grid-cols-2">
-                    <p class="text-gray-500 text-sm col-span-full">読み込み中…</p>
-                </div>
-                <p id="dataset-error" class="hidden mt-3 text-sm text-red-600"></p>
             </section>
 
             <p id="global-error" class="hidden text-sm text-red-600"></p>
@@ -479,40 +468,6 @@
                 showError('ZIP の読み込みに失敗しました: ' + err.message);
             }
         });
-
-        // =================================================================
-        // 同梱データセット (静的)
-        // =================================================================
-        (async () => {
-            const list = document.getElementById('dataset-list');
-            const err = document.getElementById('dataset-error');
-            try {
-                const res = await fetch('datasets/index.json', { cache: 'no-store' });
-                if (!res.ok) throw new Error(`datasets/index.json fetch failed: ${res.status}`);
-                const manifest = await res.json();
-                const items = Array.isArray(manifest.datasets) ? manifest.datasets : [];
-                if (!items.length) {
-                    list.innerHTML = '<p class="text-gray-500 text-sm col-span-full">同梱データセットはありません。</p>';
-                    return;
-                }
-                list.innerHTML = '';
-                for (const ds of items) {
-                    const a = document.createElement('a');
-                    a.href = `viewer/index.html?atlas=${encodeURIComponent(ds.id)}`;
-                    a.className = 'card block bg-white rounded-lg border border-gray-200 p-3 hover:border-blue-400';
-                    a.innerHTML =
-                        '<div class="text-xs text-gray-400 font-mono mb-1">' + esc(ds.id) + '</div>' +
-                        '<div class="text-sm font-semibold text-gray-900 mb-1">' + esc(ds.title || ds.id) + '</div>' +
-                        '<div class="text-xs text-gray-600 leading-snug">' + esc(ds.description || '') + '</div>';
-                    list.appendChild(a);
-                }
-            } catch (e) {
-                console.error(e);
-                list.innerHTML = '';
-                err.textContent = `同梱データセット一覧の読み込みに失敗しました: ${e.message}`;
-                err.classList.remove('hidden');
-            }
-        })();
 
         refreshProjectList();
     })();

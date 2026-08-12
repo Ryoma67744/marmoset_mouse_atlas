@@ -445,23 +445,14 @@
             }
         }
 
+// atlasData.images の値は loadProject() が data URL にして入れる
+// (TIFF は Ingest.imageBlobToDataUrl の中で復号済み)。ここでは <img> にするだけ。
 function loadAllImages() {
     const imageKeys = atlasData.images ? Object.keys(atlasData.images) : [];
     const promises = imageKeys.map(async (key) => {
         const rawSrc = atlasData.images[key];
         if (!rawSrc) return { key, ok: false };
-        let src = rawSrc;
-        if (typeof src === "string" && Ingest.isTiffName(src)) {
-            try {
-                const res = await fetch(src);
-                if (!res.ok) throw new Error(`tiff fetch failed: ${res.status}`);
-                src = Ingest.decodeTiffArrayBuffer(await res.arrayBuffer());
-                atlasData.images[key] = src;
-            } catch (e) {
-                console.warn(`[loadAllImages] TIFF decode failed for ${key}:`, e);
-                return { key, ok: false };
-            }
-        }
+        const src = rawSrc;
         return new Promise((resolve) => {
             const img = new Image();
             img.crossOrigin = "Anonymous";
@@ -1951,61 +1942,10 @@ function loadAllImages() {
         // =======================================================================
 
         // 表示中の状態を「保存可能なプロジェクト」に落とす。
-        // 静的データセット (?atlas=) を開いている場合も、生値ラスタは持っているので
-        // 同じ形にまとめて Export できる。
-        async function buildExportableProject() {
-            if (currentProject) {
-                syncProjectFromViewer();
-                return currentProject;
-            }
-            const ref = getMsiRefSize();
-            const wc = atlasData.world_coords || {};
-            const proj = {
-                id: ProjectStorage.uid('proj'),
-                displayName: (atlasData.meta && atlasData.meta.dataset_id) || 'atlas',
-                source: 'atlas',
-                orientation: '', plane: '', sliceId: '',
-                grid: {
-                    W: ref.w, H: ref.h,
-                    umPerPxX: (wc.msi_um_per_px && wc.msi_um_per_px.x) || null,
-                    umPerPxY: (wc.msi_um_per_px && wc.msi_um_per_px.y) || null,
-                },
-                molecules: [], images: {},
-                world_coords: wc,
-                alignment: atlasData.alignment || {},
-                layerDisplay: {},
-                otsu: { applied: otsuState.applied, strength: otsuState.strength, manualThreshold: otsuState.manualThreshold },
-                visibleLayers: checkedLayerKeys(),
-                viewerTransform: Object.assign({}, viewTransform),
-                roi: atlasData.roi || {},
-            };
-            // 生値ラスタを一時 blob に落として ZipIO に渡す
-            for (const key of Object.keys(valueRasters)) {
-                const vr = valueRasters[key];
-                const blobId = await ProjectStorage.putValueRaster(vr.values);
-                proj.molecules.push({
-                    key: key, name: key.replace(/^MSI_/i, ''), blobId: blobId,
-                    filterString: '', mode: '', nSpectra: 0,
-                    stats: vr.stats || MSIRaster.deriveBakeStats(vr.values),
-                });
-            }
-            for (const key of Object.keys(imageSettings)) {
-                const s = imageSettings[key];
-                proj.layerDisplay[key] = { vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false };
-            }
-            // HE/IF は data URL しか手元に無いので blob に戻して同梱する
-            for (const key of Object.keys(atlasData.images || {})) {
-                if (!/HE_STAIN|IF_STAIN/i.test(key)) continue;
-                const src = atlasData.images[key];
-                if (typeof src !== 'string') continue;
-                try {
-                    const blob = await (await fetch(src)).blob();
-                    const blobId = await ProjectStorage.putBlob({ blob: blob, mime: blob.type || 'image/png', filename: key + '.png' });
-                    proj.images[key] = { blobId: blobId, mime: blob.type || 'image/png', filename: key + '.png' };
-                } catch (e) { console.warn('[export] 画像の取り出しに失敗', key, e); }
-            }
-            proj._temporary = true;
-            return proj;
+        // ビューアは登録データ (?project=) しか開かないので、currentProject は必ずある。
+        function buildExportableProject() {
+            syncProjectFromViewer();
+            return currentProject;
         }
 
         // ビューア側の現在値をプロジェクトに書き戻す
@@ -2034,7 +1974,7 @@ function loadAllImages() {
             const original = btn ? btn.textContent : '';
             try {
                 if (btn) { btn.disabled = true; btn.textContent = '準備中…'; }
-                const proj = await buildExportableProject();
+                const proj = buildExportableProject();
                 const blob = await ZipIO.exportProject(proj);
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
                 const a = document.createElement('a');
@@ -2042,13 +1982,7 @@ function loadAllImages() {
                 a.download = ZipIO.safeName(proj.displayName) + '_' + ts + '.zip';
                 document.body.appendChild(a); a.click();
                 setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-                // 一時プロジェクトが作った blob は後始末する
-                if (proj._temporary) {
-                    for (const id of ProjectStorage.collectBlobIds(proj)) {
-                        ProjectStorage.deleteBlob(id).catch(() => {});
-                    }
-                }
-                if (currentProject) await ProjectStorage.putProject(currentProject);
+                await ProjectStorage.putProject(currentProject);
             } catch (e) {
                 console.error('[exportZip]', e);
                 alert('Export に失敗しました: ' + e.message);
@@ -2846,57 +2780,6 @@ function loadAllImages() {
     // =====================================================================
     // データ読み込み
     // =====================================================================
-    async function loadAtlasJsonExternal(atlasId) {
-      const url = `../datasets/${atlasId}/atlas.json`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`atlas.json fetch failed: ${res.status} ${url}`);
-      return await res.json();
-    }
-
-    /** 静的データセット (?atlas=) を読む。MSI は生値ラスタも作る。 */
-    async function loadStaticAtlas(atlasId) {
-      const external = await loadAtlasJsonExternal(atlasId);
-      const baseDir = `../datasets/${atlasId}/`;
-      atlasData = {
-        meta: external.meta || { format: 'roi_bundle_v1' },
-        roi: external.roi || {},
-        images: {},
-        world_coords: external.world_coords || {},
-        alignment: external.alignment || {},
-        thumbnail_order: Array.isArray(external.thumbnail_order) ? external.thumbnail_order : [],
-      };
-      const resolve = (v) => (typeof v === 'string' && !/^data:|^https?:|^\.\.\//.test(v))
-        ? baseDir + encodeURI(v) : v;
-
-      for (const [k, v] of Object.entries(external.images || {})) atlasData.images[k] = resolve(v);
-
-      const addRaster = (key, rows) => {
-        const r = MSIRaster.rasterFromRows(rows);
-        r.stats = MSIRaster.deriveBakeStats(r.values);
-        valueRasters[key] = r;
-        atlasData.images[key] = MSIRaster.bakeToPngDataUrl(r.values, r.W, r.H, r.stats.bakeLo, r.stats.bakeHi);
-      };
-
-      for (const [key, def] of Object.entries(external.txt_series || {})) {
-        try {
-          const src = resolve(def.src);
-          const res = await fetch(src);
-          if (!res.ok) throw new Error(`txt fetch failed: ${res.status}`);
-          const { rows } = Ingest.rowsFromText(await res.text(), def);
-          addRaster(key, rows);
-        } catch (e) { console.warn('txt -> ラスタ生成に失敗:', key, e); }
-      }
-      for (const [key, def] of Object.entries(external.xlsx_series || {})) {
-        try {
-          const src = resolve(def.src);
-          const res = await fetch(src);
-          if (!res.ok) throw new Error(`xlsx fetch failed: ${res.status}`);
-          const wb = Ingest.workbookFromArrayBuffer(await res.arrayBuffer());
-          addRaster(key, Ingest.rowsFromWorkbook(wb, def));
-        } catch (e) { console.warn('xlsx -> ラスタ生成に失敗:', key, e); }
-      }
-    }
-
     /** 登録済みプロジェクト (?project=) を IndexedDB から読む。 */
     async function loadProject(projectId) {
       const p = await ProjectStorage.getProject(projectId);
@@ -2952,15 +2835,15 @@ function loadAllImages() {
     (async () => {
       const params = new URLSearchParams(location.search);
       const projectId = params.get('project');
-      const atlasId = params.get('atlas');
       try {
-        if (!projectId && !atlasId) {
-          // 開くものが指定されていなければ master 画面に戻す
+        // 開く登録データが指定されていなければ master 画面に戻す。
+        // 同梱データセットを廃止したので、古い ?atlas= 付きのブックマークも
+        // ここでそのまま master に落ちる。
+        if (!projectId) {
           location.replace('../index.html');
           return;
         }
-        if (projectId) await loadProject(projectId);
-        else await loadStaticAtlas(atlasId);
+        await loadProject(projectId);
         await domReady;
         await initializeViewer();
       } catch (e) {
