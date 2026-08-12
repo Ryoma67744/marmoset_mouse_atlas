@@ -421,8 +421,13 @@
         async function initializeViewer() {
             populateRoiList();
             await loadAllImages();
-            populateThumbnails();
+            // ★ 設定 (生単位のウィンドウ) を先に作る。サムネイルを先に描くと
+            //   imageSettings がまだ無く、既定ウィンドウ [0,1] で真っ白に焼ける。
             await analyzeAndInitializeSettings();
+            // ★ 保存された背景除去の状態は最初の描画前に反映しておく。
+            //   setupOtsuUi まで待つと、初回のサムネイルと合成に効かない。
+            if (otsuState.applied) recomputeOtsu();
+            populateThumbnails();
             setupCheckboxDropdown();
             setupGraphSelector();
             setupCollapsibleSections();
@@ -434,7 +439,7 @@
             const firstRoiKey = (atlasData.roi && atlasData.roi.roi_items) ? Object.keys(atlasData.roi.roi_items)[0] : null;
             if (firstRoiKey) {
                 setTimeout(() => {
-                    const firstRoiElement = document.querySelector('.roi-item[data-roi-key="' + firstRoiKey + '"]');
+                    const firstRoiElement = document.querySelector('.roi-item[data-roi-key="' + CSS.escape(firstRoiKey) + '"]');
                     if (firstRoiElement) firstRoiElement.click();
                 }, 0);
             }
@@ -836,6 +841,16 @@ function loadAllImages() {
             }
             queueSaveProject();
         }
+        // ROI はビューア側で atlasData.roi を直接いじるので、変更のたびに
+        // プロジェクトへ書き戻す。
+        // ★ 以前は書き戻しが無く、opacity 変更などの「ついでの保存」でしか
+        //   永続化されなかった (描いてリロードすると消えることがあった)。
+        function persistRoi() {
+            if (!currentProject) return;
+            currentProject.roi = atlasData.roi;
+            queueSaveProject();
+        }
+
         let saveTimer = 0;
         function queueSaveProject() {
             if (!currentProject) return;
@@ -859,6 +874,9 @@ function loadAllImages() {
         function renderCompositeImage() {
             if (isRendering || !displayCtx) return;
             isRendering = true;
+            // ★ try/finally が無いと、描画中の例外でフラグが立ちっぱなしになり、
+            //   以後すべての再描画が黙って無視される (操作が一切効かなくなる)。
+            try {
             
             // HE/IF を先に、MSI を後に描く。こうしておくと MSI の透明度が
             // 「100% で HE を覆い、0% で HE が見える」という直感どおりに働く。
@@ -946,7 +964,11 @@ function loadAllImages() {
                                              : tempCanvas.height > tempCanvas.width;
                 const msiRef = getMsiRefSize();
 
-                if (T && isHeLike && isPortrait && msiRef && msiRef.w > 0 && msiRef.h > 0) {
+                // ★ 以前は portrait の HE にしか T を適用していなかったが、それだと
+                //   横長の HE を登録して重ね合わせを実行しても、保存はされるのに
+                //   画面が一切変わらない (landscape フォールバックで引き伸ばされる)。
+                //   T があるなら向きに関係なく適用する。
+                if (T && isHeLike && msiRef && msiRef.w > 0 && msiRef.h > 0) {
                     // HE/IF を T_he_to_msi で MSI 座標系へ変換してから CCW90° でキャンバスに描画
                     displayCtx.save();
                     displayCtx.translate(0, displayCanvas.height);
@@ -981,7 +1003,9 @@ function loadAllImages() {
 
             displayCtx.globalCompositeOperation = 'source-over';
             displayCtx.globalAlpha = 1.0;
-            isRendering = false;
+            } finally {
+                isRendering = false;
+            }
         }
 
         function populateThumbnails() {
@@ -1079,7 +1103,8 @@ function loadAllImages() {
         }
 
         function setActiveImage(imageKey) {
-            const checkbox = document.querySelector(`#image-selector-options input.layer-check[value="${imageKey}"]`);
+            const checkbox = document.querySelector(
+                `#image-selector-options input.layer-check[value="${CSS.escape(imageKey)}"]`);
             if (checkbox) {
                 checkbox.checked = !checkbox.checked;
                 renderCompositeImage();
@@ -1129,6 +1154,7 @@ function loadAllImages() {
                 showChk.addEventListener('click', (e) => e.stopPropagation());
                 showChk.addEventListener('change', () => {
                     showFlags[key] = showChk.checked;
+                    persistRoi();
                     const activeKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
                     drawAllRois(activeKey);
                     displayGraphForRoi(activeKey);
@@ -1154,8 +1180,9 @@ function loadAllImages() {
                         const next = (prompt('ROI 名を入力してください', current) || '').trim();
                         if (!next || next === current) return;
                         atlasData.roi.roi_names[key] = next;
+                        persistRoi();
                         populateRoiList();
-                        const prev = document.querySelector(`.roi-item[data-roi-key="${key}"]`);
+                        const prev = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(key)}"]`);
                         if (prev) {
                             document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                             prev.classList.add('active');
@@ -1841,9 +1868,10 @@ function loadAllImages() {
             atlasData.roi.palette[newKey]   = rgba;
             atlasData.roi.roi_show_flags[newKey] = true;
             toggleDrawingMode(false);
+            persistRoi();
             populateRoiList();
             // 新規作成した ROI を active 扱いにしてリストのハイライトも合わせる
-            const newItem = document.querySelector(`.roi-item[data-roi-key="${newKey}"]`);
+            const newItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(newKey)}"]`);
             if (newItem) {
                 document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                 newItem.classList.add('active');
@@ -1855,20 +1883,21 @@ function loadAllImages() {
         function deleteUserRoi(key) {
             if (!key || !key.startsWith(USER_ROI_PREFIX)) return;
             if (!confirm('この ROI を削除しますか?')) return;
-            const wasActive = document.querySelector(`.roi-item.active[data-roi-key="${key}"]`) !== null;
+            const wasActive = document.querySelector(`.roi-item.active[data-roi-key="${CSS.escape(key)}"]`) !== null;
             if (atlasData.roi) {
                 delete atlasData.roi.roi_items[key];
                 delete atlasData.roi.roi_names[key];
                 delete atlasData.roi.palette[key];
                 if (atlasData.roi.roi_show_flags) delete atlasData.roi.roi_show_flags[key];
             }
+            persistRoi();
             populateRoiList();
             // 削除した ROI が active なら残った先頭 ROI に切替、そうでなければ現在の active を維持
             const remaining = Object.keys((atlasData.roi && atlasData.roi.roi_items) || {});
             let nextKey = null;
             if (wasActive && remaining.length > 0) {
                 nextKey = remaining[0];
-                const nextItem = document.querySelector(`.roi-item[data-roi-key="${nextKey}"]`);
+                const nextItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(nextKey)}"]`);
                 if (nextItem) nextItem.classList.add('active');
             } else {
                 nextKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
@@ -2487,23 +2516,23 @@ function loadAllImages() {
         return wc.msi_um_per_px || null;
       }
 
-      function refreshPreview() {
-        const vr = valueRasters[msiKey];
-        const T = Align.buildHeToMsiAffine(state);
-        const c = document.createElement('canvas');
-        c.width = vr.W; c.height = vr.H;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(msiCanvas(), 0, 0);
-        // HE を T で MSI 座標系に写して緑で重ねる
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.globalAlpha = 0.55;
-        ctx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]);
+      // HE の緑マスクは T に依存しないので 1 度だけ作って使い回す。
+      // ★ 毎回作り直すと、スライダーを 1 つ動かすたびに HE 全画素を読み直すことになり、
+      //   大きな TIFF (数千 px 角) では操作が固まる。
+      // 作業解像度も HE_MASK_MAX_EDGE 相当に落とす (プレビューの見た目には十分)。
+      let heTintCanvas = null;
+      function heTint() {
+        if (heTintCanvas) return heTintCanvas;
+        const rawW = heImg.naturalWidth, rawH = heImg.naturalHeight;
+        const k = Math.max(1, Math.max(rawW, rawH) / 1024);
+        const w = Math.max(8, Math.round(rawW / k)), h = Math.max(8, Math.round(rawH / k));
         const tint = document.createElement('canvas');
-        tint.width = heImg.naturalWidth; tint.height = heImg.naturalHeight;
+        tint.width = w; tint.height = h;
         const tctx = tint.getContext('2d', { willReadFrequently: true });
-        tctx.drawImage(heImg, 0, 0);
-        const d = tctx.getImageData(0, 0, tint.width, tint.height);
+        tctx.imageSmoothingEnabled = true;
+        tctx.imageSmoothingQuality = 'high';
+        tctx.drawImage(heImg, 0, 0, w, h);
+        const d = tctx.getImageData(0, 0, w, h);
         const px = d.data;
         for (let i = 0; i < px.length; i += 4) {
           const mx = Math.max(px[i], px[i + 1], px[i + 2]);
@@ -2513,6 +2542,27 @@ function loadAllImages() {
           px[i] = 0; px[i + 1] = on ? 220 : 0; px[i + 2] = 0; px[i + 3] = 255;
         }
         tctx.putImageData(d, 0, 0);
+        // 生 HE ピクセル座標系に戻すための倍率を持たせておく
+        tint._sx = rawW / w; tint._sy = rawH / h;
+        heTintCanvas = tint;
+        return tint;
+      }
+
+      function refreshPreview() {
+        const vr = valueRasters[msiKey];
+        const T = Align.buildHeToMsiAffine(state);
+        const c = document.createElement('canvas');
+        c.width = vr.W; c.height = vr.H;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(msiCanvas(), 0, 0);
+        // HE を T で MSI 座標系に写して緑で重ねる
+        const tint = heTint();
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.55;
+        ctx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]);
+        // tint は縮小してあるので、生 HE 座標に戻してから T に載せる
+        ctx.scale(tint._sx, tint._sy);
         ctx.drawImage(tint, 0, 0);
         ctx.restore();
         prevImgEl.src = c.toDataURL();
@@ -2605,7 +2655,11 @@ function loadAllImages() {
       msiSel.addEventListener('change', () => {
         msiKey = msiSel.value;
         refreshMsiPane();
-        setTimeout(refreshAll, 0);
+        // ★ setTimeout(...,0) では新しい <img> のデコードが終わっておらず、
+        //   renderLandmarks が前のラスタの naturalWidth で点を配置してしまう。
+        //   (分子ごとにグリッドが違う場合に位置がずれる)
+        if (msiImgEl.complete && msiImgEl.naturalWidth) refreshAll();
+        else msiImgEl.addEventListener('load', refreshAll, { once: true });
       });
 
       backdrop.querySelectorAll('[data-pick]').forEach(b => {
@@ -2766,7 +2820,15 @@ function loadAllImages() {
         if (currentProject) {
           currentProject.world_coords = atlasData.world_coords;
           currentProject.alignment = atlasData.alignment;
-          await ProjectStorage.putProject(currentProject);
+          try {
+            await ProjectStorage.putProject(currentProject);
+          } catch (err) {
+            // ★ ここで握りつぶすとモーダルが閉じないまま固まり、
+            //   ユーザーは保存できたと思い込んでしまう。
+            console.error('[align] 保存に失敗:', err);
+            alert('位置合わせの保存に失敗しました: ' + err.message +
+                  '\n(表示には反映しますが、保存されていません)');
+          }
         }
         backdrop.remove();
         renderCompositeImage();
