@@ -6,12 +6,25 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Marmoset Brain Atlas</title>
+    <title>Marmoset Brain Atlas — Master</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
         .card { transition: transform 0.15s, box-shadow 0.15s; }
         .card:hover { transform: translateY(-2px); box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -4px rgba(0,0,0,0.1); }
+        .drop-zone { border: 2px dashed #cbd5e1; transition: border-color .15s, background-color .15s; }
+        .drop-zone.over { border-color: #3b82f6; background-color: #eff6ff; }
+        .btn { display:inline-flex; align-items:center; gap:.35rem; padding:.35rem .75rem; font-size:.75rem;
+               border-radius:.375rem; border:1px solid #d1d5db; background:#fff; color:#374151; cursor:pointer; }
+        .btn:hover { background:#f9fafb; }
+        .btn:disabled { opacity:.5; cursor:not-allowed; }
+        .btn-primary { background:#2563eb; border-color:#2563eb; color:#fff; }
+        .btn-primary:hover { background:#1d4ed8; }
+        .btn-danger { color:#b91c1c; border-color:#fca5a5; }
+        .btn-danger:hover { background:#fef2f2; }
     </style>
 </head>
 <body class="text-gray-800">
@@ -19,20 +32,87 @@
         <header class="bg-white border-b">
             <div class="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
                 <div>
-                    <h1 class="text-xl font-bold text-gray-900">Marmoset Brain Atlas</h1>
-                    <p class="text-xs text-gray-500 mt-0.5">Interactive spatial metabolomics atlas of the developing mouse and marmoset brain</p>
+                    <h1 class="text-xl font-bold text-gray-900">Marmoset Brain Atlas — Master</h1>
+                    <p class="text-xs text-gray-500 mt-0.5">データ登録と一括管理</p>
                 </div>
                 <a href="USER_GUIDE.md" class="text-xs text-blue-600 hover:underline">User Guide</a>
             </div>
         </header>
 
-        <main class="flex-1 max-w-5xl w-full mx-auto px-6 py-8">
-            <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">Available Datasets</h2>
-            <div id="dataset-list" class="grid gap-4 sm:grid-cols-2">
-                <p class="text-gray-500 text-sm col-span-full">Loading datasets…</p>
-            </div>
+        <main class="flex-1 max-w-5xl w-full mx-auto px-6 py-8 space-y-8">
 
-            <p id="dataset-error" class="hidden mt-4 text-sm text-red-600"></p>
+            <!-- ============ データ登録 ============ -->
+            <section class="bg-white rounded-lg border border-gray-200 p-5">
+                <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">データ登録</h2>
+
+                <div class="space-y-4">
+                    <!-- ① imzML + ibd -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-800 mb-1">① MSI データ (.imzML + .ibd)</label>
+                        <p class="text-xs text-gray-500 mb-2">
+                            分子ごとに <code class="bg-gray-100 px-1 rounded">.imzML</code> と同名の
+                            <code class="bg-gray-100 px-1 rounded">.ibd</code> をセットで選びます (3〜4 分子)。
+                            ファイル名は <code class="bg-gray-100 px-1 rounded">&lt;分子名&gt;_&lt;方向&gt;_&lt;切片&gt;</code> の規則で読み取ります
+                            (例: <code class="bg-gray-100 px-1 rounded">NE_Cor_1_10.imzML</code> → 分子 NE / コロナル切片 1_10)。
+                        </p>
+                        <div id="msi-drop" class="drop-zone rounded-md p-4 text-center">
+                            <input type="file" id="msi-input" multiple accept=".imzML,.ibd" class="hidden">
+                            <button type="button" class="btn btn-primary" onclick="document.getElementById('msi-input').click()">ファイルを選択</button>
+                            <span class="text-xs text-gray-500 ml-2">またはここにドラッグ &amp; ドロップ</span>
+                            <div id="msi-summary" class="mt-3 text-left text-xs"></div>
+                        </div>
+                    </div>
+
+                    <!-- ② HE 染色 -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-800 mb-1">② HE 染色画像 <span class="text-gray-400 font-normal">(任意)</span></label>
+                        <p class="text-xs text-gray-500 mb-2">TIFF (LZW 圧縮を含む) / PNG / JPEG に対応します。①のデータセットに紐づけます。</p>
+                        <div id="he-drop" class="drop-zone rounded-md p-4 text-center">
+                            <input type="file" id="he-input" accept=".tif,.tiff,.png,.jpg,.jpeg,image/*" class="hidden">
+                            <button type="button" class="btn" onclick="document.getElementById('he-input').click()">画像を選択</button>
+                            <span class="text-xs text-gray-500 ml-2">またはここにドラッグ &amp; ドロップ</span>
+                            <div id="he-summary" class="mt-3 text-left text-xs"></div>
+                        </div>
+                    </div>
+
+                    <div class="flex items-center gap-3 pt-1">
+                        <button id="register-btn" class="btn btn-primary" disabled>登録する</button>
+                        <span id="register-status" class="text-xs text-gray-500"></span>
+                    </div>
+                    <div id="register-progress" class="hidden w-full bg-gray-200 rounded h-1.5 overflow-hidden">
+                        <div id="register-bar" class="bg-blue-600 h-full transition-all" style="width:0%"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============ 登録済みデータの一括管理 ============ -->
+            <section class="bg-white rounded-lg border border-gray-200 p-5">
+                <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
+                    <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">登録済みデータ</h2>
+                    <div class="flex items-center gap-2">
+                        <input type="file" id="zip-input" accept=".zip,application/zip" class="hidden">
+                        <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
+                        <button id="bulk-export" class="btn" disabled>選択を Export</button>
+                        <button id="bulk-delete" class="btn btn-danger" disabled>選択を削除</button>
+                        <button id="clear-all" class="btn btn-danger">全データ削除</button>
+                    </div>
+                </div>
+                <div id="project-list" class="space-y-2">
+                    <p class="text-gray-500 text-sm">読み込み中…</p>
+                </div>
+                <p id="storage-note" class="mt-4 text-xs text-gray-400"></p>
+            </section>
+
+            <!-- ============ 同梱データセット ============ -->
+            <section class="bg-white rounded-lg border border-gray-200 p-5">
+                <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-3">同梱データセット</h2>
+                <div id="dataset-list" class="grid gap-3 sm:grid-cols-2">
+                    <p class="text-gray-500 text-sm col-span-full">読み込み中…</p>
+                </div>
+                <p id="dataset-error" class="hidden mt-3 text-sm text-red-600"></p>
+            </section>
+
+            <p id="global-error" class="hidden text-sm text-red-600"></p>
         </main>
 
         <footer class="border-t bg-white">
@@ -43,7 +123,366 @@
         </footer>
     </div>
 
+    <script src="lib/storage.js"></script>
+    <script src="lib/otsu.js"></script>
+    <script src="lib/align.js"></script>
+    <script src="lib/msi.js"></script>
+    <script src="lib/ingest.js"></script>
+    <script src="lib/imzml.js"></script>
+    <script src="lib/zipio.js"></script>
     <script>
+    (function () {
+        'use strict';
+
+        const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => (
+            { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+        function showError(msg) {
+            const el = document.getElementById('global-error');
+            el.textContent = msg;
+            el.classList.remove('hidden');
+        }
+
+        // =================================================================
+        // ドラッグ & ドロップ
+        // =================================================================
+        function wireDropZone(zoneId, inputId, onFiles) {
+            const zone = document.getElementById(zoneId);
+            const input = document.getElementById(inputId);
+            input.addEventListener('change', () => onFiles([...input.files]));
+            ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, (e) => {
+                e.preventDefault(); e.stopPropagation(); zone.classList.add('over');
+            }));
+            ['dragleave', 'drop'].forEach(ev => zone.addEventListener(ev, (e) => {
+                e.preventDefault(); e.stopPropagation(); zone.classList.remove('over');
+            }));
+            zone.addEventListener('drop', (e) => {
+                const files = [...(e.dataTransfer && e.dataTransfer.files ? e.dataTransfer.files : [])];
+                if (files.length) onFiles(files);
+            });
+        }
+
+        // =================================================================
+        // ① MSI ファイルの選択とグルーピング
+        // =================================================================
+        let pendingGroups = [];   // ImzML.groupFiles() の結果
+        let pendingHe = null;     // File
+
+        wireDropZone('msi-drop', 'msi-input', (files) => {
+            const { groups, problems } = ImzML.groupFiles(files);
+            pendingGroups = groups;
+            renderMsiSummary(groups, problems);
+            refreshRegisterButton();
+        });
+
+        wireDropZone('he-drop', 'he-input', (files) => {
+            pendingHe = files[0] || null;
+            renderHeSummary();
+            refreshRegisterButton();
+        });
+
+        function renderMsiSummary(groups, problems) {
+            const el = document.getElementById('msi-summary');
+            if (!groups.length && !problems.length) { el.innerHTML = ''; return; }
+            let html = '';
+            for (const g of groups) {
+                const planeLabel = g.plane === 'coronal' ? 'コロナル切片'
+                    : g.plane === 'sagittal' ? 'サジタル切片'
+                    : g.plane === 'axial' ? '水平切片'
+                    : (g.orientation ? g.orientation : '方向不明');
+                html += '<div class="border border-gray-200 rounded p-2 mb-2 bg-gray-50">' +
+                    '<div class="font-medium text-gray-800">' + esc(g.groupKey) + ' — ' + esc(planeLabel) +
+                    (g.sliceId ? ' / 切片 ' + esc(g.sliceId) : '') + '</div>' +
+                    '<div class="text-gray-600 mt-1">分子 ' + g.items.length + ' 種: ' +
+                    g.items.map(i => '<span class="inline-block bg-white border border-gray-300 rounded px-1.5 py-0.5 mr-1">' + esc(i.molecule) + '</span>').join('') +
+                    '</div></div>';
+            }
+            if (problems.length) {
+                html += '<ul class="text-amber-700 list-disc pl-5">' +
+                    problems.map(p => '<li>' + esc(p) + '</li>').join('') + '</ul>';
+            }
+            el.innerHTML = html;
+        }
+
+        function renderHeSummary() {
+            const el = document.getElementById('he-summary');
+            if (!pendingHe) { el.innerHTML = ''; return; }
+            const kb = (pendingHe.size / 1024).toFixed(0);
+            el.innerHTML = '<div class="border border-gray-200 rounded p-2 bg-gray-50">' +
+                '<span class="font-medium text-gray-800">' + esc(pendingHe.name) + '</span>' +
+                ' <span class="text-gray-500">(' + kb + ' KB)</span></div>';
+        }
+
+        function refreshRegisterButton() {
+            document.getElementById('register-btn').disabled = pendingGroups.length === 0;
+        }
+
+        // =================================================================
+        // 登録処理
+        // =================================================================
+        function setStatus(msg) { document.getElementById('register-status').textContent = msg || ''; }
+        function setProgress(frac) {
+            const wrap = document.getElementById('register-progress');
+            const bar = document.getElementById('register-bar');
+            if (frac == null) { wrap.classList.add('hidden'); return; }
+            wrap.classList.remove('hidden');
+            bar.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
+        }
+
+        document.getElementById('register-btn').addEventListener('click', async () => {
+            const btn = document.getElementById('register-btn');
+            btn.disabled = true;
+            try {
+                for (let gi = 0; gi < pendingGroups.length; gi++) {
+                    const g = pendingGroups[gi];
+                    await registerGroup(g, pendingGroups.length === 1 ? pendingHe : (gi === 0 ? pendingHe : null),
+                        (frac, label) => {
+                            setProgress((gi + frac) / pendingGroups.length);
+                            setStatus(label);
+                        });
+                }
+                setProgress(null);
+                setStatus('登録が完了しました。');
+                pendingGroups = []; pendingHe = null;
+                document.getElementById('msi-input').value = '';
+                document.getElementById('he-input').value = '';
+                renderMsiSummary([], []); renderHeSummary();
+                await refreshProjectList();
+            } catch (e) {
+                console.error(e);
+                setProgress(null);
+                setStatus('');
+                showError('登録に失敗しました: ' + e.message);
+            } finally {
+                refreshRegisterButton();
+            }
+        });
+
+        async function registerGroup(group, heFile, report) {
+            const project = {
+                id: ProjectStorage.uid('proj'),
+                displayName: group.groupKey,
+                source: 'imzml',
+                orientation: group.orientation,
+                plane: group.plane,
+                sliceId: group.sliceId,
+                grid: { W: 0, H: 0, umPerPxX: null, umPerPxY: null },
+                molecules: [],
+                images: {},
+                world_coords: {},
+                alignment: {},
+                layerDisplay: {},
+                otsu: { applied: false, strength: 0, manualThreshold: null },
+                visibleLayers: [],
+                viewerTransform: { tx: 0, ty: 0, scale: 1 },
+                roi: { roi_items: {}, roi_names: {}, palette: {}, roi_show_flags: {} },
+            };
+            const warnings = [];
+
+            for (let i = 0; i < group.items.length; i++) {
+                const item = group.items[i];
+                report(i / group.items.length, `${item.molecule} を解析中… (${i + 1}/${group.items.length})`);
+                const res = await ImzML.parsePair(item.imzmlFile, item.ibdFile, (p) => {
+                    report((i + p) / group.items.length, `${item.molecule} を解析中… (${i + 1}/${group.items.length})`);
+                });
+                if (project.grid.W && (project.grid.W !== res.W || project.grid.H !== res.H)) {
+                    throw new Error(`${item.molecule} のグリッド (${res.W}×${res.H}) が ` +
+                        `ほかの分子 (${project.grid.W}×${project.grid.H}) と一致しません。`);
+                }
+                project.grid.W = res.W;
+                project.grid.H = res.H;
+                project.grid.umPerPxX = res.umPerPx.x;
+                project.grid.umPerPxY = res.umPerPx.y;
+                const stats = MSIRaster.deriveBakeStats(res.values);
+                const blobId = await ProjectStorage.putValueRaster(res.values);
+                const key = 'MSI_' + item.molecule;
+                project.molecules.push({
+                    key: key, name: item.molecule, blobId: blobId,
+                    filterString: res.filterString, mode: res.mode,
+                    nSpectra: res.nSpectra, stats: stats,
+                });
+                project.layerDisplay[key] = {
+                    vmin: stats.rawMin, vmax: stats.rawDispMax, opacity: 1.0, applyOpacity: true,
+                };
+                warnings.push.apply(warnings, res.warnings);
+            }
+            if (project.molecules.length) project.visibleLayers = [project.molecules[0].key];
+            if (project.grid.umPerPxX) {
+                project.world_coords.msi_um_per_px = { x: project.grid.umPerPxX, y: project.grid.umPerPxY };
+            }
+
+            if (heFile) {
+                report(0.95, 'HE 画像を登録中…');
+                const mime = Ingest.isTiffName(heFile.name) ? 'image/tiff' : (heFile.type || '');
+                // TIFF が本当に復号できるかここで確かめる (登録後にビューアで初めて
+                // 失敗すると原因が分かりにくいため)
+                try {
+                    await Ingest.imageBlobToDataUrl(heFile, heFile.name);
+                } catch (e) {
+                    throw new Error('HE 画像を読めませんでした (' + heFile.name + '): ' + e.message);
+                }
+                const blobId = await ProjectStorage.putBlob({
+                    blob: heFile, mime: mime, filename: heFile.name,
+                });
+                project.images.HE_Stain = { blobId: blobId, mime: mime, filename: heFile.name };
+            }
+
+            report(1, '保存中…');
+            await ProjectStorage.putProject(project);
+            if (warnings.length) console.warn('[register] 警告:', warnings);
+            return project;
+        }
+
+        // =================================================================
+        // 登録済みデータの一覧 / 一括操作
+        // =================================================================
+        function selectedIds() {
+            return [...document.querySelectorAll('#project-list input.sel:checked')].map(c => c.value);
+        }
+        function refreshBulkButtons() {
+            const n = selectedIds().length;
+            document.getElementById('bulk-export').disabled = n === 0;
+            document.getElementById('bulk-delete').disabled = n === 0;
+        }
+
+        async function refreshProjectList() {
+            const list = document.getElementById('project-list');
+            let projects;
+            try { projects = await ProjectStorage.listProjects(); }
+            catch (e) { list.innerHTML = '<p class="text-sm text-red-600">保存領域を開けませんでした: ' + esc(e.message) + '</p>'; return; }
+
+            if (!projects.length) {
+                list.innerHTML = '<p class="text-gray-500 text-sm">まだ登録されたデータはありません。上のパネルから登録するか、ZIP を読み込んでください。</p>';
+                refreshBulkButtons();
+                return;
+            }
+            list.innerHTML = '';
+            for (const p of projects) {
+                const row = document.createElement('div');
+                row.className = 'flex items-center gap-3 border border-gray-200 rounded p-3 hover:border-blue-300';
+                const mols = (p.molecules || []).map(m => m.name).join(', ') || '—';
+                const grid = p.grid && p.grid.W ? `${p.grid.W} × ${p.grid.H} px` : '—';
+                const um = p.grid && p.grid.umPerPxX ? ` / ${p.grid.umPerPxX} µm` : '';
+                const he = p.images && p.images.HE_Stain ? 'あり' : 'なし';
+                const aligned = p.world_coords && p.world_coords.T_he_to_msi ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
+                row.innerHTML =
+                    '<input type="checkbox" class="sel h-4 w-4 rounded border-gray-300" value="' + esc(p.id) + '">' +
+                    '<div class="flex-1 min-w-0">' +
+                      '<div class="font-semibold text-gray-900 truncate">' + esc(p.displayName) + '</div>' +
+                      '<div class="text-xs text-gray-500 mt-0.5">' +
+                        '分子: ' + esc(mols) + ' &nbsp;·&nbsp; グリッド: ' + esc(grid + um) +
+                        ' &nbsp;·&nbsp; HE: ' + he + ' &nbsp;·&nbsp; ' + aligned +
+                      '</div>' +
+                      '<div class="text-xs text-gray-400 mt-0.5">更新 ' + esc((p.updatedAt || '').slice(0, 19).replace('T', ' ')) + '</div>' +
+                    '</div>' +
+                    '<div class="flex items-center gap-1 shrink-0">' +
+                      '<button class="btn" data-act="open">開く</button>' +
+                      '<button class="btn" data-act="rename">名前変更</button>' +
+                      '<button class="btn" data-act="export">Export</button>' +
+                      '<button class="btn btn-danger" data-act="delete">削除</button>' +
+                    '</div>';
+                row.querySelector('.sel').addEventListener('change', refreshBulkButtons);
+                row.querySelector('[data-act="open"]').addEventListener('click', () => {
+                    location.href = 'viewer/index.html?project=' + encodeURIComponent(p.id);
+                });
+                row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
+                    const name = (prompt('新しい名前', p.displayName) || '').trim();
+                    if (!name) return;
+                    p.displayName = name;
+                    await ProjectStorage.putProject(p);
+                    await refreshProjectList();
+                });
+                row.querySelector('[data-act="export"]').addEventListener('click', () => exportOne(p));
+                row.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+                    if (!confirm(`「${p.displayName}」を削除しますか?`)) return;
+                    await ProjectStorage.deleteProject(p.id);
+                    await refreshProjectList();
+                });
+                list.appendChild(row);
+            }
+            refreshBulkButtons();
+            updateStorageNote();
+        }
+
+        async function updateStorageNote() {
+            const el = document.getElementById('storage-note');
+            const est = await ProjectStorage.estimate();
+            if (!est || !est.usage) { el.textContent = '登録データはこのブラウザ内 (IndexedDB) に保存されます。'; return; }
+            const mb = (est.usage / 1048576).toFixed(1);
+            const quota = est.quota ? ' / 約 ' + (est.quota / 1048576).toFixed(0) + ' MB' : '';
+            el.textContent = `登録データはこのブラウザ内 (IndexedDB) に保存されます。使用量 約 ${mb} MB${quota}。`;
+        }
+
+        async function exportOne(p) {
+            try {
+                const blob = await ZipIO.exportProject(p);
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                downloadBlob(blob, ZipIO.safeName(p.displayName) + '_' + ts + '.zip');
+            } catch (e) {
+                console.error(e);
+                showError('Export に失敗しました: ' + e.message);
+            }
+        }
+
+        function downloadBlob(blob, filename) {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+        }
+
+        document.getElementById('bulk-export').addEventListener('click', async () => {
+            for (const id of selectedIds()) {
+                const p = await ProjectStorage.getProject(id);
+                if (p) await exportOne(p);
+            }
+        });
+
+        document.getElementById('bulk-delete').addEventListener('click', async () => {
+            const ids = selectedIds();
+            if (!ids.length) return;
+            if (!confirm(`選択した ${ids.length} 件を削除しますか?`)) return;
+            for (const id of ids) await ProjectStorage.deleteProject(id);
+            await refreshProjectList();
+        });
+
+        document.getElementById('clear-all').addEventListener('click', async () => {
+            if (!confirm('登録データをすべて削除します。よろしいですか?\n(この操作は取り消せません)')) return;
+            await ProjectStorage.clearAll();
+            await refreshProjectList();
+        });
+
+        // =================================================================
+        // ZIP 読み込み
+        // =================================================================
+        document.getElementById('zip-input').addEventListener('change', async (e) => {
+            const file = e.target.files && e.target.files[0];
+            e.target.value = '';
+            if (!file) return;
+            setStatus('ZIP を読み込み中…');
+            setProgress(0.5);
+            try {
+                const { project, warnings } = await ZipIO.importZip(file);
+                setProgress(null);
+                setStatus(`「${project.displayName}」を読み込みました。`);
+                if (warnings.length) {
+                    console.warn('[import] 警告:', warnings);
+                    showError('読み込みは完了しましたが、次の警告があります:\n' + warnings.join('\n'));
+                }
+                await refreshProjectList();
+            } catch (err) {
+                console.error(err);
+                setProgress(null);
+                setStatus('');
+                showError('ZIP の読み込みに失敗しました: ' + err.message);
+            }
+        });
+
+        // =================================================================
+        // 同梱データセット (静的)
+        // =================================================================
         (async () => {
             const list = document.getElementById('dataset-list');
             const err = document.getElementById('dataset-error');
@@ -52,31 +491,31 @@
                 if (!res.ok) throw new Error(`datasets/index.json fetch failed: ${res.status}`);
                 const manifest = await res.json();
                 const items = Array.isArray(manifest.datasets) ? manifest.datasets : [];
-                if (items.length === 0) {
-                    list.innerHTML = '<p class="text-gray-500 text-sm col-span-full">No datasets registered.</p>';
+                if (!items.length) {
+                    list.innerHTML = '<p class="text-gray-500 text-sm col-span-full">同梱データセットはありません。</p>';
                     return;
                 }
                 list.innerHTML = '';
                 for (const ds of items) {
-                    const href = `viewer/index.html?atlas=${encodeURIComponent(ds.id)}`;
                     const a = document.createElement('a');
-                    a.href = href;
-                    a.className = 'card block bg-white rounded-lg border border-gray-200 p-4 hover:border-blue-400';
-                    a.innerHTML = `
-                        <div class="text-xs text-gray-400 font-mono mb-1">${ds.id}</div>
-                        <div class="text-base font-semibold text-gray-900 mb-1">${ds.title || ds.id}</div>
-                        <div class="text-sm text-gray-600 leading-snug">${ds.description || ''}</div>
-                        <div class="mt-3 text-xs text-blue-600">Open viewer →</div>
-                    `;
+                    a.href = `viewer/index.html?atlas=${encodeURIComponent(ds.id)}`;
+                    a.className = 'card block bg-white rounded-lg border border-gray-200 p-3 hover:border-blue-400';
+                    a.innerHTML =
+                        '<div class="text-xs text-gray-400 font-mono mb-1">' + esc(ds.id) + '</div>' +
+                        '<div class="text-sm font-semibold text-gray-900 mb-1">' + esc(ds.title || ds.id) + '</div>' +
+                        '<div class="text-xs text-gray-600 leading-snug">' + esc(ds.description || '') + '</div>';
                     list.appendChild(a);
                 }
             } catch (e) {
                 console.error(e);
                 list.innerHTML = '';
-                err.textContent = `データセット一覧の読み込みに失敗しました: ${e.message}`;
+                err.textContent = `同梱データセット一覧の読み込みに失敗しました: ${e.message}`;
                 err.classList.remove('hidden');
             }
         })();
+
+        refreshProjectList();
+    })();
     </script>
 </body>
 </html>

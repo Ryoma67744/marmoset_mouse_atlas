@@ -11,6 +11,13 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="../lib/storage.js"></script>
+    <script src="../lib/otsu.js"></script>
+    <script src="../lib/align.js"></script>
+    <script src="../lib/msi.js"></script>
+    <script src="../lib/ingest.js"></script>
+    <script src="../lib/imzml.js"></script>
+    <script src="../lib/zipio.js"></script>
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -62,13 +69,51 @@
         /* ROI toggle switch */
         #roi-toggle:checked ~ #roi-toggle-bg { background-color: #3b82f6; }
         #roi-toggle:checked ~ #roi-toggle-dot { transform: translateX(1rem); }
-        /* Image Viewer / IMAGES を反時計回りに 90° 追加回転するためのラッパ */
+        /* Image Viewer を反時計回りに 90° 追加回転するためのラッパ。
+           パン/ズームは CSS 変数でこの同じ transform に載せる。
+           ★ canvas 要素自体が transform されるので、ROI 描画の click ハンドラが使う
+             event.offsetX/offsetY は「変換前のローカル座標」のまま届く。
+             したがって canvasToMsi() 以下の座標計算はパン/ズームの影響を受けない。 */
         #image-viewer-rot {
             position: absolute;
             inset: 0;
             transform-origin: 50% 50%;
-            transform: rotate(-90deg);
+            transform: translate(var(--vt-tx, 0px), var(--vt-ty, 0px))
+                       rotate(-90deg)
+                       scale(var(--vt-scale, 1));
         }
+        #image-viewer { touch-action: none; }
+        #image-viewer.panning { cursor: grabbing; }
+        #image-viewer.pannable { cursor: grab; }
+
+        /* 常時表示のレイヤ選択リスト (旧: プルダウン) */
+        #image-selector-options { max-height: 190px; overflow-y: auto; }
+        .layer-row { border-bottom: 1px solid #f1f5f9; }
+        .layer-row:last-child { border-bottom: none; }
+
+        /* 大津法ヒストグラム */
+        #otsu-panel canvas { display: block; width: 100%; height: 90px; cursor: ew-resize; }
+
+        /* 位置合わせモーダル */
+        .modal-backdrop {
+            position: fixed; inset: 0; background: rgba(15, 23, 42, 0.55);
+            display: flex; align-items: center; justify-content: center; z-index: 60;
+        }
+        .modal-box {
+            background: #fff; border-radius: 8px; width: min(1080px, 96vw);
+            max-height: 94vh; overflow: auto; padding: 16px;
+            box-shadow: 0 20px 40px rgba(0,0,0,.3);
+        }
+        .pick-pane { position: relative; background: #000; border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden; }
+        .pick-pane img { display: block; width: 100%; height: auto; }
+        .pick-pane.active { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,.35); cursor: crosshair; }
+        .pick-dot {
+            position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px;
+            border: 2px solid #fff; border-radius: 50%; box-sizing: border-box;
+            font-size: 9px; line-height: 10px; text-align: center; color: #fff;
+            pointer-events: none; text-shadow: 0 0 2px #000;
+        }
+        .resid-out { background: #fef2f2; color: #b91c1c; }
         /* サムネイルを Image Viewer と同じ向きで見せるラッパ。
            MSI サムネだけ −180° 回転し、HE/IF は T_he_to_msi が画像内部で
            既に 180° を吸収しているため 0° のまま表示する。 */
@@ -104,12 +149,21 @@
         <!-- Header (compact) -->
         <header class="flex items-center justify-between px-4 py-1 bg-white border-b shrink-0">
             <h1 id="atlas-title" class="text-lg font-bold text-gray-900 truncate">Marmoset Brain Atlas</h1>
-            <div class="flex items-center gap-3">
-                <button id="download-bundle" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="Download ZIP bundle (atlas.json + raw data)">
+            <div class="flex items-center gap-2">
+                <label class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 cursor-pointer" title="各ピクセルの総信号量(TIC)から背景スポットを自動判定し、全イオン像から一括で非表示にします。生データは変更しません。">
+                    <input type="checkbox" id="otsu-toggle" class="h-3.5 w-3.5 rounded border-gray-300">
+                    背景除去(大津法)
+                </label>
+                <button id="export-zip" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="作業状態ごと ZIP に書き出す">
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
-                    Download
+                    Export
                 </button>
-                <span class="text-sm text-gray-500">ROI-based Analysis Viewer</span>
+                <input type="file" id="import-zip-input" accept=".zip,application/zip" class="hidden">
+                <button id="import-zip" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="Export した ZIP を読み込んで続きから作業する">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M7.5 9 12 4.5m0 0L16.5 9M12 4.5V16"/></svg>
+                    Import
+                </button>
+                <a href="../index.html" class="text-xs text-blue-600 hover:underline ml-1">Master</a>
             </div>
         </header>
 
@@ -159,15 +213,24 @@
                 <div class="bg-white p-2 rounded shadow-sm flex flex-col overflow-hidden min-h-0">
                     <div class="flex justify-between items-center mb-1 shrink-0">
                         <h2 class="text-sm font-semibold">Image Viewer</h2>
-                         <div id="image-selector-container" class="relative inline-block text-left">
-                            <button type="button" id="image-selector-button" class="inline-flex justify-center rounded-md border border-gray-300 shadow-sm px-3 py-1 bg-white text-xs font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-1 focus:ring-indigo-500">
-                                Select Images
-                            </button>
-                            <div id="image-selector-menu" class="origin-top-right absolute right-0 mt-2 w-72 rounded-md shadow-lg bg-white ring-1 ring-black ring-opacity-5 focus:outline-none hidden z-10" role="menu">
-                                <div class="py-1" id="image-selector-options">
-                                </div>
-                            </div>
+                        <div class="flex items-center gap-1">
+                            <button type="button" id="align-btn" class="px-2 py-0.5 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="HE 染色と MSI を重ね合わせる (自動 / 半自動)">重ね合わせ</button>
+                            <span class="text-xs text-gray-400 ml-1" title="ホイールで拡大縮小、ドラッグでパン、2 本指でピンチ">🔍 <span id="zoom-readout">100%</span></span>
+                            <button type="button" id="view-reset" class="px-2 py-0.5 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="拡大・移動をリセット">リセット</button>
                         </div>
+                    </div>
+                    <!-- レイヤ選択: プルダウンをやめ、チェックボックスを並べて常時表示する -->
+                    <div id="image-selector-options" class="shrink-0 border border-gray-200 rounded mb-1 text-xs bg-white"></div>
+                    <!-- 大津法のヒストグラム (トグル ON のときだけ表示) -->
+                    <div id="otsu-panel" class="hidden shrink-0 border border-gray-200 rounded mb-1 p-2 bg-white">
+                        <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
+                            <span>背景除去 — 赤線をドラッグして境目を調整</span>
+                            <span class="flex items-center gap-2">
+                                <span id="otsu-readout" class="text-gray-500"></span>
+                                <button type="button" id="otsu-reset" class="px-1.5 py-0.5 rounded border border-gray-300 hover:bg-gray-50" title="自動 Otsu (強度 0) に戻す">⟲</button>
+                            </span>
+                        </div>
+                        <canvas id="otsu-hist" width="600" height="90"></canvas>
                     </div>
                     <div id="image-viewer" class="relative flex-1 min-h-0 border border-gray-300 rounded bg-black overflow-hidden">
                         <img id="sizing-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'%3E%3Crect width='1200' height='900' fill='%23000'/%3E%3C/svg%3E" alt="Sizing reference" class="absolute w-full h-full opacity-0 object-contain">
@@ -243,14 +306,6 @@
             }
         };
 
-        const graphData = {
-            'IF_Stain': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
-            'MSI_DA': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
-            'MSI_5-HT': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
-            'MSI_NE': {'sample_roi': 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='},
-            'comparison': {}
-        };
-
         const sizingImage = document.getElementById('sizing-image');
         const roiCanvas = document.getElementById('roi-canvas');
         const displayCanvas = document.getElementById('display-canvas');
@@ -259,6 +314,17 @@
         let imageSources = {};
         let imageSettings = {};
         let isRendering = false;
+
+        // MSI の生値ラスタ (key -> {values: Float32Array, W, H})。
+        // 8bit の PNG では生単位の強度ウィンドウも大津法もできないので、
+        // 取り込み時に作った float をそのまま持ち回る。
+        let valueRasters = {};
+        // IndexedDB から開いたプロジェクト (静的データセットの場合は null)
+        let currentProject = null;
+        // 大津法の状態
+        let otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
+        // パン / ズーム
+        let viewTransform = { tx: 0, ty: 0, scale: 1 };
 
         // MSI サムネイル要素を key → <img> で保持(輝度変更時に再描画するため)
         const msiThumbRefs = new Map();
@@ -288,6 +354,20 @@
         // vmin/vmax が変わるたびに呼び直すために抽出。
         function renderMsiThumbnail(key, thumbEl) {
             if (!thumbEl) return;
+            // 生値ラスタがあるならそちらから描く (生単位のウィンドウ + 大津法が効く)
+            const vr = valueRasters[key];
+            if (vr) {
+                const st = imageSettings[key] || {};
+                const canvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
+                    color: getMsiColor(key),
+                    win: { min: st.vmin, max: st.vmax },
+                    gamma: 0.5,
+                    keep: otsuKeepFor(key),
+                });
+                thumbEl.src = canvas.toDataURL();
+                thumbEl.classList.add('msi-thumb');
+                return;
+            }
             const source = imageSources[key];
             if (!source || !source.complete || source.naturalWidth === 0) return;
             const color = getMsiColor(key);
@@ -341,17 +421,25 @@
         async function initializeViewer() {
             populateRoiList();
             await loadAllImages();
-            populateThumbnails();
+            // ★ 設定 (生単位のウィンドウ) を先に作る。サムネイルを先に描くと
+            //   imageSettings がまだ無く、既定ウィンドウ [0,1] で真っ白に焼ける。
             await analyzeAndInitializeSettings();
+            // ★ 保存された背景除去の状態は最初の描画前に反映しておく。
+            //   setupOtsuUi まで待つと、初回のサムネイルと合成に効かない。
+            if (otsuState.applied) recomputeOtsu();
+            populateThumbnails();
             setupCheckboxDropdown();
             setupGraphSelector();
             setupCollapsibleSections();
             setupDrawingHandlers();
-            setupDownloadButton();
+            setupZipButtons();
+            setupViewTransform();
+            setupOtsuUi();
+            setupAlignButton();
             const firstRoiKey = (atlasData.roi && atlasData.roi.roi_items) ? Object.keys(atlasData.roi.roi_items)[0] : null;
             if (firstRoiKey) {
                 setTimeout(() => {
-                    const firstRoiElement = document.querySelector('.roi-item[data-roi-key="' + firstRoiKey + '"]');
+                    const firstRoiElement = document.querySelector('.roi-item[data-roi-key="' + CSS.escape(firstRoiKey) + '"]');
                     if (firstRoiElement) firstRoiElement.click();
                 }, 0);
             }
@@ -363,9 +451,11 @@ function loadAllImages() {
         const rawSrc = atlasData.images[key];
         if (!rawSrc) return { key, ok: false };
         let src = rawSrc;
-        if (typeof src === "string" && /\.(tiff?)(\?|#|$)/i.test(src)) {
+        if (typeof src === "string" && Ingest.isTiffName(src)) {
             try {
-                src = await decodeTiffToPngDataUrl(src);
+                const res = await fetch(src);
+                if (!res.ok) throw new Error(`tiff fetch failed: ${res.status}`);
+                src = Ingest.decodeTiffArrayBuffer(await res.arrayBuffer());
                 atlasData.images[key] = src;
             } catch (e) {
                 console.warn(`[loadAllImages] TIFF decode failed for ${key}:`, e);
@@ -390,9 +480,26 @@ function loadAllImages() {
         async function analyzeAndInitializeSettings() {
             const imageKeys = Object.keys(atlasData.images || {});
             for (const key of imageKeys) {
+                // 生値ラスタがある MSI レイヤは「生単位」でウィンドウを持つ。
+                // ベイク時 p99.5 クリップ / 既定表示上限 p99 は Share_Test に合わせる。
+                const vr = valueRasters[key];
+                if (vr) {
+                    const saved = (currentProject && currentProject.layerDisplay && currentProject.layerDisplay[key]) || null;
+                    const st = vr.stats || (vr.stats = MSIRaster.deriveBakeStats(vr.values));
+                    imageSettings[key] = {
+                        opacity: saved && Number.isFinite(saved.opacity) ? saved.opacity : 1.0,
+                        applyOpacity: saved ? saved.applyOpacity !== false : true,
+                        vmin: saved && Number.isFinite(saved.vmin) ? saved.vmin : st.rawMin,
+                        vmax: saved && Number.isFinite(saved.vmax) ? saved.vmax : st.rawDispMax,
+                        actualMin: st.rawMin,
+                        actualMax: st.rawTrueMax,
+                        raw: true,
+                    };
+                    continue;
+                }
                 const sourceImg = imageSources[key];
                 if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) {
-                     imageSettings[key] = { opacity: 1.0, vmin: 0, vmax: 255, actualMin: 0, actualMax: 255 };
+                     imageSettings[key] = { opacity: 1.0, applyOpacity: true, vmin: 0, vmax: 255, actualMin: 0, actualMax: 255 };
                      continue;
                 }
 
@@ -426,12 +533,15 @@ function loadAllImages() {
                     if (vmax < 1) vmax = max; // フォールバック
                 }
 
+                const savedHe = (currentProject && currentProject.layerDisplay && currentProject.layerDisplay[key]) || null;
                 imageSettings[key] = {
-                    opacity: 1.0,
-                    vmin: min,
-                    vmax: vmax,
+                    opacity: savedHe && Number.isFinite(savedHe.opacity) ? savedHe.opacity : 1.0,
+                    applyOpacity: savedHe ? savedHe.applyOpacity !== false : true,
+                    vmin: savedHe && Number.isFinite(savedHe.vmin) ? savedHe.vmin : min,
+                    vmax: savedHe && Number.isFinite(savedHe.vmax) ? savedHe.vmax : vmax,
                     actualMin: min,
                     actualMax: max,
+                    raw: false,
                 };
             }
         }
@@ -462,32 +572,36 @@ function loadAllImages() {
             }
         }
 
+        // レイヤ選択 UI。プルダウンをやめ、チェックボックスを縦に並べて常時表示する。
+        // 描画側は #image-selector-options の :checked を読むだけなので、
+        // id と構造を保っている限り renderCompositeImage 側の変更は不要。
         function setupCheckboxDropdown() {
-            const container = document.getElementById('image-selector-container');
-            const button = document.getElementById('image-selector-button');
-            const menu = document.getElementById('image-selector-menu');
             const optionsContainer = document.getElementById('image-selector-options');
-            if (!container || !button || !menu || !optionsContainer) return;
+            if (!optionsContainer) return;
 
             optionsContainer.innerHTML = '';
             const imageKeys = atlasData.images ? Object.keys(atlasData.images) : [];
+            const visible = new Set(
+                (currentProject && Array.isArray(currentProject.visibleLayers) && currentProject.visibleLayers.length)
+                    ? currentProject.visibleLayers
+                    : []);
 
             imageKeys.forEach((key, index) => {
                 if (!atlasData.images[key] || !imageSettings[key]) return;
-                
+
                 const settings = imageSettings[key];
                 const optionDiv = document.createElement('div');
-                optionDiv.className = 'px-3 py-2 border-b border-gray-200 last:border-b-0';
-                
+                optionDiv.className = 'layer-row px-2 py-1';
+
                 const topRow = document.createElement('div');
                 topRow.className = 'flex items-center justify-between';
                 const label = document.createElement('label');
-                label.className = 'flex items-center text-sm font-medium text-gray-800 cursor-pointer';
+                label.className = 'flex items-center text-xs font-medium text-gray-800 cursor-pointer';
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.value = key;
-                checkbox.className = 'mr-3 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
-                checkbox.checked = index === 0;
+                checkbox.className = 'layer-check mr-2 h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
+                checkbox.checked = visible.size ? visible.has(key) : index === 0;
                 const msiColDD = getMsiColor(key);
                 if (msiColDD) {
                     const ddDot = document.createElement('span');
@@ -498,42 +612,55 @@ function loadAllImages() {
                 }
                 
                 const settingsButton = document.createElement('button');
-                settingsButton.className = 'p-1 rounded-full hover:bg-gray-200 focus:outline-none';
-                settingsButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-gray-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0l-.1.41a1.5 1.5 0 01-2.1 1.45l-.4-.17c-1.5-.65-3.22.8-2.57 2.3l.17.4a1.5 1.5 0 01-1.45 2.1l-.41.1c-1.56.38-1.56 2.6 0 2.98l.41.1a1.5 1.5 0 011.45 2.1l-.17.4c.65 1.5 1.07 3 2.57 2.3l.4-.17a1.5 1.5 0 012.1 1.45l.1.41c.38 1.56 2.6 1.56 2.98 0l.1-.41a1.5 1.5 0 012.1-1.45l.4.17c1.5.65 3.22-.8 2.57-2.3l-.17-.4a1.5 1.5 0 011.45-2.1l.41-.1c-1.56-.38-1.56-2.6 0-2.98l-.41-.1a1.5 1.5 0 01-1.45-2.1l.17-.4c.65-1.5-1.07-3-2.57-2.3l-.4.17a1.5 1.5 0 01-2.1-1.45l-.1-.41zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" /></svg>`;
+                settingsButton.className = 'p-0.5 rounded-full hover:bg-gray-200 focus:outline-none';
+                settingsButton.title = '強度 / 透明度を調整';
+                settingsButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0l-.1.41a1.5 1.5 0 01-2.1 1.45l-.4-.17c-1.5-.65-3.22.8-2.57 2.3l.17.4a1.5 1.5 0 01-1.45 2.1l-.41.1c-1.56.38-1.56 2.6 0 2.98l.41.1a1.5 1.5 0 011.45 2.1l-.17.4c.65 1.5 1.07 3 2.57 2.3l.4-.17a1.5 1.5 0 012.1 1.45l.1.41c.38 1.56 2.6 1.56 2.98 0l.1-.41a1.5 1.5 0 012.1-1.45l.4.17c1.5.65 3.22-.8 2.57-2.3l-.17-.4a1.5 1.5 0 011.45-2.1l.41-.1c-1.56-.38-1.56-2.6 0-2.98l-.41-.1a1.5 1.5 0 01-1.45-2.1l.17-.4c.65-1.5-1.07-3-2.57-2.3l-.4.17a1.5 1.5 0 01-2.1-1.45l-.1-.41zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" /></svg>`;
                 topRow.append(label, settingsButton);
 
                 const settingsPanel = document.createElement('div');
-                settingsPanel.className = 'settings-panel hidden pl-7 mt-3 space-y-3';
-                
+                settingsPanel.className = 'settings-panel hidden pl-6 mt-2 mb-1 space-y-2';
+
+                // 透明度: Share_Test と同じく「透明化の有効 / 無効」を別に持つ
                 const opacityDiv = document.createElement('div');
-                opacityDiv.innerHTML = `<div class="flex justify-between items-center text-xs text-gray-600 mb-1">
-                                            <label>Opacity</label>
+                opacityDiv.innerHTML = `<div class="flex justify-between items-center text-xs text-gray-600">
+                                            <label class="flex items-center gap-1 cursor-pointer" title="OFF にするとこのレイヤは常に不透明で描かれます">
+                                                <input type="checkbox" class="h-3 w-3 rounded border-gray-300 apply-opacity-input" ${settings.applyOpacity !== false ? 'checked' : ''}>
+                                                透明度
+                                            </label>
                                             <div class="flex items-center">
                                                 <input type="number" min="0" max="100" step="1" value="${Math.round(settings.opacity * 100)}" class="w-16 text-right border border-gray-300 rounded-sm p-0.5 text-xs opacity-input">
                                                 <span class="ml-1">%</span>
                                             </div>
                                         </div>`;
+                // 強度: 生値ラスタがあるレイヤは生単位、無ければ従来どおり 8bit 輝度
+                const isRaw = !!settings.raw;
+                const step = isRaw ? 'any' : '1';
+                const fmt = (v) => isRaw ? String(Number(Number(v).toPrecision(6))) : String(Math.round(v));
                 const rangeDiv = document.createElement('div');
-                rangeDiv.innerHTML = `<label class="text-xs text-gray-600 block mb-1">Intensity Range (Abs)</label>
+                rangeDiv.innerHTML = `<div class="flex items-center justify-between mb-0.5">
+                        <label class="text-xs text-gray-600">強度レンジ ${isRaw ? '(生単位)' : '(輝度 0-255)'}</label>
+                        <button type="button" class="range-reset text-xs px-1 rounded border border-gray-300 hover:bg-gray-50" title="自動 (既定) に戻す">⟲</button>
+                    </div>
                     <div class="flex items-center space-x-2">
-                        <input type="number" min="${settings.actualMin}" max="${settings.actualMax}" value="${settings.vmin}" class="w-20 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmin-input">
+                        <input type="number" step="${step}" value="${fmt(settings.vmin)}" class="w-24 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmin-input">
                         <span class="text-gray-500">-</span>
-                        <input type="number" min="${settings.actualMin}" max="${settings.actualMax}" value="${settings.vmax}" class="w-20 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmax-input">
-                    </div>`;
+                        <input type="number" step="${step}" value="${fmt(settings.vmax)}" class="w-24 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmax-input">
+                    </div>
+                    <div class="text-[10px] text-gray-400 mt-0.5">実測 ${fmt(settings.actualMin)} 〜 ${fmt(settings.actualMax)}</div>`;
 
                 settingsPanel.append(opacityDiv, rangeDiv);
                 optionDiv.append(topRow, settingsPanel);
                 optionsContainer.appendChild(optionDiv);
 
-                // <<< modified: プルダウン選択で Image Viewer 合成 + サムネイル連動
-                checkbox.addEventListener('change', () => { 
-                    updateButtonText(); 
-                    renderCompositeImage(); 
-                    if (checkbox.checked) { 
+                // チェックで Image Viewer 合成 + サムネイル連動
+                checkbox.addEventListener('change', () => {
+                    renderCompositeImage();
+                    persistVisibleLayers();
+                    if (checkbox.checked) {
                         focusThumbnail(key);   // サムネイルをハイライト＆スクロール
                     } else {
                         // 解除時は、他にチェックが残っていればそちらをハイライト
-                        const remain = document.querySelector('#image-selector-options input[type="checkbox"]:checked');
+                        const remain = document.querySelector('#image-selector-options input.layer-check:checked');
                         if (remain) focusThumbnail(remain.value);
                         else {
                             // 何も選ばれていなければハイライト解除
@@ -544,41 +671,63 @@ function loadAllImages() {
                 });
 
                 settingsButton.addEventListener('click', (e) => { e.stopPropagation(); settingsPanel.classList.toggle('hidden'); });
-                
+
                 const opacityInput = optionDiv.querySelector('.opacity-input');
                 opacityInput.addEventListener('change', () => {
-                    let percentValue = parseInt(opacityInput.value);
+                    let percentValue = parseInt(opacityInput.value, 10);
                     if (isNaN(percentValue)) percentValue = 100;
                     percentValue = Math.max(0, Math.min(100, percentValue));
                     opacityInput.value = percentValue;
                     settings.opacity = percentValue / 100.0;
                     renderCompositeImage();
+                    persistLayerDisplay();
                 });
+                const applyOpacityInput = optionDiv.querySelector('.apply-opacity-input');
+                applyOpacityInput.addEventListener('change', () => {
+                    settings.applyOpacity = applyOpacityInput.checked;
+                    opacityInput.disabled = !applyOpacityInput.checked;
+                    renderCompositeImage();
+                    persistLayerDisplay();
+                });
+                opacityInput.disabled = settings.applyOpacity === false;
 
                 const vminInput = optionDiv.querySelector('.vmin-input');
                 const vmaxInput = optionDiv.querySelector('.vmax-input');
-                vminInput.addEventListener('change', () => {
-                    let vmin = parseInt(vminInput.value);
-                    let vmax = parseInt(vmaxInput.value);
-                    if (vmin >= vmax) { vmin = vmax - 1; vminInput.value = vmin; }
+                const applyRange = () => {
+                    let vmin = parseFloat(vminInput.value);
+                    let vmax = parseFloat(vmaxInput.value);
+                    if (!Number.isFinite(vmin)) vmin = settings.actualMin;
+                    if (!Number.isFinite(vmax)) vmax = settings.actualMax;
+                    if (!(vmax > vmin)) {
+                        // 上下が交差したら、直近に触られていない側を最小限ずらす
+                        const eps = isRaw ? Math.max(1e-9, Math.abs(vmin) * 1e-6) : 1;
+                        vmax = vmin + eps;
+                    }
                     settings.vmin = vmin;
-                    renderCompositeImage();
-                    if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
-                });
-                vmaxInput.addEventListener('change', () => {
-                    let vmin = parseInt(vminInput.value);
-                    let vmax = parseInt(vmaxInput.value);
-                    if (vmax <= vmin) { vmax = vmin + 1; vmaxInput.value = vmax; }
                     settings.vmax = vmax;
+                    vminInput.value = fmt(vmin);
+                    vmaxInput.value = fmt(vmax);
                     renderCompositeImage();
                     if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
+                    persistLayerDisplay();
+                };
+                vminInput.addEventListener('change', applyRange);
+                vmaxInput.addEventListener('change', applyRange);
+                optionDiv.querySelector('.range-reset').addEventListener('click', () => {
+                    const vr2 = valueRasters[key];
+                    if (vr2) {
+                        const st2 = vr2.stats || (vr2.stats = MSIRaster.deriveBakeStats(vr2.values));
+                        settings.vmin = st2.rawMin; settings.vmax = st2.rawDispMax;
+                    } else {
+                        settings.vmin = settings.actualMin; settings.vmax = settings.actualMax;
+                    }
+                    vminInput.value = fmt(settings.vmin);
+                    vmaxInput.value = fmt(settings.vmax);
+                    renderCompositeImage();
+                    if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
+                    persistLayerDisplay();
                 });
-
-                optionDiv.addEventListener('click', (e) => e.stopPropagation());
             });
-
-            button.addEventListener('click', () => menu.classList.toggle('hidden'));
-            document.addEventListener('click', (e) => { if (!container.contains(e.target)) menu.classList.add('hidden'); });
 
             if (imageKeys.length > 0) {
                 // MSI 座標系をキャンバスの基準にする。MSI が無ければ HE/IF → なんでも の順でフォールバック
@@ -645,7 +794,6 @@ function loadAllImages() {
                             }
                         }
 
-                        updateButtonText();
                         renderCompositeImage();
                         drawAllRois();
                         focusThumbnail(firstKey);
@@ -670,28 +818,93 @@ function loadAllImages() {
             }
         }
 
-        function updateButtonText() {
-            const checkboxes = document.querySelectorAll('#image-selector-options input[type="checkbox"]:checked');
-            const button = document.getElementById('image-selector-button');
-            const selectedNames = Array.from(checkboxes).map(cb => formatDisplayName(cb.value));
-            if (button) button.textContent = selectedNames.length > 0 ? selectedNames.join(' + ') : 'Select Images';
+        // 現在チェックされているレイヤ一覧
+        function checkedLayerKeys() {
+            return Array.from(document.querySelectorAll('#image-selector-options input.layer-check:checked'))
+                .map(cb => cb.value);
+        }
+
+        // 表示状態をプロジェクトに書き戻す (静的データセットのときは何もしない)
+        function persistVisibleLayers() {
+            if (!currentProject) return;
+            currentProject.visibleLayers = checkedLayerKeys();
+            queueSaveProject();
+        }
+        function persistLayerDisplay() {
+            if (!currentProject) return;
+            currentProject.layerDisplay = currentProject.layerDisplay || {};
+            for (const key of Object.keys(imageSettings)) {
+                const s = imageSettings[key];
+                currentProject.layerDisplay[key] = {
+                    vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
+                };
+            }
+            queueSaveProject();
+        }
+        // ROI はビューア側で atlasData.roi を直接いじるので、変更のたびに
+        // プロジェクトへ書き戻す。
+        // ★ 以前は書き戻しが無く、opacity 変更などの「ついでの保存」でしか
+        //   永続化されなかった (描いてリロードすると消えることがあった)。
+        function persistRoi() {
+            if (!currentProject) return;
+            currentProject.roi = atlasData.roi;
+            queueSaveProject();
+        }
+
+        let saveTimer = 0;
+        function queueSaveProject() {
+            if (!currentProject) return;
+            if (saveTimer) clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => {
+                saveTimer = 0;
+                ProjectStorage.putProject(currentProject).catch(e => console.warn('[save] 失敗', e));
+            }, 400);
+        }
+
+        // 大津法: このレイヤに適用する keep マスク (トグル OFF なら null)
+        function otsuKeepFor(key) {
+            if (!otsuState.applied || !otsuState.record) return null;
+            const vr = valueRasters[key];
+            if (!vr) return null;
+            const rec = otsuState.record;
+            if (rec.W !== vr.W || rec.H !== vr.H) return null;
+            return rec.keep;
         }
 
         function renderCompositeImage() {
             if (isRendering || !displayCtx) return;
             isRendering = true;
+            // ★ try/finally が無いと、描画中の例外でフラグが立ちっぱなしになり、
+            //   以後すべての再描画が黙って無視される (操作が一切効かなくなる)。
+            try {
             
-            const checkedCheckboxes = document.querySelectorAll('#image-selector-options input[type="checkbox"]:checked');
-            const keysToRender = Array.from(checkedCheckboxes).map(cb => cb.value);
+            // HE/IF を先に、MSI を後に描く。こうしておくと MSI の透明度が
+            // 「100% で HE を覆い、0% で HE が見える」という直感どおりに働く。
+            const keysToRender = checkedLayerKeys().sort((a, b) => {
+                const am = /^MSI/i.test(a) ? 1 : 0, bm = /^MSI/i.test(b) ? 1 : 0;
+                return am - bm;
+            });
 
             displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
-            
+
             for (const key of keysToRender) {
                 const settings = imageSettings[key];
                 const sourceImg = imageSources[key];
-                if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) continue;
+                const vr = valueRasters[key];
+                if (!vr && (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0)) continue;
 
-                const tempCanvas = document.createElement('canvas');
+                let tempCanvas;
+                if (vr) {
+                    // 生値ラスタから直接着色する。8bit を経由しないので、生単位の
+                    // 強度ウィンドウがそのまま効き、大津法のマスクも適用できる。
+                    tempCanvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
+                        color: getMsiColor(key),
+                        win: { min: settings.vmin, max: settings.vmax },
+                        gamma: 0.5,
+                        keep: otsuKeepFor(key),
+                    });
+                } else {
+                tempCanvas = document.createElement('canvas');
                 tempCanvas.width = sourceImg.naturalWidth;
                 tempCanvas.height = sourceImg.naturalHeight;
                 const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
@@ -738,18 +951,24 @@ function loadAllImages() {
                     }
                 }
                 tempCtx.putImageData(imageData, 0, 0);
+                }
 
-                displayCtx.globalAlpha = settings.opacity;
+                displayCtx.globalAlpha = settings.applyOpacity === false ? 1.0 : settings.opacity;
                 // MSI画像は加算合成（lighter）で重ねる → 複数MSIの色が混ざって見える
                 const isMsiLayer = /^MSI/i.test(key);
                 const isHeLike   = /HE_STAIN|IF_STAIN/i.test(key);
                 displayCtx.globalCompositeOperation = isMsiLayer ? 'lighter' : 'source-over';
 
                 const T = atlasData.world_coords && atlasData.world_coords.T_he_to_msi;
-                const isPortrait = sourceImg.naturalHeight > sourceImg.naturalWidth;
+                const isPortrait = sourceImg ? sourceImg.naturalHeight > sourceImg.naturalWidth
+                                             : tempCanvas.height > tempCanvas.width;
                 const msiRef = getMsiRefSize();
 
-                if (T && isHeLike && isPortrait && msiRef && msiRef.w > 0 && msiRef.h > 0) {
+                // ★ 以前は portrait の HE にしか T を適用していなかったが、それだと
+                //   横長の HE を登録して重ね合わせを実行しても、保存はされるのに
+                //   画面が一切変わらない (landscape フォールバックで引き伸ばされる)。
+                //   T があるなら向きに関係なく適用する。
+                if (T && isHeLike && msiRef && msiRef.w > 0 && msiRef.h > 0) {
                     // HE/IF を T_he_to_msi で MSI 座標系へ変換してから CCW90° でキャンバスに描画
                     displayCtx.save();
                     displayCtx.translate(0, displayCanvas.height);
@@ -769,7 +988,7 @@ function loadAllImages() {
                     displayCtx.restore();
                 } else {
                     // フォールバック(test1 互換): 従来の landscape/portrait 自動判定
-                    const isLandscape = sourceImg.naturalWidth > sourceImg.naturalHeight;
+                    const isLandscape = !isPortrait;
                     if (isLandscape) {
                         displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
                     } else {
@@ -784,7 +1003,9 @@ function loadAllImages() {
 
             displayCtx.globalCompositeOperation = 'source-over';
             displayCtx.globalAlpha = 1.0;
-            isRendering = false;
+            } finally {
+                isRendering = false;
+            }
         }
 
         function populateThumbnails() {
@@ -882,15 +1103,16 @@ function loadAllImages() {
         }
 
         function setActiveImage(imageKey) {
-            const checkbox = document.querySelector(`#image-selector-options input[value="${imageKey}"]`);
+            const checkbox = document.querySelector(
+                `#image-selector-options input.layer-check[value="${CSS.escape(imageKey)}"]`);
             if (checkbox) {
                 checkbox.checked = !checkbox.checked;
-                updateButtonText();
                 renderCompositeImage();
+                persistVisibleLayers();
                 if (checkbox.checked) {
                     focusThumbnail(imageKey); // <<< added: サムネイル側も同期
                 } else {
-                    const remain = document.querySelector('#image-selector-options input[type="checkbox"]:checked');
+                    const remain = document.querySelector('#image-selector-options input.layer-check:checked');
                     if (remain) focusThumbnail(remain.value);
                     else {
                         const thumbs = document.querySelectorAll('#thumbnail-container img.thumbnail');
@@ -932,6 +1154,7 @@ function loadAllImages() {
                 showChk.addEventListener('click', (e) => e.stopPropagation());
                 showChk.addEventListener('change', () => {
                     showFlags[key] = showChk.checked;
+                    persistRoi();
                     const activeKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
                     drawAllRois(activeKey);
                     displayGraphForRoi(activeKey);
@@ -957,8 +1180,9 @@ function loadAllImages() {
                         const next = (prompt('ROI 名を入力してください', current) || '').trim();
                         if (!next || next === current) return;
                         atlasData.roi.roi_names[key] = next;
+                        persistRoi();
                         populateRoiList();
-                        const prev = document.querySelector(`.roi-item[data-roi-key="${key}"]`);
+                        const prev = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(key)}"]`);
                         if (prev) {
                             document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                             prev.classList.add('active');
@@ -1013,8 +1237,13 @@ function loadAllImages() {
             }
         }
         
-        // MSI座標系のサイズを取得（最初のMSI画像から推定）
+        // MSI座標系のサイズを取得（最初のMSIラスタ/画像から推定）
         function getMsiRefSize() {
+            const rasterKeys = Object.keys(valueRasters);
+            if (rasterKeys.length > 0) {
+                const vr = valueRasters[rasterKeys[0]];
+                if (vr && vr.W > 0) return { w: vr.W, h: vr.H };
+            }
             const msiKeys = Object.keys(imageSources).filter(k => /^MSI/i.test(k));
             if (msiKeys.length > 0) {
                 const ref = imageSources[msiKeys[0]];
@@ -1079,7 +1308,11 @@ function loadAllImages() {
             const select1 = document.getElementById('graph-select-1');
             const select2 = document.getElementById('graph-select-2');
             const select3 = document.getElementById('graph-select-3');
-            const graphKeys = Object.keys(graphData).filter(k => k !== 'comparison' && Object.keys(graphData[k]).length > 0);
+            // 実際に読み込まれている画像レイヤから作る。
+            // (以前はスタブの graphData から作っていたため、登録データや MSI_TIC が選べなかった)
+            const allKeys = Object.keys(atlasData.images || {});
+            const graphKeys = allKeys.filter(k => /^MSI_/i.test(k));
+            if (!graphKeys.length) graphKeys.push.apply(graphKeys, allKeys);
 
             [select1, select2, select3].forEach(s => s.innerHTML = '');
 
@@ -1109,10 +1342,31 @@ function loadAllImages() {
          * poly_msi座標はMSI画像のピクセル空間（portrait）上の座標
          */
         function extractRoiPixels(imageKey, roiKey) {
-            const sourceImg = imageSources[imageKey];
-            if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) return [];
             const polys = atlasData.roi?.roi_items?.[roiKey];
             if (!polys || polys.length === 0) return [];
+
+            // 生値ラスタがあるなら 8bit の輝度ではなく生の強度を返す。
+            // ROI 統計は定量値なので、表示用の量子化を通してはいけない。
+            const vr = valueRasters[imageKey];
+            if (vr) {
+                const keep = otsuKeepFor(imageKey);
+                const out = [];
+                for (const poly of polys) {
+                    if (!Array.isArray(poly.poly_msi)) continue;
+                    if (!keep) {
+                        out.push.apply(out, MSIRaster.extractRoiValues(vr.values, vr.W, vr.H, poly.poly_msi));
+                        continue;
+                    }
+                    // 背景除去が有効なときは、除去済み画素を統計から外した配列を作る
+                    const masked = new Float32Array(vr.values.length);
+                    for (let i = 0; i < masked.length; i++) masked[i] = keep[i] ? vr.values[i] : NaN;
+                    out.push.apply(out, MSIRaster.extractRoiValues(masked, vr.W, vr.H, poly.poly_msi));
+                }
+                return out;
+            }
+
+            const sourceImg = imageSources[imageKey];
+            if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) return [];
 
             const iw = sourceImg.naturalWidth;
             const ih = sourceImg.naturalHeight;
@@ -1614,9 +1868,10 @@ function loadAllImages() {
             atlasData.roi.palette[newKey]   = rgba;
             atlasData.roi.roi_show_flags[newKey] = true;
             toggleDrawingMode(false);
+            persistRoi();
             populateRoiList();
             // 新規作成した ROI を active 扱いにしてリストのハイライトも合わせる
-            const newItem = document.querySelector(`.roi-item[data-roi-key="${newKey}"]`);
+            const newItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(newKey)}"]`);
             if (newItem) {
                 document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                 newItem.classList.add('active');
@@ -1628,20 +1883,21 @@ function loadAllImages() {
         function deleteUserRoi(key) {
             if (!key || !key.startsWith(USER_ROI_PREFIX)) return;
             if (!confirm('この ROI を削除しますか?')) return;
-            const wasActive = document.querySelector(`.roi-item.active[data-roi-key="${key}"]`) !== null;
+            const wasActive = document.querySelector(`.roi-item.active[data-roi-key="${CSS.escape(key)}"]`) !== null;
             if (atlasData.roi) {
                 delete atlasData.roi.roi_items[key];
                 delete atlasData.roi.roi_names[key];
                 delete atlasData.roi.palette[key];
                 if (atlasData.roi.roi_show_flags) delete atlasData.roi.roi_show_flags[key];
             }
+            persistRoi();
             populateRoiList();
             // 削除した ROI が active なら残った先頭 ROI に切替、そうでなければ現在の active を維持
             const remaining = Object.keys((atlasData.roi && atlasData.roi.roi_items) || {});
             let nextKey = null;
             if (wasActive && remaining.length > 0) {
                 nextKey = remaining[0];
-                const nextItem = document.querySelector(`.roi-item[data-roi-key="${nextKey}"]`);
+                const nextItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(nextKey)}"]`);
                 if (nextItem) nextItem.classList.add('active');
             } else {
                 nextKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
@@ -1691,426 +1947,1034 @@ function loadAllImages() {
         }
 
         // =======================================================================
-        // ZIP ダウンロード機能
+        // ZIP 書き出し / 読み込み
         // =======================================================================
 
-        async function fetchAsBlob(url) {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`fetch failed: ${res.status} ${url}`);
-            return await res.blob();
+        // 表示中の状態を「保存可能なプロジェクト」に落とす。
+        // 静的データセット (?atlas=) を開いている場合も、生値ラスタは持っているので
+        // 同じ形にまとめて Export できる。
+        async function buildExportableProject() {
+            if (currentProject) {
+                syncProjectFromViewer();
+                return currentProject;
+            }
+            const ref = getMsiRefSize();
+            const wc = atlasData.world_coords || {};
+            const proj = {
+                id: ProjectStorage.uid('proj'),
+                displayName: (atlasData.meta && atlasData.meta.dataset_id) || 'atlas',
+                source: 'atlas',
+                orientation: '', plane: '', sliceId: '',
+                grid: {
+                    W: ref.w, H: ref.h,
+                    umPerPxX: (wc.msi_um_per_px && wc.msi_um_per_px.x) || null,
+                    umPerPxY: (wc.msi_um_per_px && wc.msi_um_per_px.y) || null,
+                },
+                molecules: [], images: {},
+                world_coords: wc,
+                alignment: atlasData.alignment || {},
+                layerDisplay: {},
+                otsu: { applied: otsuState.applied, strength: otsuState.strength, manualThreshold: otsuState.manualThreshold },
+                visibleLayers: checkedLayerKeys(),
+                viewerTransform: Object.assign({}, viewTransform),
+                roi: atlasData.roi || {},
+            };
+            // 生値ラスタを一時 blob に落として ZipIO に渡す
+            for (const key of Object.keys(valueRasters)) {
+                const vr = valueRasters[key];
+                const blobId = await ProjectStorage.putValueRaster(vr.values);
+                proj.molecules.push({
+                    key: key, name: key.replace(/^MSI_/i, ''), blobId: blobId,
+                    filterString: '', mode: '', nSpectra: 0,
+                    stats: vr.stats || MSIRaster.deriveBakeStats(vr.values),
+                });
+            }
+            for (const key of Object.keys(imageSettings)) {
+                const s = imageSettings[key];
+                proj.layerDisplay[key] = { vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false };
+            }
+            // HE/IF は data URL しか手元に無いので blob に戻して同梱する
+            for (const key of Object.keys(atlasData.images || {})) {
+                if (!/HE_STAIN|IF_STAIN/i.test(key)) continue;
+                const src = atlasData.images[key];
+                if (typeof src !== 'string') continue;
+                try {
+                    const blob = await (await fetch(src)).blob();
+                    const blobId = await ProjectStorage.putBlob({ blob: blob, mime: blob.type || 'image/png', filename: key + '.png' });
+                    proj.images[key] = { blobId: blobId, mime: blob.type || 'image/png', filename: key + '.png' };
+                } catch (e) { console.warn('[export] 画像の取り出しに失敗', key, e); }
+            }
+            proj._temporary = true;
+            return proj;
         }
 
-        // MSI_Data シートに user ROI 列を追加した xlsx ArrayBuffer を返す。
-        // 失敗時は null を返し、呼び出し側でオリジナル xlsx をそのまま使う。
-        async function buildMsiXlsxWithUserRois(url) {
-            if (typeof XLSX === 'undefined') return null;
-            const roiItems = (atlasData.roi && atlasData.roi.roi_items) || {};
-            const roiNames = (atlasData.roi && atlasData.roi.roi_names) || {};
-            const userKeys = Object.keys(roiItems).filter(k => k.startsWith(USER_ROI_PREFIX));
-            if (!userKeys.length) return null;
-
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`msi xlsx fetch failed: ${res.status}`);
-            const buf = await res.arrayBuffer();
-            const wb = XLSX.read(new Uint8Array(buf), { type: 'array' });
-            const sheetName = 'MSI_Data';
-            const sheet = wb.Sheets[sheetName];
-            if (!sheet || !sheet['!ref']) return null;
-
-            // 既存のヘッダ行(4 行目)と Image_X/Image_Y の列位置を特定する
-            // 期待レイアウト: H=Image_Y, I=Image_X, J=Tissue_ROI, K=Region_ROI(header row = 行 4)
-            const headerRow0 = 3; // 0-based(=行 4)
-            const origRange = XLSX.utils.decode_range(sheet['!ref']);
-            let xCol = -1, yCol = -1, lastHeaderCol = -1;
-            for (let c = origRange.s.c; c <= origRange.e.c; c++) {
-                const addr = XLSX.utils.encode_cell({ r: headerRow0, c });
-                const cell = sheet[addr];
-                if (!cell || cell.v === null || cell.v === undefined) continue;
-                const text = String(cell.v).trim();
-                if (text) lastHeaderCol = c;
-                if (text === 'Image_X') xCol = c;
-                else if (text === 'Image_Y') yCol = c;
+        // ビューア側の現在値をプロジェクトに書き戻す
+        function syncProjectFromViewer() {
+            if (!currentProject) return;
+            currentProject.visibleLayers = checkedLayerKeys();
+            currentProject.viewerTransform = Object.assign({}, viewTransform);
+            currentProject.otsu = {
+                applied: otsuState.applied,
+                strength: otsuState.strength,
+                manualThreshold: otsuState.manualThreshold,
+            };
+            currentProject.roi = atlasData.roi || currentProject.roi;
+            currentProject.world_coords = atlasData.world_coords || currentProject.world_coords;
+            currentProject.layerDisplay = currentProject.layerDisplay || {};
+            for (const key of Object.keys(imageSettings)) {
+                const s = imageSettings[key];
+                currentProject.layerDisplay[key] = {
+                    vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
+                };
             }
-            if (xCol < 0 || yCol < 0) return null;
+        }
 
-            const firstNewCol = lastHeaderCol + 1;
-            const dataStart0 = headerRow0 + 1; // 行 5
-            const dataEnd0 = origRange.e.r;
+        async function exportZip() {
+            const btn = document.getElementById('export-zip');
+            const original = btn ? btn.textContent : '';
+            try {
+                if (btn) { btn.disabled = true; btn.textContent = '準備中…'; }
+                const proj = await buildExportableProject();
+                const blob = await ZipIO.exportProject(proj);
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = ZipIO.safeName(proj.displayName) + '_' + ts + '.zip';
+                document.body.appendChild(a); a.click();
+                setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+                // 一時プロジェクトが作った blob は後始末する
+                if (proj._temporary) {
+                    for (const id of ProjectStorage.collectBlobIds(proj)) {
+                        ProjectStorage.deleteBlob(id).catch(() => {});
+                    }
+                }
+                if (currentProject) await ProjectStorage.putProject(currentProject);
+            } catch (e) {
+                console.error('[exportZip]', e);
+                alert('Export に失敗しました: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = original; }
+            }
+        }
 
-            // 各 user ROI のヘッダと 0/1 セルを書き込む
-            userKeys.forEach((key, idx) => {
-                const col = firstNewCol + idx;
-                const name = (roiNames[key] || key).replace(/[\r\n\t]/g, ' ');
-                const poly = (roiItems[key][0] && roiItems[key][0].poly_msi) || [];
-                sheet[XLSX.utils.encode_cell({ r: headerRow0, c: col })] = { t: 's', v: name };
-                for (let r = dataStart0; r <= dataEnd0; r++) {
-                    const xCell = sheet[XLSX.utils.encode_cell({ r, c: xCol })];
-                    const yCell = sheet[XLSX.utils.encode_cell({ r, c: yCol })];
-                    if (!xCell || !yCell) continue;
-                    const x = Number(xCell.v), y = Number(yCell.v);
-                    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-                    const inside = pointInPolygon(x, y, poly) ? 1 : 0;
-                    sheet[XLSX.utils.encode_cell({ r, c: col })] = { t: 'n', v: inside };
+        async function importZip(file) {
+            const btn = document.getElementById('import-zip');
+            const original = btn ? btn.textContent : '';
+            try {
+                if (btn) { btn.disabled = true; btn.textContent = '読み込み中…'; }
+                const { project, warnings } = await ZipIO.importZip(file);
+                if (warnings.length) console.warn('[importZip] 警告:', warnings);
+                // 読み込んだプロジェクトをそのまま開く
+                location.href = 'index.html?project=' + encodeURIComponent(project.id);
+            } catch (e) {
+                console.error('[importZip]', e);
+                alert('ZIP の読み込みに失敗しました: ' + e.message);
+                if (btn) { btn.disabled = false; btn.textContent = original; }
+            }
+        }
+
+        function setupZipButtons() {
+            const ex = document.getElementById('export-zip');
+            if (ex) ex.addEventListener('click', exportZip);
+            const imBtn = document.getElementById('import-zip');
+            const imInput = document.getElementById('import-zip-input');
+            if (imBtn && imInput) {
+                imBtn.addEventListener('click', () => imInput.click());
+                imInput.addEventListener('change', () => {
+                    const f = imInput.files && imInput.files[0];
+                    imInput.value = '';
+                    if (f) importZip(f);
+                });
+            }
+        }
+
+        // =======================================================================
+        // パン / ズーム
+        //
+        // #image-viewer-rot の CSS transform に --vt-* を載せるだけ。
+        // canvas 要素そのものが変換されるので、ROI 描画が使う event.offsetX/offsetY は
+        // 変換前のローカル座標で届き、canvasToMsi() 以下は無改造で動く。
+        // =======================================================================
+        function applyViewTransform() {
+            const rot = document.getElementById('image-viewer-rot');
+            if (rot) {
+                rot.style.setProperty('--vt-tx', viewTransform.tx + 'px');
+                rot.style.setProperty('--vt-ty', viewTransform.ty + 'px');
+                rot.style.setProperty('--vt-scale', String(viewTransform.scale));
+            }
+            const out = document.getElementById('zoom-readout');
+            if (out) out.textContent = Math.round(viewTransform.scale * 100) + '%';
+        }
+
+        function setupViewTransform() {
+            const host = document.getElementById('image-viewer');
+            if (!host || host.dataset.transformWired === '1') return;
+            host.dataset.transformWired = '1';
+            host.classList.add('pannable');
+
+            const ptrs = new Map();
+            let dragging = false;
+            let startX = 0, startY = 0, baseTx = 0, baseTy = 0;
+            let pinch = null;
+
+            const beginPan = (px, py) => {
+                dragging = true;
+                startX = px; startY = py;
+                baseTx = viewTransform.tx; baseTy = viewTransform.ty;
+            };
+
+            host.addEventListener('pointerdown', (ev) => {
+                if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+                if (drawingMode) return;   // ROI 描画中はパンさせない
+                ptrs.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+                try { host.setPointerCapture(ev.pointerId); } catch (e) {}
+                if (ptrs.size === 1) { beginPan(ev.clientX, ev.clientY); host.classList.add('panning'); }
+                else if (ptrs.size === 2) {
+                    dragging = false;
+                    const p = [...ptrs.values()];
+                    pinch = { d0: Math.hypot(p[0].x - p[1].x, p[0].y - p[1].y) || 1, s0: viewTransform.scale };
                 }
             });
 
-            // 範囲を更新
-            const newRange = {
-                s: { r: origRange.s.r, c: origRange.s.c },
-                e: { r: origRange.e.r, c: firstNewCol + userKeys.length - 1 },
-            };
-            sheet['!ref'] = XLSX.utils.encode_range(newRange);
+            host.addEventListener('pointermove', (ev) => {
+                const p = ptrs.get(ev.pointerId);
+                if (!p) return;
+                p.x = ev.clientX; p.y = ev.clientY;
+                if (pinch && ptrs.size >= 2) {
+                    const v = [...ptrs.values()];
+                    const dist = Math.hypot(v[0].x - v[1].x, v[0].y - v[1].y) || 1;
+                    const sNew = clampScale(pinch.s0 * (dist / pinch.d0));
+                    // 指の中点をズームの不動点にする。translate は画面座標なので
+                    // 等方スケールなら回転は打ち消し合う。
+                    const r = host.getBoundingClientRect();
+                    const Mx = (v[0].x + v[1].x) / 2 - (r.left + r.width / 2);
+                    const My = (v[0].y + v[1].y) / 2 - (r.top + r.height / 2);
+                    zoomAbout(sNew, Mx, My);
+                } else if (dragging) {
+                    viewTransform.tx = baseTx + (ev.clientX - startX);
+                    viewTransform.ty = baseTy + (ev.clientY - startY);
+                    applyViewTransform();
+                }
+            });
 
-            return XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+            const endPointer = (ev) => {
+                ptrs.delete(ev.pointerId);
+                try { host.releasePointerCapture(ev.pointerId); } catch (e) {}
+                if (ptrs.size < 2) pinch = null;
+                if (ptrs.size === 1) {
+                    // 2 本指 → 1 本指に戻ったとき、掴み直して飛びを防ぐ
+                    const p = [...ptrs.values()][0];
+                    beginPan(p.x, p.y);
+                } else if (ptrs.size === 0) {
+                    dragging = false;
+                    host.classList.remove('panning');
+                    persistViewTransform();
+                }
+            };
+            host.addEventListener('pointerup', endPointer);
+            host.addEventListener('pointercancel', endPointer);
+
+            host.addEventListener('wheel', (ev) => {
+                if (drawingMode) return;
+                ev.preventDefault();
+                const r = host.getBoundingClientRect();
+                // カーソル位置を不動点にする (Share_Test はホイールでは中心固定だが、
+                // 拡大して細部を見る用途ではカーソル基準のほうが操作しやすい)
+                const Mx = ev.clientX - (r.left + r.width / 2);
+                const My = ev.clientY - (r.top + r.height / 2);
+                zoomAbout(clampScale(viewTransform.scale * Math.exp(-ev.deltaY * 0.001)), Mx, My);
+                persistViewTransform();
+            }, { passive: false });
+
+            const resetBtn = document.getElementById('view-reset');
+            if (resetBtn) resetBtn.addEventListener('click', () => {
+                viewTransform.tx = 0; viewTransform.ty = 0; viewTransform.scale = 1;
+                applyViewTransform();
+                persistViewTransform();
+            });
+
+            applyViewTransform();
         }
 
-        async function downloadBundle() {
-            if (typeof JSZip === 'undefined') { alert('JSZip が読み込まれていません。'); return; }
-            const btn = document.getElementById('download-bundle');
-            const originalText = btn ? btn.textContent : '';
-            try {
-                if (btn) { btn.disabled = true; btn.textContent = 'Preparing...'; }
-                const zip = new JSZip();
+        function clampScale(s) { return Math.max(0.2, Math.min(8, s)); }
 
-                // 1. atlas.json(ユーザー ROI を含む現時点の状態)
-                const atlasJsonText = JSON.stringify(atlasData, null, 2);
-                zip.file('atlas.json', atlasJsonText);
+        function zoomAbout(sNew, Mx, My) {
+            const k = sNew / viewTransform.scale;
+            viewTransform.tx = Mx - k * (Mx - viewTransform.tx);
+            viewTransform.ty = My - k * (My - viewTransform.ty);
+            viewTransform.scale = sNew;
+            applyViewTransform();
+        }
 
-                // 2. 生データ(meta に記録されたパスを baseDir 経由で取得)
-                const meta = atlasData.meta || {};
-                const params = new URLSearchParams(location.search);
-                const atlasId = params.get('atlas') || '';
-                const baseDir = atlasId ? `../datasets/${atlasId}/` : '';
-                const sourceMap = {
-                    source_msi: meta.source_msi,
-                    source_he: meta.source_he,
-                    source_overlay: meta.source_overlay,
+        function persistViewTransform() {
+            if (!currentProject) return;
+            currentProject.viewerTransform = Object.assign({}, viewTransform);
+            queueSaveProject();
+        }
+
+        // =======================================================================
+        // 大津法 (背景除去)
+        // =======================================================================
+        function recomputeOtsu() {
+            const keys = Object.keys(valueRasters);
+            if (!keys.length) { otsuState.record = null; return; }
+            const tic = Otsu.buildTic(keys.map(k => valueRasters[k]));
+            const ref = valueRasters[keys[0]];
+            otsuState.record = Otsu.buildOtsuRecord(tic, ref.W, ref.H, {
+                strength: otsuState.strength,
+                manualThreshold: otsuState.manualThreshold,
+            });
+        }
+
+        function refreshOtsuUi() {
+            const panel = document.getElementById('otsu-panel');
+            const readout = document.getElementById('otsu-readout');
+            if (!panel) return;
+            panel.classList.toggle('hidden', !otsuState.applied);
+            if (!otsuState.applied || !otsuState.record) return;
+            const rec = otsuState.record;
+            const pct = rec.nOriginal ? (100 * rec.nRemoved / rec.nOriginal) : 0;
+            if (readout) {
+                readout.textContent = `閾値 ${Number(rec.thresholdOriginal.toPrecision(4))} / 除去 ${pct.toFixed(1)}%`;
+            }
+            drawOtsuHistogram();
+        }
+
+        function drawOtsuHistogram() {
+            const canvas = document.getElementById('otsu-hist');
+            const rec = otsuState.record;
+            if (!canvas || !rec) return;
+            const cssW = canvas.clientWidth || 600;
+            canvas.width = cssW; canvas.height = 90;
+            const ctx = canvas.getContext('2d');
+            const W = canvas.width, H = canvas.height;
+            ctx.clearRect(0, 0, W, H);
+
+            const counts = rec.histCounts;
+            let maxC = 0;
+            for (const c of counts) if (c > maxC) maxC = c;
+            const logMax = Math.log10(maxC + 1) || 1;
+            const bw = W / counts.length;
+            const span = (rec.histMax - rec.histMin) || 1;
+            const xOf = (logv) => (logv - rec.histMin) / span * W;
+
+            for (let i = 0; i < counts.length; i++) {
+                const center = rec.histMin + (i + 0.5) * span / counts.length;
+                const hgt = Math.log10(counts[i] + 1) / logMax * (H - 12);
+                ctx.fillStyle = center <= rec.effLog ? '#cbd5e1' : '#60a5fa';
+                ctx.fillRect(i * bw, H - hgt, Math.max(1, bw), hgt);
+            }
+            // 自動 Otsu = グレー破線、有効閾値 = 赤の実線
+            ctx.strokeStyle = '#9ca3af'; ctx.setLineDash([3, 3]); ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.moveTo(xOf(rec.autoThresholdLog), 0); ctx.lineTo(xOf(rec.autoThresholdLog), H); ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.strokeStyle = '#dc2626'; ctx.lineWidth = 2;
+            ctx.beginPath(); ctx.moveTo(xOf(rec.effLog), 0); ctx.lineTo(xOf(rec.effLog), H); ctx.stroke();
+
+            ctx.fillStyle = '#94a3b8'; ctx.font = '9px sans-serif';
+            ctx.fillText('除去', 4, 10);
+            ctx.fillText('組織', W - 24, 10);
+        }
+
+        function applyOtsuAndRedraw() {
+            recomputeOtsu();
+            refreshOtsuUi();
+            renderCompositeImage();
+            for (const [key, el] of msiThumbRefs) renderMsiThumbnail(key, el);
+            const activeRoi = document.querySelector('.roi-item.active');
+            if (activeRoi) displayGraphForRoi(activeRoi.dataset.roiKey);
+            if (currentProject) {
+                currentProject.otsu = {
+                    applied: otsuState.applied, strength: otsuState.strength,
+                    manualThreshold: otsuState.manualThreshold,
                 };
-                for (const [label, relPath] of Object.entries(sourceMap)) {
-                    if (!relPath) continue;
-                    try {
-                        const url = /^https?:|^data:|^\.\.\//.test(relPath) ? relPath : baseDir + encodeURI(relPath);
-                        if (label === 'source_msi') {
-                            // MSI xlsx は user ROI 列を追加した版を書き出す(失敗時は生ファイル)
-                            let injected = null;
-                            try { injected = await buildMsiXlsxWithUserRois(url); }
-                            catch (e) { console.warn('[downloadBundle] xlsx inject failed:', e); }
-                            if (injected) {
-                                zip.file(relPath, injected);
-                                continue;
-                            }
-                        }
-                        const blob = await fetchAsBlob(url);
-                        zip.file(relPath, blob);
-                    } catch (e) {
-                        console.warn(`[downloadBundle] skip ${label}:`, e);
-                    }
-                }
-
-                const blob = await zip.generateAsync({ type: 'blob' });
-                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                const fname = `${meta.dataset_id || 'atlas'}_${ts}.zip`;
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = fname;
-                document.body.appendChild(a); a.click();
-                setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-            } catch (e) {
-                console.error('[downloadBundle] error:', e);
-                alert('ダウンロードに失敗しました: ' + e.message);
-            } finally {
-                if (btn) { btn.disabled = false; btn.textContent = originalText; }
+                queueSaveProject();
             }
         }
 
-        function setupDownloadButton() {
-            const btn = document.getElementById('download-bundle');
-            if (btn) btn.addEventListener('click', downloadBundle);
+        function setupOtsuUi() {
+            const toggle = document.getElementById('otsu-toggle');
+            const canvas = document.getElementById('otsu-hist');
+            const resetBtn = document.getElementById('otsu-reset');
+            if (!toggle) return;
+
+            // 生値ラスタが無い (= 8bit 画像しかない) 場合は使えない
+            const usable = Object.keys(valueRasters).length > 0;
+            toggle.disabled = !usable;
+            if (!usable) {
+                toggle.parentElement.title = 'このデータセットには生値ラスタが無いため背景除去は使えません';
+                return;
+            }
+
+            toggle.checked = otsuState.applied;
+            if (otsuState.applied) recomputeOtsu();
+            refreshOtsuUi();
+
+            toggle.addEventListener('change', () => {
+                otsuState.applied = toggle.checked;
+                applyOtsuAndRedraw();
+            });
+
+            if (resetBtn) resetBtn.addEventListener('click', () => {
+                otsuState.strength = 0;
+                otsuState.manualThreshold = null;
+                applyOtsuAndRedraw();
+            });
+
+            if (canvas) {
+                let dragging = false;
+                const toLog = (ev) => {
+                    const rec = otsuState.record;
+                    if (!rec) return null;
+                    const r = canvas.getBoundingClientRect();
+                    const f = Math.max(0, Math.min(1, (ev.clientX - r.left) / Math.max(1, r.width)));
+                    return rec.histMin + f * (rec.histMax - rec.histMin);
+                };
+                const setFrom = (ev) => {
+                    const rec = otsuState.record;
+                    const lv = toLog(ev);
+                    if (!rec || lv == null) return;
+                    // 強度 = 自動 Otsu からの log10 オフセット。[-3, +3] に丸める。
+                    otsuState.strength = Math.max(-3, Math.min(3, lv - rec.autoThresholdLog));
+                    otsuState.manualThreshold = null;
+                };
+                canvas.addEventListener('pointerdown', (ev) => {
+                    dragging = true;
+                    try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
+                    setFrom(ev); recomputeOtsu(); refreshOtsuUi();
+                });
+                canvas.addEventListener('pointermove', (ev) => {
+                    if (!dragging) return;
+                    setFrom(ev); recomputeOtsu(); refreshOtsuUi();
+                });
+                const end = (ev) => {
+                    if (!dragging) return;
+                    dragging = false;
+                    try { canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
+                    applyOtsuAndRedraw();
+                };
+                canvas.addEventListener('pointerup', end);
+                canvas.addEventListener('pointercancel', end);
+            }
+
+            window.addEventListener('resize', () => { if (otsuState.applied) drawOtsuHistogram(); });
         }
     </script>
 
     <script>
-    async function loadAtlasJsonExternal() {
-      const params = new URLSearchParams(location.search);
-      const atlasId = params.get('atlas') || null;
-      if (!atlasId) return null;
+    // =====================================================================
+    // 重ね合わせ (HE ↔ MSI) モーダル
+    //
+    // 数学はすべて ../lib/align.js (Share_Test からの移植)。ここは UI だけ。
+    // 座標系は「生 HE px → 生 MSI px」。表示の -90° 回転は一切絡めないので、
+    // 両ペインとも生の向きのまま見せる。
+    // =====================================================================
+    function heLayerKeys() {
+      return Object.keys(atlasData.images || {}).filter(k => /HE_STAIN|IF_STAIN/i.test(k));
+    }
+
+    function setupAlignButton() {
+      const btn = document.getElementById('align-btn');
+      if (!btn) return;
+      const heKeys = heLayerKeys();
+      const msiKeys = Object.keys(valueRasters);
+      if (!heKeys.length || !msiKeys.length) {
+        btn.disabled = true;
+        btn.title = !heKeys.length
+          ? 'HE / IF 染色画像が登録されていないため重ね合わせできません'
+          : 'MSI の生値ラスタが無いため重ね合わせできません';
+        btn.classList.add('opacity-50', 'cursor-not-allowed');
+        return;
+      }
+      btn.addEventListener('click', () => openAlignModal(heKeys[0], msiKeys[0]));
+    }
+
+    function openAlignModal(heKey, msiKey0) {
+      const heImg = imageSources[heKey];
+      if (!heImg || !heImg.complete || !heImg.naturalWidth) { alert('HE 画像がまだ読み込まれていません。'); return; }
+
+      const msiKeys = Object.keys(valueRasters);
+      const saved = (atlasData.alignment && atlasData.alignment[heKey]) || null;
+      const state = Object.assign(
+        Align.defaultAlignState(),
+        saved ? {
+          flip_lr: !!saved.flip_lr, flip_ud: !!saved.flip_ud,
+          scale_pct: saved.scale_pct, rotate_deg: saved.rotate_deg,
+          offx: saved.offx, offy: saved.offy,
+        } : ZipIO.stateFromT(atlasData.world_coords && atlasData.world_coords.T_he_to_msi),
+        {}
+      );
+      state.landmarks = {
+        he: (saved && saved.landmarks && saved.landmarks.he ? saved.landmarks.he.map(p => p.slice()) : []),
+        msi: (saved && saved.landmarks && saved.landmarks.msi ? saved.landmarks.msi.map(p => p.slice()) : []),
+      };
+      let autoMeta = (saved && saved.autoAligned) || null;
+      let msiKey = msiKeys.indexOf(msiKey0) >= 0 ? msiKey0 : msiKeys[0];
+      let pickMode = null;   // 'he' | 'msi' | null
+
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal-box">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-base font-semibold">重ね合わせ — ${formatDisplayName(heKey)} → MSI</h3>
+            <button class="text-gray-400 hover:text-gray-700 text-xl leading-none" data-act="close">&times;</button>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3">
+            <!-- HE ペイン -->
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-medium text-gray-700">HE (生の向き)</span>
+                <button class="text-xs px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-pick="he">対応点を打つ</button>
+              </div>
+              <div class="pick-pane" data-pane="he"><img data-img="he"></div>
+            </div>
+            <!-- MSI ペイン -->
+            <div>
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-xs font-medium text-gray-700">MSI
+                  <select data-sel="msi" class="text-xs border-gray-300 rounded ml-1 py-0"></select>
+                </span>
+                <button class="text-xs px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-pick="msi">対応点を打つ</button>
+              </div>
+              <div class="pick-pane" data-pane="msi"><img data-img="msi"></div>
+            </div>
+            <!-- プレビュー -->
+            <div>
+              <div class="text-xs font-medium text-gray-700 mb-1">プレビュー (緑 = HE 輪郭)</div>
+              <div class="pick-pane"><img data-img="preview"></div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-3 gap-3 mt-3">
+            <!-- パラメータ -->
+            <div class="text-xs space-y-1">
+              <div class="font-medium text-gray-700 mb-1">変換パラメータ</div>
+              <label class="flex items-center gap-1"><input type="checkbox" data-p="flip_lr" class="h-3 w-3"> 左右反転</label>
+              <label class="flex items-center gap-1"><input type="checkbox" data-p="flip_ud" class="h-3 w-3"> 上下反転</label>
+              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">スケール</span><input type="number" step="any" data-p="scale_pct" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">%</span></div>
+              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">回転</span><input type="number" step="any" data-p="rotate_deg" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">°</span></div>
+              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">X 移動</span><input type="number" step="any" data-p="offx" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">px</span></div>
+              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">Y 移動</span><input type="number" step="any" data-p="offy" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">px</span></div>
+              <div class="pt-2">
+                <button class="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 w-full" data-act="auto">自動整合 (シルエット)</button>
+              </div>
+            </div>
+
+            <!-- 対応点 -->
+            <div class="text-xs">
+              <div class="flex items-center justify-between mb-1">
+                <span class="font-medium text-gray-700">対応点 (半自動)</span>
+                <span>
+                  <button class="px-1.5 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-act="undo">1 点戻す</button>
+                  <button class="px-1.5 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-act="clear">全消去</button>
+                </span>
+              </div>
+              <div data-el="qc" class="mb-1"></div>
+              <div data-el="table" class="max-h-32 overflow-y-auto border border-gray-200 rounded"></div>
+              <button class="mt-1 w-full px-2 py-1 rounded border border-gray-300 hover:bg-gray-50" data-act="solve">対応点から解く (Solve)</button>
+            </div>
+
+            <!-- 結果 -->
+            <div class="text-xs">
+              <div class="font-medium text-gray-700 mb-1">評価</div>
+              <div data-el="report" class="text-gray-600 leading-relaxed"></div>
+            </div>
+          </div>
+
+          <div class="flex justify-end gap-2 mt-4 pt-3 border-t">
+            <button class="px-3 py-1 text-xs rounded border border-gray-300 hover:bg-gray-50" data-act="close">キャンセル</button>
+            <button class="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700" data-act="apply">適用して保存</button>
+          </div>
+        </div>`;
+      document.body.appendChild(backdrop);
+
+      const q = (sel) => backdrop.querySelector(sel);
+      const heImgEl = q('[data-img="he"]');
+      const msiImgEl = q('[data-img="msi"]');
+      const prevImgEl = q('[data-img="preview"]');
+      const msiSel = q('[data-sel="msi"]');
+
+      msiKeys.forEach(k => msiSel.add(new Option(formatDisplayName(k), k)));
+      msiSel.value = msiKey;
+
+      // ---- 描画 ----------------------------------------------------------
+      heImgEl.src = atlasData.images[heKey];
+
+      function msiCanvas() {
+        const vr = valueRasters[msiKey];
+        const st = imageSettings[msiKey] || {};
+        return MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
+          color: null, win: { min: st.vmin, max: st.vmax }, gamma: 0.5,
+        });
+      }
+      function refreshMsiPane() { msiImgEl.src = msiCanvas().toDataURL(); }
+
+      function umPerPxNow() {
+        const wc = atlasData.world_coords || {};
+        return wc.msi_um_per_px || null;
+      }
+
+      // HE の緑マスクは T に依存しないので 1 度だけ作って使い回す。
+      // ★ 毎回作り直すと、スライダーを 1 つ動かすたびに HE 全画素を読み直すことになり、
+      //   大きな TIFF (数千 px 角) では操作が固まる。
+      // 作業解像度も HE_MASK_MAX_EDGE 相当に落とす (プレビューの見た目には十分)。
+      let heTintCanvas = null;
+      function heTint() {
+        if (heTintCanvas) return heTintCanvas;
+        const rawW = heImg.naturalWidth, rawH = heImg.naturalHeight;
+        const k = Math.max(1, Math.max(rawW, rawH) / 1024);
+        const w = Math.max(8, Math.round(rawW / k)), h = Math.max(8, Math.round(rawH / k));
+        const tint = document.createElement('canvas');
+        tint.width = w; tint.height = h;
+        const tctx = tint.getContext('2d', { willReadFrequently: true });
+        tctx.imageSmoothingEnabled = true;
+        tctx.imageSmoothingQuality = 'high';
+        tctx.drawImage(heImg, 0, 0, w, h);
+        const d = tctx.getImageData(0, 0, w, h);
+        const px = d.data;
+        for (let i = 0; i < px.length; i += 4) {
+          const mx = Math.max(px[i], px[i + 1], px[i + 2]);
+          const mn = Math.min(px[i], px[i + 1], px[i + 2]);
+          const sat = mx ? (mx - mn) / mx : 0;
+          const on = sat > Align.HE_MASK_SAT_MIN && mx / 255 < Align.HE_MASK_VAL_MAX;
+          px[i] = 0; px[i + 1] = on ? 220 : 0; px[i + 2] = 0; px[i + 3] = 255;
+        }
+        tctx.putImageData(d, 0, 0);
+        // 生 HE ピクセル座標系に戻すための倍率を持たせておく
+        tint._sx = rawW / w; tint._sy = rawH / h;
+        heTintCanvas = tint;
+        return tint;
+      }
+
+      function refreshPreview() {
+        const vr = valueRasters[msiKey];
+        const T = Align.buildHeToMsiAffine(state);
+        const c = document.createElement('canvas');
+        c.width = vr.W; c.height = vr.H;
+        const ctx = c.getContext('2d');
+        ctx.drawImage(msiCanvas(), 0, 0);
+        // HE を T で MSI 座標系に写して緑で重ねる
+        const tint = heTint();
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.55;
+        ctx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]);
+        // tint は縮小してあるので、生 HE 座標に戻してから T に載せる
+        ctx.scale(tint._sx, tint._sy);
+        ctx.drawImage(tint, 0, 0);
+        ctx.restore();
+        prevImgEl.src = c.toDataURL();
+      }
+
+      function syncInputsFromState() {
+        backdrop.querySelectorAll('[data-p]').forEach(el => {
+          const k = el.dataset.p;
+          if (el.type === 'checkbox') el.checked = !!state[k];
+          else el.value = Number(Number(state[k]).toPrecision(8));
+        });
+      }
+
+      function renderLandmarks() {
+        for (const which of ['he', 'msi']) {
+          const pane = q(`[data-pane="${which}"]`);
+          pane.querySelectorAll('.pick-dot').forEach(n => n.remove());
+          const img = which === 'he' ? heImgEl : msiImgEl;
+          const nW = img.naturalWidth || 1, nH = img.naturalHeight || 1;
+          state.landmarks[which].forEach((p, i) => {
+            const dot = document.createElement('div');
+            dot.className = 'pick-dot';
+            dot.style.left = (p[0] / nW * 100) + '%';
+            dot.style.top = (p[1] / nH * 100) + '%';
+            dot.style.background = which === 'he' ? '#22c55e' : '#f97316';
+            dot.textContent = String(i + 1);
+            pane.appendChild(dot);
+          });
+        }
+        renderResiduals();
+      }
+
+      function renderResiduals() {
+        const T = Align.buildHeToMsiAffine(state);
+        const resid = Align.computeLandmarkResiduals(state.landmarks, T, umPerPxNow());
+        const nHe = state.landmarks.he.length, nMsi = state.landmarks.msi.length;
+        const vr = valueRasters[msiKey];
+
+        // 点の分布の良し悪し
+        const geo = Align.assessLandmarkGeometry(state.landmarks.msi, vr.W, vr.H);
+        let qc = '';
+        if (nHe !== nMsi) qc = `<span class="text-amber-700">HE ${nHe} 点 / MSI ${nMsi} 点 — 数を揃えてください</span>`;
+        else if (nHe < 3) qc = `<span class="text-red-700">${nHe} 点 — 3 点以上を推奨 (2 点では残差が必ず 0 になり誤差が測れません)</span>`;
+        else if (geo.spread < 0.33) qc = `<span class="text-amber-700">点が狭い範囲に固まっています (spread ${geo.spread.toFixed(2)}) — 外周に散らしてください</span>`;
+        else qc = `<span class="text-green-700">${nHe} 点 / 分布 ${geo.spread.toFixed(2)}</span>`;
+        q('[data-el="qc"]').innerHTML = qc;
+
+        const outlierCut = (resid && resid.n >= 3) ? resid.rmse_px * 2.5 : Infinity;
+        let html = '<table class="w-full text-[11px]"><thead class="bg-gray-50 text-gray-500"><tr>' +
+          '<th class="px-1 text-left">#</th><th class="px-1 text-right">Δ px</th><th class="px-1 text-right">Δ µm</th></tr></thead><tbody>';
+        if (resid) {
+          for (const p of resid.perPoint) {
+            const cls = p.d > outlierCut ? ' class="resid-out"' : '';
+            html += `<tr${cls}><td class="px-1">${p.i + 1}</td><td class="px-1 text-right">${p.d.toFixed(2)}</td>` +
+              `<td class="px-1 text-right">${Number.isFinite(p.dUm) ? p.dUm.toFixed(1) : '—'}</td></tr>`;
+          }
+        }
+        html += '</tbody></table>';
+        q('[data-el="table"]').innerHTML = html;
+
+        let rep = '';
+        if (resid) {
+          rep += `<div>対応点 RMSE: <b>${resid.rmse_px.toFixed(2)} px</b>` +
+            (Number.isFinite(resid.rmse_um) ? ` (${resid.rmse_um.toFixed(1)} µm)` : '') + '</div>';
+          rep += `<div>最大: ${resid.max_px.toFixed(2)} px` +
+            (Number.isFinite(resid.max_um) ? ` (${resid.max_um.toFixed(1)} µm)` : '') + '</div>';
+        }
+        if (autoMeta) {
+          rep += `<div class="mt-1 text-gray-500">自動整合: Dice ${Number(autoMeta.dice).toFixed(4)} / ` +
+            `異方性 ${Number(autoMeta.aniso).toFixed(3)}${autoMeta.blended ? ' / 手動と合成' : ''}</div>`;
+          if (autoMeta.reliableRotation === false) {
+            rep += '<div class="text-red-700">⚠ 組織がほぼ回転対称です。この形では回転角を決められません — 対応点で確認してください。</div>';
+          }
+        }
+        q('[data-el="report"]').innerHTML = rep || '<span class="text-gray-400">対応点を打つか自動整合を実行してください。</span>';
+      }
+
+      function refreshAll() { syncInputsFromState(); renderLandmarks(); refreshPreview(); }
+
+      // ---- 操作 ----------------------------------------------------------
+      backdrop.querySelectorAll('[data-p]').forEach(el => {
+        el.addEventListener('change', () => {
+          const k = el.dataset.p;
+          state[k] = el.type === 'checkbox' ? el.checked : Number(el.value);
+          autoMeta = null;
+          refreshAll();
+        });
+      });
+
+      msiSel.addEventListener('change', () => {
+        msiKey = msiSel.value;
+        refreshMsiPane();
+        // ★ setTimeout(...,0) では新しい <img> のデコードが終わっておらず、
+        //   renderLandmarks が前のラスタの naturalWidth で点を配置してしまう。
+        //   (分子ごとにグリッドが違う場合に位置がずれる)
+        if (msiImgEl.complete && msiImgEl.naturalWidth) refreshAll();
+        else msiImgEl.addEventListener('load', refreshAll, { once: true });
+      });
+
+      backdrop.querySelectorAll('[data-pick]').forEach(b => {
+        b.addEventListener('click', () => {
+          const which = b.dataset.pick;
+          pickMode = pickMode === which ? null : which;
+          backdrop.querySelectorAll('[data-pane]').forEach(p => {
+            p.classList.toggle('active', p.dataset.pane === pickMode);
+          });
+        });
+      });
+
+      for (const which of ['he', 'msi']) {
+        q(`[data-pane="${which}"]`).addEventListener('click', (ev) => {
+          if (pickMode !== which) return;
+          const img = which === 'he' ? heImgEl : msiImgEl;
+          if (!img.naturalWidth) return;
+          const r = img.getBoundingClientRect();
+          // ペインは生の向きで出しているので、表示比で割り戻すだけで生 px になる
+          const x = (ev.clientX - r.left) / Math.max(1, r.width) * img.naturalWidth;
+          const y = (ev.clientY - r.top) / Math.max(1, r.height) * img.naturalHeight;
+          state.landmarks[which].push([x, y]);
+          renderLandmarks();
+        });
+      }
+
+      q('[data-act="undo"]').addEventListener('click', () => {
+        // 数が多いほうを 1 点戻す (打ち間違いは必ず片側だけ多い状態で気づく)
+        const he = state.landmarks.he, msi = state.landmarks.msi;
+        if (he.length > msi.length) he.pop();
+        else if (msi.length > he.length) msi.pop();
+        else { he.pop(); msi.pop(); }
+        renderLandmarks();
+      });
+      q('[data-act="clear"]').addEventListener('click', () => {
+        state.landmarks.he = []; state.landmarks.msi = [];
+        renderLandmarks();
+      });
+
+      q('[data-act="solve"]').addEventListener('click', () => {
+        try {
+          const fit = Align.solveAlignFromLandmarks(state.landmarks, state.flip_lr, state.flip_ud);
+          if (!fit) throw new Error('対応点が 2 組以上必要です');
+          Object.assign(state, fit);
+          autoMeta = null;
+          refreshAll();
+        } catch (e) {
+          alert('Solve に失敗しました: ' + e.message);
+        }
+      });
+
+      q('[data-act="auto"]').addEventListener('click', async () => {
+        const btn = q('[data-act="auto"]');
+        btn.disabled = true;
+        const prev = btn.textContent;
+        btn.textContent = '組織シルエットを抽出中…';
+        await new Promise(r => requestAnimationFrame(() => r()));
+        try {
+          const heM = Align.heTissueMask(heImg);
+          if (!heM) throw new Error('HE から組織領域を抽出できませんでした (背景との彩度差が小さい可能性があります)');
+          const vr = valueRasters[msiKey];
+          const msiM = Align.msiTissueMaskFromValues(vr.values, vr.W, vr.H);
+          if (!msiM) throw new Error('MSI から組織領域を抽出できませんでした');
+
+          // 両側の µm/px が判っていればスケールは自由変数ではない
+          const wc = atlasData.world_coords || {};
+          const heUm = wc.he_um_per_px;
+          const msiUm = wc.msi_um_per_px;
+          const heMean = heUm && heUm.x > 0 && heUm.y > 0 ? (Number(heUm.x) + Number(heUm.y)) / 2 : 0;
+          const msiMean = msiUm && msiUm.x > 0 && msiUm.y > 0 ? (Number(msiUm.x) + Number(msiUm.y)) / 2 : 0;
+          const lockScale = (heMean > 0 && msiMean > 0) ? (heMean / msiMean) : 0;
+
+          const auto = Align.autoAlignSilhouette(heM, msiM, lockScale ? { lockScale: lockScale } : null);
+          if (!auto) throw new Error('シルエットからの推定に失敗しました');
+
+          const Tcur = Align.buildHeToMsiAffine(state);
+          const Tauto = Align.buildHeToMsiAffine(auto.state);
+          const dCur = Align.transformDisagreementPx(heM, Tcur, Tauto);
+
+          // 手動解があれば逆分散でブレンドする
+          let hybrid = null, sigMan = null;
+          const manual = Align.solveAlignFromLandmarks(state.landmarks, state.flip_lr, state.flip_ud);
+          if (manual) {
+            const manResid = Align.computeLandmarkResiduals(state.landmarks, Align.buildHeToMsiAffine(manual), umPerPxNow());
+            sigMan = Align.estimateLandmarkFitSigmaPx(manResid);
+            const dManAuto = Align.transformDisagreementPx(heM, Align.buildHeToMsiAffine(manual), Tauto);
+            if (sigMan) {
+              const wMan = 1 / (sigMan * sigMan);
+              const wAuto = 1 / (auto.sigmaPx * auto.sigmaPx);
+              // ★ 一貫性チェック: 手動解と自動解が合成不確かさの 3 倍より離れていたら
+              //   どちらかが壊れている。平均せず両方見せる。
+              const tol = 3 * Math.sqrt(sigMan * sigMan + auto.sigmaPx * auto.sigmaPx);
+              if (Number.isFinite(dManAuto) && dManAuto <= tol) {
+                hybrid = Align.blendAlignStates(manual, wMan, auto.state, wAuto);
+              }
+            }
+          }
+
+          let html = `<div class="border border-gray-200 rounded p-2 bg-gray-50">` +
+            `<div>Dice <b>${auto.dice.toFixed(4)}</b> / 評価 ${auto.evals} 回</div>` +
+            `<div>回転 ${auto.state.rotate_deg.toFixed(2)}° / スケール ${auto.state.scale_pct.toFixed(2)}%` +
+            (auto.scaleLocked ? ' <span class="text-gray-500">(µm/px から固定)</span>' : '') + '</div>' +
+            `<div>現在値との差 ${Number.isFinite(dCur) ? dCur.toFixed(2) + ' px' : '—'}</div>` +
+            `<div>期待誤差 ±${auto.sigmaPx.toFixed(1)} px</div>`;
+          if (!auto.reliableRotation) {
+            html += `<div class="text-red-700 mt-1">⚠ 異方性 ${auto.aniso.toFixed(3)} — 組織がほぼ回転対称で、` +
+              `Dice はどの角度でもほぼ同じ値になります。回転角は信用できません。</div>`;
+          }
+          if (auto.scaleLocked && Math.abs(auto.areaScaleRatio - 1) > 0.05) {
+            html += `<div class="text-amber-700 mt-1">⚠ 面積比から出るスケールが固定値と ` +
+              `${((auto.areaScaleRatio - 1) * 100).toFixed(1)}% ずれています。µm/px の設定を確認してください。</div>`;
+          }
+          html += '<div class="mt-2 flex gap-1">' +
+            '<button class="px-2 py-0.5 rounded border border-blue-300 bg-white hover:bg-blue-50" data-auto-apply="auto">自動解を適用</button>';
+          if (hybrid) html += '<button class="px-2 py-0.5 rounded border border-blue-300 bg-white hover:bg-blue-50" data-auto-apply="hybrid">手動と合成して適用</button>';
+          html += '</div></div>';
+          q('[data-el="report"]').innerHTML = html;
+
+          q('[data-el="report"]').querySelectorAll('[data-auto-apply]').forEach(b => {
+            b.addEventListener('click', () => {
+              const which = b.getAttribute('data-auto-apply');
+              const chosen = which === 'hybrid' && hybrid ? hybrid : auto.state;
+              Object.assign(state, chosen);
+              autoMeta = {
+                method: 'silhouette-v1', dice: auto.dice, aniso: auto.aniso,
+                reliableRotation: auto.reliableRotation, scaleLocked: auto.scaleLocked,
+                sigmaPx: auto.sigmaPx, ts: Date.now(),
+              };
+              if (which === 'hybrid') autoMeta.blended = true;
+              refreshAll();
+            });
+          });
+        } catch (e) {
+          q('[data-el="report"]').innerHTML = '<div class="text-red-700">' + e.message + '</div>';
+        } finally {
+          btn.disabled = false;
+          btn.textContent = prev;
+        }
+      });
+
+      backdrop.querySelectorAll('[data-act="close"]').forEach(b => {
+        b.addEventListener('click', () => backdrop.remove());
+      });
+      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
+
+      q('[data-act="apply"]').addEventListener('click', async () => {
+        const T = Align.buildHeToMsiAffine(state);
+        atlasData.world_coords = atlasData.world_coords || {};
+        atlasData.world_coords.T_he_to_msi = T;
+        atlasData.alignment = atlasData.alignment || {};
+        atlasData.alignment[heKey] = {
+          flip_lr: state.flip_lr, flip_ud: state.flip_ud,
+          scale_pct: state.scale_pct, rotate_deg: state.rotate_deg,
+          offx: state.offx, offy: state.offy,
+          landmarks: { he: state.landmarks.he.map(p => p.slice()), msi: state.landmarks.msi.map(p => p.slice()) },
+          autoAligned: autoMeta || undefined,
+        };
+        if (currentProject) {
+          currentProject.world_coords = atlasData.world_coords;
+          currentProject.alignment = atlasData.alignment;
+          try {
+            await ProjectStorage.putProject(currentProject);
+          } catch (err) {
+            // ★ ここで握りつぶすとモーダルが閉じないまま固まり、
+            //   ユーザーは保存できたと思い込んでしまう。
+            console.error('[align] 保存に失敗:', err);
+            alert('位置合わせの保存に失敗しました: ' + err.message +
+                  '\n(表示には反映しますが、保存されていません)');
+          }
+        }
+        backdrop.remove();
+        renderCompositeImage();
+      });
+
+      refreshMsiPane();
+      // 画像の読み込みが終わってから点とプレビューを描く
+      const ready = [];
+      for (const im of [heImgEl, msiImgEl]) {
+        if (!im.complete || !im.naturalWidth) ready.push(new Promise(r => im.addEventListener('load', r, { once: true })));
+      }
+      Promise.all(ready).then(refreshAll);
+    }
+
+    // =====================================================================
+    // データ読み込み
+    // =====================================================================
+    async function loadAtlasJsonExternal(atlasId) {
       const url = `../datasets/${atlasId}/atlas.json`;
       const res = await fetch(url);
       if (!res.ok) throw new Error(`atlas.json fetch failed: ${res.status} ${url}`);
       return await res.json();
     }
 
-    async function buildPngFromTxt(def) {
-      /* 省略（元のまま） */
-      /* …中略…  */
-      // 元の関数本文はそのままです
-      const res = await fetch(def.src);
-      if (!res.ok) throw new Error(`txt fetch failed: ${res.status} ${def.src}`);
-      const raw = await res.text();
-      const linesAll = raw.split(/\r?\n/);
-      const lines = linesAll.filter(s => s.trim().length > 0);
-      if (lines.length < 1) throw new Error(`no content in ${def.src}`);
-      const isAnalyte = /^\s*Analyte\s*\(converted from imzML\)\s*$/i.test(lines[0]);
-      let rows = [];
-      let valueColIndex = null;
-      if (isAnalyte) {
-        if (lines.length < 5) throw new Error(`Analyte format too short: ${def.src}`);
-        const precs = lines[2].trim().split(/\s+/).map(Number).filter(Number.isFinite);
-        const prods = lines[3].trim().split(/\s+/).map(Number).filter(Number.isFinite);
-        const nCh = Math.min(precs.length, prods.length);
-        if (typeof def.v_index === "number" && def.v_index >= 0 && def.v_index < nCh) {
-          valueColIndex = 3 + def.v_index;
-        } else {
-          const targetMz = (typeof def.v_mz === "number") ? def.v_mz : null;
-          const targetPair = (def.v_mz_pair && Array.isArray(def.v_mz_pair) && def.v_mz_pair.length === 2)
-            ? def.v_mz_pair.map(Number) : null;
-          let pick = 0;
-          if (Number.isFinite(targetMz)) {
-            let best = Infinity;
-            for (let i = 0; i < nCh; i++) {
-              const d = Math.abs(precs[i] - targetMz);
-              if (d < best) { best = d; pick = i; }
-            }
-          } else if (targetPair && targetPair.every(Number.isFinite)) {
-            let best = Infinity;
-            for (let i = 0; i < nCh; i++) {
-              const d = Math.abs(precs[i] - targetPair[0]) + Math.abs(prods[i] - targetPair[1]);
-              if (d < best) { best = d; pick = i; }
-            }
-          }
-          valueColIndex = 3 + pick;
-        }
-        for (let i = 4; i < lines.length; i++) {
-          const tok = lines[i].trim().split(/\s+/).map(t => Number(t));
-          if (tok.length >= 4 && tok.slice(0, 4).every(Number.isFinite)) {
-            const x  = tok[1];
-            const y  = tok[2];
-            if (valueColIndex >= tok.length) {
-              console.warn(`[buildPngFromTxt] valueColIndex ${valueColIndex} は列数 ${tok.length} を超えています (行${i+1})`);
-              continue;
-            }
-            const v  = tok[valueColIndex];
-            if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) {
-              rows.push({ x, y, v });
-            }
-          }
-        }
-        if (!rows.length) throw new Error(`no numeric rows (Analyte) in ${def.src}`);
-      } else {
-        const rawHeader = lines[0];
-        const sep = (def.sep === "\\t" || def.sep === "\t") ? "\t"
-                  : (def.sep === "," ? "," : null);
-        const detectSep = sep || (rawHeader.includes("\t") ? "\t"
-                             : (rawHeader.includes(",") ? ","
-                             : "ws"));
-        const splitBy = (s) => (detectSep === "ws" ? s.trim().split(/\s+/)
-                                                   : s.split(detectSep));
-        const header = splitBy(rawHeader).map(s => s.trim());
-        const findIdx = (name) => {
-          const i = header.indexOf(name);
-          if (i < 0) throw new Error(`column '${name}' not found in ${def.src}`);
-          return i;
-        };
-        const xi = findIdx(def.x);
-        const yi = findIdx(def.y);
-        const valueNames = def.v ? [def.v] : (def.v_cols || []);
-        const vi = valueNames.map(findIdx);
-        if (vi.length === 0) throw new Error(`no value column (v or v_cols) defined for ${def.src}`);
-        const valueIndex = vi[0];
-        for (let i = 1; i < lines.length; i++) {
-          const cols = splitBy(lines[i]);
-          if (cols.length < header.length) continue;
-          const x = Number(cols[xi]), y = Number(cols[yi]), v = Number(cols[valueIndex]);
-          if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) {
-            rows.push({ x, y, v });
-          }
-        }
-        if (!rows.length) throw new Error(`no numeric rows in ${def.src}`);
+    /** 静的データセット (?atlas=) を読む。MSI は生値ラスタも作る。 */
+    async function loadStaticAtlas(atlasId) {
+      const external = await loadAtlasJsonExternal(atlasId);
+      const baseDir = `../datasets/${atlasId}/`;
+      atlasData = {
+        meta: external.meta || { format: 'roi_bundle_v1' },
+        roi: external.roi || {},
+        images: {},
+        world_coords: external.world_coords || {},
+        alignment: external.alignment || {},
+        thumbnail_order: Array.isArray(external.thumbnail_order) ? external.thumbnail_order : [],
+      };
+      const resolve = (v) => (typeof v === 'string' && !/^data:|^https?:|^\.\.\//.test(v))
+        ? baseDir + encodeURI(v) : v;
+
+      for (const [k, v] of Object.entries(external.images || {})) atlasData.images[k] = resolve(v);
+
+      const addRaster = (key, rows) => {
+        const r = MSIRaster.rasterFromRows(rows);
+        r.stats = MSIRaster.deriveBakeStats(r.values);
+        valueRasters[key] = r;
+        atlasData.images[key] = MSIRaster.bakeToPngDataUrl(r.values, r.W, r.H, r.stats.bakeLo, r.stats.bakeHi);
+      };
+
+      for (const [key, def] of Object.entries(external.txt_series || {})) {
+        try {
+          const src = resolve(def.src);
+          const res = await fetch(src);
+          if (!res.ok) throw new Error(`txt fetch failed: ${res.status}`);
+          const { rows } = Ingest.rowsFromText(await res.text(), def);
+          addRaster(key, rows);
+        } catch (e) { console.warn('txt -> ラスタ生成に失敗:', key, e); }
       }
-      return rasterRowsToPngDataUrl(rows, def.range);
+      for (const [key, def] of Object.entries(external.xlsx_series || {})) {
+        try {
+          const src = resolve(def.src);
+          const res = await fetch(src);
+          if (!res.ok) throw new Error(`xlsx fetch failed: ${res.status}`);
+          const wb = Ingest.workbookFromArrayBuffer(await res.arrayBuffer());
+          addRaster(key, Ingest.rowsFromWorkbook(wb, def));
+        } catch (e) { console.warn('xlsx -> ラスタ生成に失敗:', key, e); }
+      }
     }
 
-    function rasterRowsToPngDataUrl(rows, range) {
-      const xs = [...new Set(rows.map(r => r.x))].sort((a,b) => a - b);
-      const ys = [...new Set(rows.map(r => r.y))].sort((a,b) => a - b);
-      const W = xs.length, H = ys.length;
-      const xIndex = new Map(xs.map((v,i) => [v, i]));
-      const yIndex = new Map(ys.map((v,i) => [v, i]));
-      const grid = Array(H).fill(0).map(() => Array(W).fill(NaN));
-      const cnt  = Array(H).fill(0).map(() => Array(W).fill(0));
-      for (const r of rows) {
-        const ci = xIndex.get(r.x), ri = yIndex.get(r.y);
-        if (ci == null || ri == null) continue;
-        const old = grid[ri][ci];
-        grid[ri][ci] = (Number.isFinite(old) ? old : 0) + r.v;
-        cnt[ri][ci]  = (cnt[ri][ci] || 0) + 1;
+    /** 登録済みプロジェクト (?project=) を IndexedDB から読む。 */
+    async function loadProject(projectId) {
+      const p = await ProjectStorage.getProject(projectId);
+      if (!p) throw new Error('登録データが見つかりません (id=' + projectId + ')');
+      currentProject = p;
+
+      atlasData = {
+        meta: { format: 'roi_bundle_v1', dataset_id: p.displayName },
+        roi: p.roi || { roi_items: {}, roi_names: {}, palette: {}, roi_show_flags: {} },
+        images: {},
+        world_coords: p.world_coords || {},
+        alignment: p.alignment || {},
+        thumbnail_order: (p.molecules || []).map(m => m.key),
+      };
+
+      for (const m of (p.molecules || [])) {
+        const values = await ProjectStorage.getValueRaster(m.blobId);
+        if (!values) { console.warn('[loadProject] ラスタが見つかりません', m.key); continue; }
+        const r = { values: values, W: p.grid.W, H: p.grid.H };
+        r.stats = m.stats || MSIRaster.deriveBakeStats(values);
+        valueRasters[m.key] = r;
+        atlasData.images[m.key] = MSIRaster.bakeToPngDataUrl(values, r.W, r.H, r.stats.bakeLo, r.stats.bakeHi);
       }
-      let vmin = +Infinity, vmax = -Infinity;
-      for (let i = 0; i < H; i++) {
-        for (let j = 0; j < W; j++) {
-          if (cnt[i][j] > 0) {
-            grid[i][j] /= cnt[i][j];
-            const val = grid[i][j];
-            if (val < vmin) vmin = val;
-            if (val > vmax) vmax = val;
-          }
+
+      for (const key of Object.keys(p.images || {})) {
+        const im = p.images[key];
+        try {
+          const rec = await ProjectStorage.getBlob(im.blobId);
+          if (!rec || !rec.blob) throw new Error('blob がありません');
+          atlasData.images[key] = await Ingest.imageBlobToDataUrl(rec.blob, im.filename);
+        } catch (e) {
+          console.warn('[loadProject] 画像の復元に失敗', key, e);
         }
       }
-      if (range && range.length === 2) {
-        vmin = range[0]; vmax = range[1];
-        if (!(vmax > vmin)) vmax = vmin + 1e-9;
-      } else {
-        if (!(vmax > vmin)) { vmin = 0; vmax = 1; }
+
+      if (p.otsu) {
+        otsuState.applied = !!p.otsu.applied;
+        otsuState.strength = Number(p.otsu.strength) || 0;
+        otsuState.manualThreshold = p.otsu.manualThreshold != null ? Number(p.otsu.manualThreshold) : null;
       }
-      const canvas = document.createElement('canvas');
-      canvas.width = W; canvas.height = H;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      const imgData = ctx.createImageData(W, H);
-      let p = 0;
-      for (let i = 0; i < H; i++) {
-        for (let j = 0; j < W; j++) {
-          const val = grid[i][j];
-          if (!Number.isFinite(val)) {
-            imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0; imgData.data[p++] = 0;
-          } else {
-            const n = Math.max(0, Math.min(1, (val - vmin) / (vmax - vmin)));
-            const g = Math.round(n * 255);
-            imgData.data[p++] = g; imgData.data[p++] = g; imgData.data[p++] = g; imgData.data[p++] = 255;
-          }
-        }
+      if (p.viewerTransform) {
+        viewTransform.tx = Number(p.viewerTransform.tx) || 0;
+        viewTransform.ty = Number(p.viewerTransform.ty) || 0;
+        viewTransform.scale = Number(p.viewerTransform.scale) || 1;
       }
-      ctx.putImageData(imgData, 0, 0);
-      return canvas.toDataURL("image/png");
+      const title = document.getElementById('atlas-title');
+      if (title) title.textContent = p.displayName;
     }
 
-    const xlsxWorkbookCache = new Map();
-    async function fetchXlsxWorkbook(url) {
-      if (xlsxWorkbookCache.has(url)) return xlsxWorkbookCache.get(url);
-      const p = (async () => {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error(`xlsx fetch failed: ${res.status} ${url}`);
-        const buf = await res.arrayBuffer();
-        if (typeof XLSX === "undefined") throw new Error("SheetJS (XLSX) library not loaded");
-        return XLSX.read(new Uint8Array(buf), { type: "array" });
-      })();
-      xlsxWorkbookCache.set(url, p);
-      return p;
-    }
-
-    function a1ColToIndex(colRef) {
-      if (typeof colRef === "number") return colRef;
-      const s = String(colRef).toUpperCase();
-      let n = 0;
-      for (let i = 0; i < s.length; i++) {
-        const c = s.charCodeAt(i);
-        if (c < 65 || c > 90) return NaN;
-        n = n * 26 + (c - 64);
-      }
-      return n - 1;
-    }
-
-    async function buildPngFromXlsx(def) {
-      const wb = await fetchXlsxWorkbook(def.src);
-      const sheetName = def.sheet || wb.SheetNames[0];
-      const sheet = wb.Sheets[sheetName];
-      if (!sheet) throw new Error(`sheet '${sheetName}' not found in ${def.src}`);
-      const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: null });
-      const startIdx = Math.max(0, (def.data_start_row || 1) - 1);
-      const xi = a1ColToIndex(def.col_x);
-      const yi = a1ColToIndex(def.col_y);
-      const vi = a1ColToIndex(def.col_v);
-      if (!Number.isFinite(xi) || !Number.isFinite(yi) || !Number.isFinite(vi)) {
-        throw new Error(`invalid column refs in xlsx def: ${JSON.stringify(def)}`);
-      }
-      const rows = [];
-      for (let i = startIdx; i < aoa.length; i++) {
-        const r = aoa[i];
-        if (!r) continue;
-        const x = Number(r[xi]), y = Number(r[yi]), v = Number(r[vi]);
-        if (Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(v)) {
-          rows.push({ x, y, v });
-        }
-      }
-      if (!rows.length) throw new Error(`no numeric rows in xlsx ${def.src} (sheet=${sheetName})`);
-      return rasterRowsToPngDataUrl(rows, def.range);
-    }
-
-    async function decodeTiffToPngDataUrl(url) {
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`tiff fetch failed: ${res.status} ${url}`);
-      const buf = await res.arrayBuffer();
-      if (typeof UTIF === "undefined") throw new Error("UTIF library not loaded");
-      const ifds = UTIF.decode(buf);
-      if (!ifds || !ifds.length) throw new Error(`no IFDs in ${url}`);
-      UTIF.decodeImage(buf, ifds[0]);
-      const rgba = UTIF.toRGBA8(ifds[0]);
-      const W = ifds[0].width, H = ifds[0].height;
-      const canvas = document.createElement('canvas');
-      canvas.width = W; canvas.height = H;
-      const ctx = canvas.getContext('2d');
-      const imgData = ctx.createImageData(W, H);
-      imgData.data.set(rgba);
-      ctx.putImageData(imgData, 0, 0);
-      return canvas.toDataURL("image/png");
-    }
-
+    // =====================================================================
+    // ブートストラップ
+    // =====================================================================
     (async () => {
+      const params = new URLSearchParams(location.search);
+      const projectId = params.get('project');
+      const atlasId = params.get('atlas');
       try {
-        const external = await loadAtlasJsonExternal();
-        await domReady; // DOM初期化完了を待つ
-        if (!external) {
-          await initializeViewer();
+        if (!projectId && !atlasId) {
+          // 開くものが指定されていなければ master 画面に戻す
+          location.replace('../index.html');
           return;
         }
-        const params2 = new URLSearchParams(location.search);
-        const atlasId2 = params2.get('atlas') || '';
-        const baseDir = atlasId2 ? `../datasets/${atlasId2}/` : '';
-        atlasData = {
-          meta: external.meta || { format: "roi_bundle_v1" },
-          roi: external.roi || {},
-          images: {},
-          world_coords: external.world_coords || {},
-          thumbnail_order: Array.isArray(external.thumbnail_order) ? external.thumbnail_order : []
-        };
-        for (const [k, v] of Object.entries(external.images || {})) {
-          if (typeof v === "string" && !/^data:|^https?:|^\.\.\//.test(v)) {
-            atlasData.images[k] = baseDir + encodeURI(v);
-          } else {
-            atlasData.images[k] = v;
-          }
-        }
-        const series = external.txt_series || {};
-        for (const [key, def] of Object.entries(series)) {
-          try {
-            const defFixed = Object.assign({}, def);
-            if (defFixed && typeof defFixed.src === "string" && !/^https?:|^data:|^\.\.\//.test(defFixed.src)) {
-              defFixed.src = baseDir + encodeURI(defFixed.src);
-            }
-            const pngUrl = await buildPngFromTxt(defFixed);
-            atlasData.images[key] = pngUrl;
-          } catch (e) {
-            console.warn("txt -> PNG 生成に失敗:", key, e);
-          }
-        }
-        const xlsxSeries = external.xlsx_series || {};
-        for (const [key, def] of Object.entries(xlsxSeries)) {
-          try {
-            const defFixed = Object.assign({}, def);
-            if (defFixed && typeof defFixed.src === "string" && !/^https?:|^data:|^\.\.\//.test(defFixed.src)) {
-              defFixed.src = baseDir + encodeURI(defFixed.src);
-            }
-            const pngUrl = await buildPngFromXlsx(defFixed);
-            atlasData.images[key] = pngUrl;
-          } catch (e) {
-            console.warn("xlsx -> PNG 生成に失敗:", key, e);
-          }
-        }
+        if (projectId) await loadProject(projectId);
+        else await loadStaticAtlas(atlasId);
+        await domReady;
         await initializeViewer();
       } catch (e) {
         console.error(e);
-        try { await initializeViewer(); } catch (_) {}
+        await domReady;
+        const viewer = document.getElementById('image-viewer');
+        if (viewer) {
+          viewer.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-red-300 text-sm p-4 text-center">' +
+            'データの読み込みに失敗しました: ' + String(e.message || e) +
+            '<br><a href="../index.html" class="underline text-blue-300 mt-2 inline-block">Master 画面へ戻る</a></div>';
+        }
       }
     })();</script>
+
 
     <div id="buildTag" style="position:fixed;bottom:4px;right:6px;font-size:10px;color:#94a3b8;pointer-events:none;z-index:50;"></div>
     <script>document.getElementById('buildTag').textContent = 'v:rot-fix-2';</script>
