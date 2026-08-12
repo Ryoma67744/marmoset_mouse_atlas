@@ -23,6 +23,23 @@
         .btn-primary:hover { background:#1d4ed8; }
         .btn-danger { color:#b91c1c; border-color:#fca5a5; }
         .btn-danger:hover { background:#fef2f2; }
+        /* フォルダツリー */
+        .tree-node { display:flex; align-items:center; gap:2px; padding:2px 4px; border-radius:4px; cursor:pointer; }
+        .tree-node:hover { background:#f1f5f9; }
+        .tree-node.sel { background:#dbeafe; color:#1d4ed8; font-weight:600; }
+        .tree-node.drop { outline:2px solid #3b82f6; outline-offset:-2px; background:#eff6ff; }
+        .tree-twisty { width:14px; text-align:center; color:#94a3b8; font-size:10px; user-select:none; flex-shrink:0; }
+        .tree-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .tree-count { color:#94a3b8; font-size:11px; font-weight:400; flex-shrink:0; }
+        .row-drop { outline:2px solid #3b82f6; outline-offset:-2px; background:#eff6ff; }
+        .dragging { opacity:.45; }
+        /* 移動先ピッカー */
+        .picker-backdrop { position:fixed; inset:0; background:rgba(15,23,42,.5);
+            display:flex; align-items:center; justify-content:center; z-index:70; }
+        .picker-box { background:#fff; border-radius:8px; width:min(420px,92vw); max-height:80vh;
+            overflow:auto; padding:16px; box-shadow:0 20px 40px rgba(0,0,0,.3); }
+        .picker-item { padding:4px 6px; border-radius:4px; cursor:pointer; font-size:13px; }
+        .picker-item:hover { background:#eff6ff; }
     </style>
 </head>
 <body class="text-gray-800">
@@ -90,13 +107,25 @@
                     <div class="flex items-center gap-2">
                         <input type="file" id="zip-input" accept=".zip,application/zip" class="hidden">
                         <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
+                        <button id="new-folder" class="btn">+ フォルダ</button>
+                        <button id="bulk-move" class="btn" disabled>選択を移動</button>
                         <button id="bulk-export" class="btn" disabled>選択を Export</button>
                         <button id="bulk-delete" class="btn btn-danger" disabled>選択を削除</button>
                         <button id="clear-all" class="btn btn-danger">全データ削除</button>
                     </div>
                 </div>
-                <div id="project-list" class="space-y-2">
-                    <p class="text-gray-500 text-sm">読み込み中…</p>
+                <div class="flex gap-4 items-start">
+                    <!-- 左: フォルダツリー -->
+                    <div class="w-56 shrink-0 border-r border-gray-200 pr-3">
+                        <div id="folder-tree" class="text-sm"></div>
+                    </div>
+                    <!-- 右: 選択中フォルダの中身 -->
+                    <div class="flex-1 min-w-0">
+                        <div id="breadcrumb" class="text-xs text-gray-500 mb-2 flex items-center flex-wrap gap-1"></div>
+                        <div id="project-list" class="space-y-2">
+                            <p class="text-gray-500 text-sm">読み込み中…</p>
+                        </div>
+                    </div>
                 </div>
                 <p id="storage-note" class="mt-4 text-xs text-gray-400"></p>
             </section>
@@ -252,6 +281,8 @@
                 id: ProjectStorage.uid('proj'),
                 displayName: group.groupKey,
                 source: 'imzml',
+                // いま開いているフォルダに入れる
+                folderId: currentFolderId || null,
                 orientation: group.orientation,
                 plane: group.plane,
                 sliceId: group.sliceId,
@@ -323,8 +354,32 @@
         }
 
         // =================================================================
-        // 登録済みデータの一覧 / 一括操作
+        // 登録済みデータの一覧 / フォルダ / 一括操作
         // =================================================================
+        // フォルダは parentId を持つ平坦なレコード (lib/storage.js)。
+        // ここでは表示のためにツリーへ組み直し、選択中フォルダの中身だけを右に出す。
+        let currentFolderId = null;                 // null = 一番上
+        let expanded = new Set();                   // 展開中のフォルダ id
+        let cache = { folders: [], projects: [], tree: null };
+
+        const FOLDER_KEY = 'marmoset:currentFolder';
+        try {
+            const saved = sessionStorage.getItem(FOLDER_KEY);
+            if (saved) currentFolderId = saved === '' ? null : saved;
+        } catch (e) { /* sessionStorage が使えなくても致命的ではない */ }
+
+        function setCurrentFolder(id) {
+            currentFolderId = id || null;
+            try { sessionStorage.setItem(FOLDER_KEY, currentFolderId || ''); } catch (e) {}
+            // 選んだフォルダまでの親をすべて開いておく
+            let p = currentFolderId;
+            while (p && cache.tree && cache.tree.byId.has(p)) {
+                expanded.add(p);
+                p = cache.tree.byId.get(p).parentId || null;
+            }
+            render();
+        }
+
         function selectedIds() {
             return [...document.querySelectorAll('#project-list input.sel:checked')].map(c => c.value);
         }
@@ -332,66 +387,383 @@
             const n = selectedIds().length;
             document.getElementById('bulk-export').disabled = n === 0;
             document.getElementById('bulk-delete').disabled = n === 0;
+            document.getElementById('bulk-move').disabled = n === 0;
+        }
+
+        /** 保存層から読み直してツリーを組み直す */
+        async function reload() {
+            const [folders, projects] = await Promise.all([
+                ProjectStorage.listFolders(), ProjectStorage.listProjects(),
+            ]);
+            const tree = ProjectStorage.buildFolderTree(folders);
+            // 壊れていた親子関係はルートに拾い上げたので、保存し直す
+            for (const f of tree.repaired) {
+                console.warn('[folders] 親が見つからないためルートに移しました:', f.name);
+                await ProjectStorage.putFolder(f);
+            }
+            // 消えたフォルダを指している登録データもルートに戻す
+            for (const p of projects) {
+                if (p.folderId && !tree.byId.has(p.folderId)) {
+                    console.warn('[folders] 親フォルダが無いためルートに移しました:', p.displayName);
+                    p.folderId = null;
+                    await ProjectStorage.putProject(p);
+                }
+            }
+            if (currentFolderId && !tree.byId.has(currentFolderId)) currentFolderId = null;
+            cache = { folders: folders, projects: projects, tree: tree };
         }
 
         async function refreshProjectList() {
-            const list = document.getElementById('project-list');
-            let projects;
-            try { projects = await ProjectStorage.listProjects(); }
-            catch (e) { list.innerHTML = '<p class="text-sm text-red-600">保存領域を開けませんでした: ' + esc(e.message) + '</p>'; return; }
-
-            if (!projects.length) {
-                list.innerHTML = '<p class="text-gray-500 text-sm">まだ登録されたデータはありません。上のパネルから登録するか、ZIP を読み込んでください。</p>';
-                refreshBulkButtons();
+            try { await reload(); }
+            catch (e) {
+                document.getElementById('project-list').innerHTML =
+                    '<p class="text-sm text-red-600">保存領域を開けませんでした: ' + esc(e.message) + '</p>';
                 return;
             }
-            list.innerHTML = '';
-            for (const p of projects) {
-                const row = document.createElement('div');
-                row.className = 'flex items-center gap-3 border border-gray-200 rounded p-3 hover:border-blue-300';
-                const mols = (p.molecules || []).map(m => m.name).join(', ') || '—';
-                const grid = p.grid && p.grid.W ? `${p.grid.W} × ${p.grid.H} px` : '—';
-                const um = p.grid && p.grid.umPerPxX ? ` / ${p.grid.umPerPxX} µm` : '';
-                const he = p.images && p.images.HE_Stain ? 'あり' : 'なし';
-                const aligned = p.world_coords && p.world_coords.T_he_to_msi ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
-                row.innerHTML =
-                    '<input type="checkbox" class="sel h-4 w-4 rounded border-gray-300" value="' + esc(p.id) + '">' +
-                    '<div class="flex-1 min-w-0">' +
-                      '<div class="font-semibold text-gray-900 truncate">' + esc(p.displayName) + '</div>' +
-                      '<div class="text-xs text-gray-500 mt-0.5">' +
-                        '分子: ' + esc(mols) + ' &nbsp;·&nbsp; グリッド: ' + esc(grid + um) +
-                        ' &nbsp;·&nbsp; HE: ' + he + ' &nbsp;·&nbsp; ' + aligned +
-                      '</div>' +
-                      '<div class="text-xs text-gray-400 mt-0.5">更新 ' + esc((p.updatedAt || '').slice(0, 19).replace('T', ' ')) + '</div>' +
-                    '</div>' +
-                    '<div class="flex items-center gap-1 shrink-0">' +
-                      '<button class="btn" data-act="open">開く</button>' +
-                      '<button class="btn" data-act="rename">名前変更</button>' +
-                      '<button class="btn" data-act="export">Export</button>' +
-                      '<button class="btn btn-danger" data-act="delete">削除</button>' +
-                    '</div>';
-                row.querySelector('.sel').addEventListener('change', refreshBulkButtons);
-                row.querySelector('[data-act="open"]').addEventListener('click', () => {
-                    location.href = 'viewer/index.html?project=' + encodeURIComponent(p.id);
-                });
-                row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
-                    const name = (prompt('新しい名前', p.displayName) || '').trim();
-                    if (!name) return;
-                    p.displayName = name;
-                    await ProjectStorage.putProject(p);
-                    await refreshProjectList();
-                });
-                row.querySelector('[data-act="export"]').addEventListener('click', () => exportOne(p));
-                row.querySelector('[data-act="delete"]').addEventListener('click', async () => {
-                    if (!confirm(`「${p.displayName}」を削除しますか?`)) return;
-                    await ProjectStorage.deleteProject(p.id);
-                    await refreshProjectList();
-                });
-                list.appendChild(row);
-            }
-            refreshBulkButtons();
+            render();
             updateStorageNote();
         }
+
+        function render() {
+            renderTree();
+            renderBreadcrumb();
+            renderContents();
+            refreshBulkButtons();
+        }
+
+        // ---- 数え上げ -------------------------------------------------------
+        function directProjects(folderId) {
+            return cache.projects.filter(p => (p.folderId || null) === (folderId || null));
+        }
+        function directFolders(folderId) {
+            return (cache.tree.childrenOf.get(folderId || '') || []);
+        }
+        /** そのフォルダ以下 (子孫を含む) の登録データ件数 */
+        function deepCount(folderId) {
+            let n = directProjects(folderId).length;
+            for (const f of directFolders(folderId)) n += deepCount(f.id);
+            return n;
+        }
+
+        // ---- 左ペイン: ツリー ------------------------------------------------
+        function renderTree() {
+            const host = document.getElementById('folder-tree');
+            host.innerHTML = '';
+
+            host.appendChild(makeTreeNode({ id: null, name: 'すべて' }, 0, true));
+            const walk = (parentId, depth) => {
+                for (const f of directFolders(parentId)) {
+                    host.appendChild(makeTreeNode(f, depth, false));
+                    if (expanded.has(f.id)) walk(f.id, depth + 1);
+                }
+            };
+            walk(null, 1);
+        }
+
+        function makeTreeNode(folder, depth, isRoot) {
+            const id = folder.id || null;
+            const el = document.createElement('div');
+            el.className = 'tree-node' + ((currentFolderId || null) === id ? ' sel' : '');
+            el.style.paddingLeft = (depth * 12 + 4) + 'px';
+            el.title = folder.name;
+
+            const kids = isRoot ? [] : directFolders(id);
+            const twisty = document.createElement('span');
+            twisty.className = 'tree-twisty';
+            twisty.textContent = kids.length ? (expanded.has(id) ? '▼' : '▶') : '';
+            if (kids.length) {
+                twisty.addEventListener('click', (ev) => {
+                    ev.stopPropagation();
+                    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+                    renderTree();
+                });
+            }
+            el.appendChild(twisty);
+
+            const label = document.createElement('span');
+            label.className = 'tree-label';
+            label.textContent = (isRoot ? '📚 ' : '📁 ') + folder.name;
+            el.appendChild(label);
+
+            const n = deepCount(id);
+            if (n) {
+                const c = document.createElement('span');
+                c.className = 'tree-count';
+                c.textContent = ' ' + n;
+                el.appendChild(c);
+            }
+
+            el.addEventListener('click', () => setCurrentFolder(id));
+
+            // フォルダ自体もドラッグして移動できる (ルートを除く)
+            if (!isRoot) {
+                el.draggable = true;
+                el.addEventListener('dragstart', (ev) => {
+                    ev.dataTransfer.setData('text/plain', JSON.stringify({ type: 'folder', ids: [id] }));
+                    ev.dataTransfer.effectAllowed = 'move';
+                });
+            }
+            wireDropTarget(el, id);
+            return el;
+        }
+
+        // ---- ドラッグ & ドロップ ---------------------------------------------
+        function wireDropTarget(el, folderId) {
+            el.addEventListener('dragover', (ev) => {
+                ev.preventDefault();
+                ev.dataTransfer.dropEffect = 'move';
+                el.classList.add(el.classList.contains('tree-node') ? 'drop' : 'row-drop');
+            });
+            el.addEventListener('dragleave', () => {
+                el.classList.remove('drop', 'row-drop');
+            });
+            el.addEventListener('drop', async (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                el.classList.remove('drop', 'row-drop');
+                let payload;
+                try { payload = JSON.parse(ev.dataTransfer.getData('text/plain')); } catch (e) { return; }
+                if (!payload || !Array.isArray(payload.ids)) return;
+                if (payload.type === 'folder') await moveFolders(payload.ids, folderId);
+                else await moveProjects(payload.ids, folderId);
+            });
+        }
+
+        async function moveProjects(ids, folderId) {
+            for (const id of ids) {
+                const p = await ProjectStorage.getProject(id);
+                if (!p) continue;
+                p.folderId = folderId || null;
+                await ProjectStorage.putProject(p);
+            }
+            await refreshProjectList();
+        }
+
+        async function moveFolders(ids, targetId) {
+            for (const id of ids) {
+                if (id === targetId) continue;
+                // ★ 自分の子孫の中へは移せない (ツリーが輪になって行方不明になる)
+                if (targetId && ProjectStorage.isDescendantFolder(targetId, id, cache.tree.byId)) {
+                    showError('フォルダを自分の下位フォルダへは移動できません。');
+                    continue;
+                }
+                const f = await ProjectStorage.getFolder(id);
+                if (!f) continue;
+                f.parentId = targetId || null;
+                await ProjectStorage.putFolder(f);
+            }
+            await refreshProjectList();
+        }
+
+        // ---- パンくず --------------------------------------------------------
+        function renderBreadcrumb() {
+            const host = document.getElementById('breadcrumb');
+            host.innerHTML = '';
+            const chain = [{ id: null, name: 'すべて' }];
+            let id = currentFolderId;
+            const stack = [];
+            while (id && cache.tree.byId.has(id)) {
+                const f = cache.tree.byId.get(id);
+                stack.unshift(f);
+                id = f.parentId || null;
+            }
+            chain.push.apply(chain, stack);
+            chain.forEach((f, i) => {
+                if (i) {
+                    const sep = document.createElement('span');
+                    sep.textContent = '/';
+                    sep.className = 'text-gray-300';
+                    host.appendChild(sep);
+                }
+                const a = document.createElement('span');
+                a.textContent = f.name;
+                a.className = i === chain.length - 1
+                    ? 'font-semibold text-gray-700' : 'text-blue-600 hover:underline cursor-pointer';
+                if (i !== chain.length - 1) a.addEventListener('click', () => setCurrentFolder(f.id));
+                wireDropTarget(a, f.id);
+                host.appendChild(a);
+            });
+        }
+
+        // ---- 右ペイン: 中身 --------------------------------------------------
+        function renderContents() {
+            const list = document.getElementById('project-list');
+            list.innerHTML = '';
+
+            const subs = directFolders(currentFolderId);
+            const projects = directProjects(currentFolderId);
+
+            if (!subs.length && !projects.length) {
+                list.innerHTML = cache.projects.length
+                    ? '<p class="text-gray-500 text-sm">このフォルダは空です。データをここへドラッグするか、「+ フォルダ」でさらに整理できます。</p>'
+                    : '<p class="text-gray-500 text-sm">まだ登録されたデータはありません。上のパネルから登録するか、ZIP を読み込んでください。</p>';
+            }
+
+            for (const f of subs) list.appendChild(makeFolderRow(f));
+            for (const p of projects) list.appendChild(makeProjectRow(p));
+        }
+
+        function makeFolderRow(f) {
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-3 border border-gray-200 rounded p-3 hover:border-blue-300 bg-gray-50';
+            row.draggable = true;
+            row.addEventListener('dragstart', (ev) => {
+                ev.dataTransfer.setData('text/plain', JSON.stringify({ type: 'folder', ids: [f.id] }));
+                ev.dataTransfer.effectAllowed = 'move';
+                row.classList.add('dragging');
+            });
+            row.addEventListener('dragend', () => row.classList.remove('dragging'));
+            wireDropTarget(row, f.id);
+
+            const n = deepCount(f.id);
+            row.innerHTML =
+                '<span class="w-4"></span>' +
+                '<div class="flex-1 min-w-0 cursor-pointer" data-act="enter">' +
+                  '<div class="font-semibold text-gray-900 truncate">📁 ' + esc(f.name) + '</div>' +
+                  '<div class="text-xs text-gray-500 mt-0.5">' + (n ? n + ' 件' : '空') + '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-1 shrink-0">' +
+                  '<button class="btn" data-act="rename">名前変更</button>' +
+                  '<button class="btn" data-act="move">移動</button>' +
+                  '<button class="btn btn-danger" data-act="delete">削除</button>' +
+                '</div>';
+
+            row.querySelector('[data-act="enter"]').addEventListener('click', () => setCurrentFolder(f.id));
+            row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
+                const name = (prompt('フォルダ名', f.name) || '').trim();
+                if (!name || name === f.name) return;
+                f.name = name;
+                await ProjectStorage.putFolder(f);
+                await refreshProjectList();
+            });
+            row.querySelector('[data-act="move"]').addEventListener('click', () => {
+                openFolderPicker('「' + f.name + '」の移動先', (target) => moveFolders([f.id], target), f.id);
+            });
+            row.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+                const n2 = deepCount(f.id);
+                const msg = n2
+                    ? `フォルダ「${f.name}」を削除します。\n中身 (${n2} 件) は 1 つ上の階層に移動します。データは削除されません。`
+                    : `フォルダ「${f.name}」を削除しますか?`;
+                if (!confirm(msg)) return;
+                await ProjectStorage.deleteFolder(f.id);
+                await refreshProjectList();
+            });
+            return row;
+        }
+
+        function makeProjectRow(p) {
+            const row = document.createElement('div');
+            row.className = 'flex items-center gap-3 border border-gray-200 rounded p-3 hover:border-blue-300';
+            row.draggable = true;
+            row.addEventListener('dragstart', (ev) => {
+                // 選択済みのものがあればまとめて運ぶ
+                const sel = selectedIds();
+                const ids = sel.includes(p.id) ? sel : [p.id];
+                ev.dataTransfer.setData('text/plain', JSON.stringify({ type: 'project', ids: ids }));
+                ev.dataTransfer.effectAllowed = 'move';
+                row.classList.add('dragging');
+            });
+            row.addEventListener('dragend', () => row.classList.remove('dragging'));
+
+            const mols = (p.molecules || []).map(m => m.name).join(', ') || '—';
+            const grid = p.grid && p.grid.W ? `${p.grid.W} × ${p.grid.H} px` : '—';
+            const um = p.grid && p.grid.umPerPxX ? ` / ${p.grid.umPerPxX} µm` : '';
+            const he = p.images && p.images.HE_Stain ? 'あり' : 'なし';
+            const aligned = p.world_coords && p.world_coords.T_he_to_msi
+                ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
+            row.innerHTML =
+                '<input type="checkbox" class="sel h-4 w-4 rounded border-gray-300" value="' + esc(p.id) + '">' +
+                '<div class="flex-1 min-w-0">' +
+                  '<div class="font-semibold text-gray-900 truncate">' + esc(p.displayName) + '</div>' +
+                  '<div class="text-xs text-gray-500 mt-0.5">' +
+                    '分子: ' + esc(mols) + ' &nbsp;·&nbsp; グリッド: ' + esc(grid + um) +
+                    ' &nbsp;·&nbsp; HE: ' + he + ' &nbsp;·&nbsp; ' + aligned +
+                  '</div>' +
+                  '<div class="text-xs text-gray-400 mt-0.5">更新 ' + esc((p.updatedAt || '').slice(0, 19).replace('T', ' ')) + '</div>' +
+                '</div>' +
+                '<div class="flex items-center gap-1 shrink-0">' +
+                  '<button class="btn" data-act="open">開く</button>' +
+                  '<button class="btn" data-act="rename">名前変更</button>' +
+                  '<button class="btn" data-act="move">移動</button>' +
+                  '<button class="btn" data-act="export">Export</button>' +
+                  '<button class="btn btn-danger" data-act="delete">削除</button>' +
+                '</div>';
+
+            row.querySelector('.sel').addEventListener('change', refreshBulkButtons);
+            row.querySelector('[data-act="open"]').addEventListener('click', () => {
+                location.href = 'viewer/index.html?project=' + encodeURIComponent(p.id);
+            });
+            row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
+                const name = (prompt('新しい名前', p.displayName) || '').trim();
+                if (!name) return;
+                p.displayName = name;
+                await ProjectStorage.putProject(p);
+                await refreshProjectList();
+            });
+            row.querySelector('[data-act="move"]').addEventListener('click', () => {
+                openFolderPicker('「' + p.displayName + '」の移動先', (target) => moveProjects([p.id], target), null);
+            });
+            row.querySelector('[data-act="export"]').addEventListener('click', () => exportOne(p));
+            row.querySelector('[data-act="delete"]').addEventListener('click', async () => {
+                if (!confirm(`「${p.displayName}」を削除しますか?`)) return;
+                await ProjectStorage.deleteProject(p.id);
+                await refreshProjectList();
+            });
+            return row;
+        }
+
+        // ---- 移動先ピッカー ---------------------------------------------------
+        // excludeId を指定すると、そのフォルダとその子孫を選べなくする (循環防止)
+        function openFolderPicker(title, onPick, excludeId) {
+            const back = document.createElement('div');
+            back.className = 'picker-backdrop';
+            const box = document.createElement('div');
+            box.className = 'picker-box';
+            box.innerHTML = '<div class="font-semibold text-sm mb-2">' + esc(title) + '</div>';
+            back.appendChild(box);
+
+            const add = (folder, depth) => {
+                const id = folder.id || null;
+                const blocked = excludeId && id &&
+                    ProjectStorage.isDescendantFolder(id, excludeId, cache.tree.byId);
+                const item = document.createElement('div');
+                item.className = 'picker-item' + (blocked ? ' text-gray-300' : '');
+                item.style.paddingLeft = (depth * 14 + 6) + 'px';
+                item.textContent = (id ? '📁 ' : '📚 ') + folder.name;
+                if (blocked) item.title = '自分自身または配下のフォルダへは移動できません';
+                else item.addEventListener('click', async () => { back.remove(); await onPick(id); });
+                box.appendChild(item);
+                if (id === null || !blocked) {
+                    for (const c of directFolders(id)) add(c, depth + 1);
+                }
+            };
+            add({ id: null, name: 'すべて (一番上)' }, 0);
+
+            const cancel = document.createElement('button');
+            cancel.className = 'btn mt-3';
+            cancel.textContent = 'キャンセル';
+            cancel.addEventListener('click', () => back.remove());
+            box.appendChild(cancel);
+
+            back.addEventListener('click', (e) => { if (e.target === back) back.remove(); });
+            document.body.appendChild(back);
+        }
+
+        // ---- フォルダ作成 -----------------------------------------------------
+        document.getElementById('new-folder').addEventListener('click', async () => {
+            const name = (prompt('新しいフォルダの名前', '新しいフォルダ') || '').trim();
+            if (!name) return;
+            const f = await ProjectStorage.putFolder({ name: name, parentId: currentFolderId || null });
+            if (currentFolderId) expanded.add(currentFolderId);
+            expanded.add(f.id);
+            await refreshProjectList();
+        });
+
+        document.getElementById('bulk-move').addEventListener('click', () => {
+            const ids = selectedIds();
+            if (!ids.length) return;
+            openFolderPicker(`選択した ${ids.length} 件の移動先`, (target) => moveProjects(ids, target), null);
+        });
 
         async function updateStorageNote() {
             const el = document.getElementById('storage-note');
@@ -404,6 +776,8 @@
 
         async function exportOne(p) {
             try {
+                // フォルダ位置を名前の列にして持たせる (import 先で同じ場所に戻すため)
+                p.folderPath = ProjectStorage.folderPathNames(p.folderId, cache.tree.byId);
                 const blob = await ZipIO.exportProject(p);
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
                 downloadBlob(blob, ZipIO.safeName(p.displayName) + '_' + ts + '.zip');
