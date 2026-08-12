@@ -108,6 +108,7 @@
                         <input type="file" id="zip-input" accept=".zip,application/zip" class="hidden">
                         <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
                         <button id="new-folder" class="btn">+ フォルダ</button>
+                        <button id="bulk-merge" class="btn" disabled>選択を 1 つに統合</button>
                         <button id="bulk-move" class="btn" disabled>選択を移動</button>
                         <button id="bulk-export" class="btn" disabled>選択を Export</button>
                         <button id="bulk-delete" class="btn btn-danger" disabled>選択を削除</button>
@@ -183,15 +184,32 @@
         // =================================================================
         // ① MSI ファイルの選択とグルーピング
         // =================================================================
+        let pendingFiles = [];    // 選ばれた File の生リスト (まとめ方を変えたら組み直す)
         let pendingGroups = [];   // ImzML.groupFiles() の結果
+        let pendingNames = {};    // groupKey -> ユーザーが指定した名前
+        let groupMode = 'auto';   // 'auto' | 'single'
         let pendingHe = null;     // File
 
         wireDropZone('msi-drop', 'msi-input', (files) => {
-            const { groups, problems } = ImzML.groupFiles(files);
+            pendingFiles = files;
+            pendingNames = {};
+            regroup();
+        });
+
+        function regroup() {
+            const { groups, problems } = ImzML.groupFiles(pendingFiles, groupMode);
             pendingGroups = groups;
             renderMsiSummary(groups, problems);
             refreshRegisterButton();
-        });
+        }
+
+        /** グループの表示名。ユーザー指定 > ファイル名から判った切片 > 開いているフォルダ名 */
+        function groupDisplayName(g) {
+            if (pendingNames[g.groupKey]) return pendingNames[g.groupKey];
+            if (g.suggestedName) return g.suggestedName;
+            const folder = currentFolderId && cache.tree && cache.tree.byId.get(currentFolderId);
+            return folder ? folder.name : '新規データセット';
+        }
 
         wireDropZone('he-drop', 'he-input', (files) => {
             pendingHe = files[0] || null;
@@ -202,24 +220,63 @@
         function renderMsiSummary(groups, problems) {
             const el = document.getElementById('msi-summary');
             if (!groups.length && !problems.length) { el.innerHTML = ''; return; }
-            let html = '';
+            el.innerHTML = '';
+
+            if (groups.length || pendingFiles.length) {
+                // まとめ方の切り替え。ファイル名から切片が読めないときは既に 1 つに
+                // まとまっているので、ここで「分ける」を選べば従来どおりに戻せる。
+                const modeBox = document.createElement('div');
+                modeBox.className = 'mb-2 flex items-center gap-4 text-xs';
+                modeBox.innerHTML =
+                    '<span class="text-gray-500">まとめ方:</span>' +
+                    '<label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="grpmode" value="auto"' +
+                        (groupMode === 'auto' ? ' checked' : '') + '> ファイル名で切片ごとに分ける</label>' +
+                    '<label class="flex items-center gap-1 cursor-pointer"><input type="radio" name="grpmode" value="single"' +
+                        (groupMode === 'single' ? ' checked' : '') + '> すべて 1 つのデータにまとめる</label>';
+                modeBox.querySelectorAll('input[name=grpmode]').forEach(r => {
+                    r.addEventListener('change', () => { groupMode = r.value; regroup(); });
+                });
+                el.appendChild(modeBox);
+            }
+
             for (const g of groups) {
                 const planeLabel = g.plane === 'coronal' ? 'コロナル切片'
                     : g.plane === 'sagittal' ? 'サジタル切片'
                     : g.plane === 'axial' ? '水平切片'
-                    : (g.orientation ? g.orientation : '方向不明');
-                html += '<div class="border border-gray-200 rounded p-2 mb-2 bg-gray-50">' +
-                    '<div class="font-medium text-gray-800">' + esc(g.groupKey) + ' — ' + esc(planeLabel) +
-                    (g.sliceId ? ' / 切片 ' + esc(g.sliceId) : '') + '</div>' +
-                    '<div class="text-gray-600 mt-1">分子 ' + g.items.length + ' 種: ' +
-                    g.items.map(i => '<span class="inline-block bg-white border border-gray-300 rounded px-1.5 py-0.5 mr-1">' + esc(i.molecule) + '</span>').join('') +
-                    '</div></div>';
+                    : (g.orientation ? g.orientation : '');
+                const box = document.createElement('div');
+                box.className = 'border border-gray-200 rounded p-2 mb-2 bg-gray-50';
+                box.innerHTML =
+                    '<div class="flex items-center gap-2 mb-1">' +
+                      '<span class="text-gray-500">名前</span>' +
+                      '<input type="text" class="gname flex-1 border border-gray-300 rounded px-1.5 py-0.5 text-xs" ' +
+                        'value="' + esc(groupDisplayName(g)) + '">' +
+                      (planeLabel ? '<span class="text-gray-500 shrink-0">' + esc(planeLabel) +
+                        (g.sliceId ? ' / 切片 ' + esc(g.sliceId) : '') + '</span>' : '') +
+                    '</div>' +
+                    '<div class="text-gray-600">分子 ' + g.items.length + ' 種: ' +
+                    g.items.map(i => '<span class="inline-block bg-white border border-gray-300 rounded px-1.5 py-0.5 mr-1">' +
+                      esc(i.layerName || i.molecule) + '</span>').join('') +
+                    '</div>';
+                const inp = box.querySelector('.gname');
+                inp.addEventListener('input', () => { pendingNames[g.groupKey] = inp.value; });
+                el.appendChild(box);
             }
+
+            if (groups.length > 1) {
+                const hint = document.createElement('p');
+                hint.className = 'text-amber-700 mb-2';
+                hint.textContent = '⚠ ' + groups.length + ' 個のデータセットに分かれています。' +
+                    '1 つの切片のつもりなら「すべて 1 つのデータにまとめる」を選んでください。';
+                el.insertBefore(hint, el.children[1] || null);
+            }
+
             if (problems.length) {
-                html += '<ul class="text-amber-700 list-disc pl-5">' +
-                    problems.map(p => '<li>' + esc(p) + '</li>').join('') + '</ul>';
+                const ul = document.createElement('ul');
+                ul.className = 'text-amber-700 list-disc pl-5';
+                ul.innerHTML = problems.map(p => '<li>' + esc(p) + '</li>').join('');
+                el.appendChild(ul);
             }
-            el.innerHTML = html;
         }
 
         function renderHeSummary() {
@@ -253,7 +310,7 @@
             try {
                 for (let gi = 0; gi < pendingGroups.length; gi++) {
                     const g = pendingGroups[gi];
-                    await registerGroup(g, pendingGroups.length === 1 ? pendingHe : (gi === 0 ? pendingHe : null),
+                    await registerGroup(g, gi === 0 ? pendingHe : null,
                         (frac, label) => {
                             setProgress((gi + frac) / pendingGroups.length);
                             setStatus(label);
@@ -261,7 +318,7 @@
                 }
                 setProgress(null);
                 setStatus('登録が完了しました。');
-                pendingGroups = []; pendingHe = null;
+                pendingGroups = []; pendingFiles = []; pendingNames = {}; pendingHe = null;
                 document.getElementById('msi-input').value = '';
                 document.getElementById('he-input').value = '';
                 renderMsiSummary([], []); renderHeSummary();
@@ -279,7 +336,7 @@
         async function registerGroup(group, heFile, report) {
             const project = {
                 id: ProjectStorage.uid('proj'),
-                displayName: group.groupKey,
+                displayName: groupDisplayName(group),
                 source: 'imzml',
                 // いま開いているフォルダに入れる
                 folderId: currentFolderId || null,
@@ -315,9 +372,11 @@
                 project.grid.umPerPxY = res.umPerPx.y;
                 const stats = MSIRaster.deriveBakeStats(res.values);
                 const blobId = await ProjectStorage.putValueRaster(res.values);
-                const key = 'MSI_' + item.molecule;
+                // layerName は同名分子の重複を解消済みの表示名
+                const label = item.layerName || item.molecule;
+                const key = 'MSI_' + label;
                 project.molecules.push({
-                    key: key, name: item.molecule, blobId: blobId,
+                    key: key, name: label, blobId: blobId,
                     filterString: res.filterString, mode: res.mode,
                     nSpectra: res.nSpectra, stats: stats,
                 });
@@ -388,6 +447,7 @@
             document.getElementById('bulk-export').disabled = n === 0;
             document.getElementById('bulk-delete').disabled = n === 0;
             document.getElementById('bulk-move').disabled = n === 0;
+            document.getElementById('bulk-merge').disabled = n < 2;
         }
 
         /** 保存層から読み直してツリーを組み直す */
@@ -757,6 +817,95 @@
             if (currentFolderId) expanded.add(currentFolderId);
             expanded.add(f.id);
             await refreshProjectList();
+        });
+
+        // ---- 複数の登録データを 1 つに統合 -------------------------------------
+        // 「1 切片なのに分子ごとに別データになってしまった」のを後から直すための操作。
+        // 分子(レイヤ)を 1 つのプロジェクトに集約する。
+        async function mergeProjects(ids) {
+            const list = [];
+            for (const id of ids) {
+                const p = await ProjectStorage.getProject(id);
+                if (p) list.push(p);
+            }
+            if (list.length < 2) return;
+
+            // グリッドが違うものは重ねられない (同じ切片ではない)
+            const g0 = list[0].grid || {};
+            const bad = list.filter(p => (p.grid || {}).W !== g0.W || (p.grid || {}).H !== g0.H);
+            if (bad.length) {
+                showError('グリッドの異なるデータは統合できません: ' +
+                    list.map(p => `${p.displayName} (${(p.grid||{}).W}×${(p.grid||{}).H})`).join(' / '));
+                return;
+            }
+
+            // 統合先は「HE を持つもの > 分子数が多いもの > 先頭」
+            list.sort((a, b) => {
+                const ha = a.images && a.images.HE_Stain ? 1 : 0;
+                const hb = b.images && b.images.HE_Stain ? 1 : 0;
+                if (ha !== hb) return hb - ha;
+                return (b.molecules || []).length - (a.molecules || []).length;
+            });
+            const target = list[0];
+            const rest = list.slice(1);
+
+            const usedKeys = new Set((target.molecules || []).map(m => m.key));
+            const usedNames = new Set((target.molecules || []).map(m => m.name));
+            for (const src of rest) {
+                for (const m of (src.molecules || [])) {
+                    // 分子名が衝突したら連番を振る (別条件の同分子を持ち込めるように)
+                    let name = m.name, k = 2;
+                    while (usedNames.has(name)) name = m.name + ' (' + (k++) + ')';
+                    usedNames.add(name);
+                    let key = 'MSI_' + name;
+                    while (usedKeys.has(key)) key = 'MSI_' + name + '_' + (k++);
+                    usedKeys.add(key);
+                    target.molecules.push(Object.assign({}, m, { key: key, name: name }));
+                    if (src.layerDisplay && src.layerDisplay[m.key]) {
+                        target.layerDisplay = target.layerDisplay || {};
+                        target.layerDisplay[key] = src.layerDisplay[m.key];
+                    }
+                }
+                // HE は統合先に無いときだけ引き継ぐ
+                for (const ik of Object.keys(src.images || {})) {
+                    if (!target.images[ik]) target.images[ik] = src.images[ik];
+                }
+                // 位置合わせ済みのものがあれば拾う
+                if (!(target.world_coords && target.world_coords.T_he_to_msi) &&
+                    src.world_coords && src.world_coords.T_he_to_msi) {
+                    target.world_coords = src.world_coords;
+                    target.alignment = src.alignment || target.alignment;
+                }
+                // ROI は統合先が空のときだけ引き継ぐ
+                const tRoi = (target.roi && target.roi.roi_items) || {};
+                const sRoi = (src.roi && src.roi.roi_items) || {};
+                if (!Object.keys(tRoi).length && Object.keys(sRoi).length) target.roi = src.roi;
+            }
+            if (!target.visibleLayers || !target.visibleLayers.length) {
+                target.visibleLayers = target.molecules.length ? [target.molecules[0].key] : [];
+            }
+            await ProjectStorage.putProject(target);
+            // ★ blob は target が参照しているので、レコードだけ消す
+            for (const src of rest) await ProjectStorage.deleteProjectRecord(src.id);
+            await refreshProjectList();
+            return target;
+        }
+
+        document.getElementById('bulk-merge').addEventListener('click', async () => {
+            const ids = selectedIds();
+            if (ids.length < 2) return;
+            const names = ids.map(id => (cache.projects.find(p => p.id === id) || {}).displayName).filter(Boolean);
+            if (!confirm(`次の ${ids.length} 件を 1 つのデータに統合します。\n\n` + names.join('\n') +
+                '\n\n分子(レイヤ)がまとめられ、元の行は 1 つになります。データは失われません。')) return;
+            const merged = await mergeProjects(ids);
+            if (merged) {
+                const name = (prompt('統合後の名前', merged.displayName) || '').trim();
+                if (name && name !== merged.displayName) {
+                    merged.displayName = name;
+                    await ProjectStorage.putProject(merged);
+                    await refreshProjectList();
+                }
+            }
         });
 
         document.getElementById('bulk-move').addEventListener('click', () => {
