@@ -11,6 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+    <script src="../lib/version.js"></script>
     <script src="../lib/storage.js"></script>
     <script src="../lib/otsu.js"></script>
     <script src="../lib/align.js"></script>
@@ -148,7 +149,12 @@
     <div class="h-screen flex flex-col overflow-hidden">
         <!-- Header (compact) -->
         <header class="flex items-center justify-between px-4 py-1 bg-white border-b shrink-0">
-            <h1 id="atlas-title" class="text-lg font-bold text-gray-900 truncate">Marmoset Brain Atlas</h1>
+            <div class="flex items-baseline gap-2 min-w-0">
+                <h1 id="atlas-title" class="text-lg font-bold text-gray-900 truncate">Marmoset Brain Atlas</h1>
+                <!-- 数字は lib/version.js が入れる。#atlas-title は開いたデータ名で
+                     textContent ごと差し替わるので、外に分けて置く -->
+                <span class="app-version text-xs text-gray-400 shrink-0" title="アプリのバージョン"></span>
+            </div>
             <div class="flex items-center gap-2">
                 <label class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 cursor-pointer" title="各ピクセルの総信号量(TIC)から背景スポットを自動判定し、全イオン像から一括で非表示にします。生データは変更しません。">
                     <input type="checkbox" id="otsu-toggle" class="h-3.5 w-3.5 rounded border-gray-300">
@@ -2857,10 +2863,6 @@ function loadAllImages() {
         }
       }
     })();</script>
-
-
-    <div id="buildTag" style="position:fixed;bottom:4px;right:6px;font-size:10px;color:#94a3b8;pointer-events:none;z-index:50;"></div>
-    <script>document.getElementById('buildTag').textContent = 'v:rot-fix-2';</script>
 
 </body>
 </html>
