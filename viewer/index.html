@@ -55,18 +55,28 @@
           display: inline-block;
         }
         .thumbnail.active, .thumbnail:hover { border-color: #3b82f6; }
-        .settings-panel input[type="range"] {
-            -webkit-appearance: none; appearance: none; width: 100%; height: 4px;
-            background: #d1d5db; border-radius: 2px; outline: none;
+        /* レイヤのチップ (横並び)。
+           ★ 並びは Tailwind ではなくここで指定する。ブラウザテストは Tailwind CDN を
+             差し替えて動かすので、レイアウトを CDN 側に依存させない。 */
+        #image-selector-options { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+        .layer-row {
+            display: inline-flex; align-items: center; gap: 4px;
+            padding: 2px 6px; border: 1px solid #e5e7eb; border-radius: 9999px;
+            background: #fff; white-space: nowrap;
         }
-        .settings-panel input[type="range"]::-webkit-slider-thumb {
-            -webkit-appearance: none; appearance: none; width: 14px; height: 14px;
-            background: #3b82f6; cursor: pointer; border-radius: 50%;
+        .layer-row:hover { background: #f8fafc; }
+        .layer-row.active { border-color: #60a5fa; box-shadow: 0 0 0 2px rgba(96,165,250,.35); }
+        .layer-name { cursor: pointer; user-select: none; }
+        /* 強度レンジ / 透明度のストリップ。hidden との衝突を避けるため :not(.hidden) で出す。
+           min-height はレイヤを切り替えても高さが揺れないように (揺れると ResizeObserver が
+           #image-viewer のサイズ再計算を繰り返す)。 */
+        #layer-settings-strip:not(.hidden) {
+            display: flex; flex-wrap: wrap; align-items: center; column-gap: 12px; row-gap: 4px;
+            min-height: 28px;
         }
-        .settings-panel input[type="range"]::-moz-range-thumb {
-            width: 14px; height: 14px; background: #3b82f6; cursor: pointer;
-            border-radius: 50%; border: none;
-        }
+        #strip-mono-wrap:not(.hidden) { display: inline-flex; align-items: center; gap: 4px; }
+        /* まとまりの中では折り返さない (「透明度」と % が離れると読みにくい) */
+        .strip-group { display: inline-flex; align-items: center; gap: 4px; }
         /* ROI toggle switch */
         #roi-toggle:checked ~ #roi-toggle-bg { background-color: #3b82f6; }
         #roi-toggle:checked ~ #roi-toggle-dot { transform: translateX(1rem); }
@@ -88,9 +98,11 @@
         #image-viewer.pannable { cursor: grab; }
 
         /* 常時表示のレイヤ選択リスト (旧: プルダウン) */
-        #image-selector-options { max-height: 190px; overflow-y: auto; }
-        .layer-row { border-bottom: 1px solid #f1f5f9; }
-        .layer-row:last-child { border-bottom: none; }
+        #image-selector-options { max-height: 96px; overflow-y: auto; }
+        /* MSI は測定点そのものなので、拡大しても補間でぼかさない (Share_Test と同じ)。
+           縮小時まで pixelated にすると HE 写真が間引かれてザラつくので、
+           等倍以上のときだけ refreshPixelated() がこのクラスを付ける。 */
+        #display-canvas.px-nearest { image-rendering: pixelated; }
 
         /* 大津法ヒストグラム */
         #otsu-panel canvas { display: block; width: 100%; height: 90px; cursor: ew-resize; }
@@ -225,8 +237,10 @@
                             <button type="button" id="view-reset" class="px-2 py-0.5 text-xs rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="拡大・移動をリセット">リセット</button>
                         </div>
                     </div>
-                    <!-- レイヤ選択: プルダウンをやめ、チェックボックスを並べて常時表示する -->
-                    <div id="image-selector-options" class="shrink-0 border border-gray-200 rounded mb-1 text-xs bg-white"></div>
+                    <!-- レイヤ選択: チェックボックスを横に並べ、その下に「選択中の 1 レイヤ」の
+                         強度レンジ / 透明度を 1 組だけ常時表示する (歯車の開閉をやめた) -->
+                    <div id="image-selector-options" class="shrink-0 border border-gray-200 rounded-t p-1 text-xs bg-white"></div>
+                    <div id="layer-settings-strip" class="hidden shrink-0 border border-t-0 border-gray-200 rounded-b mb-1 px-2 py-1 text-xs bg-gray-50"></div>
                     <!-- 大津法のヒストグラム (トグル ON のときだけ表示) -->
                     <div id="otsu-panel" class="hidden shrink-0 border border-gray-200 rounded mb-1 p-2 bg-white">
                         <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
@@ -334,6 +348,8 @@
 
         // MSI サムネイル要素を key → <img> で保持(輝度変更時に再描画するため)
         const msiThumbRefs = new Map();
+        // HE/IF サムネイル要素。モノクロ切替のたびに差し替える。
+        const heThumbRefs = new Map();
         // ユーザー描画 ROI の内部キーは "user_" プレフィックス
         const USER_ROI_PREFIX = 'user_';
         // 描画モードの状態
@@ -358,16 +374,40 @@
 
         // MSI サムネイルを imageSources から着色+CCW90°回転で再描画する。
         // vmin/vmax が変わるたびに呼び直すために抽出。
+        /**
+         * MSI の着色モード。Share_Test と同じ規則:
+         *   表示中の MSI が 1 つだけ → カラーマップ (plasma)
+         *   2 つ以上             → 分子ごとの固定色で加算合成 (色の混ざりで共局在を見る)
+         */
+        function msiColormapMode() {
+            return checkedLayerKeys().filter(k => /^MSI/i.test(k)).length === 1;
+        }
+
+        /**
+         * CSS 側の拡大でもドットを保つ。canvas の drawImage は
+         * imageSmoothingEnabled で止めているが、canvas → CSS 寸法と
+         * --vt-scale のズームはそちらでは止まらないため。
+         * 縮小のときに効かせると HE が間引かれてザラつくので等倍以上に限る。
+         */
+        function refreshPixelated() {
+            if (!displayCanvas) return;
+            const cssW = parseFloat(displayCanvas.style.width) || displayCanvas.width;
+            const net = (cssW / Math.max(1, displayCanvas.width)) * (viewTransform.scale || 1);
+            const hasMsi = checkedLayerKeys().some(k => /^MSI/i.test(k));
+            displayCanvas.classList.toggle('px-nearest', hasMsi && net >= 1);
+        }
+
         function renderMsiThumbnail(key, thumbEl) {
             if (!thumbEl) return;
+            const useLut = msiColormapMode();
             // 生値ラスタがあるならそちらから描く (生単位のウィンドウ + 大津法が効く)
             const vr = valueRasters[key];
             if (vr) {
                 const st = imageSettings[key] || {};
                 const canvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
-                    color: getMsiColor(key),
+                    lut: useLut ? MSIRaster.PLASMA_LUT : null,
+                    color: useLut ? null : getMsiColor(key),
                     win: { min: st.vmin, max: st.vmax },
-                    gamma: 0.5,
                     keep: otsuKeepFor(key),
                 });
                 thumbEl.src = canvas.toDataURL();
@@ -388,19 +428,21 @@
             const st = imageSettings[key] || { vmin: 0, vmax: 255 };
             const lumMin = st.vmin;
             const lumRange = (st.vmax - st.vmin) || 1;
-            const gamma = 0.5;
             for (let i = 0; i < d.length; i += 4) {
                 if (d[i+3] === 0) continue;
                 const l = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
                 if (l < 1) { d[i] = 0; d[i+1] = 0; d[i+2] = 0; continue; }
+                // 明るさは線形 (γ=1)。Share_Test と同じで測定値に比例させる。
                 const n = Math.max(0, Math.min(1, (l - lumMin) / lumRange));
-                const bright = Math.pow(n, gamma);
-                if (color) {
-                    d[i]   = Math.min(255, Math.round(color[0] * bright));
-                    d[i+1] = Math.min(255, Math.round(color[1] * bright));
-                    d[i+2] = Math.min(255, Math.round(color[2] * bright));
+                if (useLut) {
+                    const c = MSIRaster.PLASMA_LUT[Math.round(n * 255)];
+                    d[i] = c[0]; d[i+1] = c[1]; d[i+2] = c[2];
+                } else if (color) {
+                    d[i]   = Math.min(255, Math.round(color[0] * n));
+                    d[i+1] = Math.min(255, Math.round(color[1] * n));
+                    d[i+2] = Math.min(255, Math.round(color[2] * n));
                 } else {
-                    const v = Math.min(255, Math.round(255 * bright));
+                    const v = Math.min(255, Math.round(255 * n));
                     d[i] = v; d[i+1] = v; d[i+2] = v;
                 }
             }
@@ -435,6 +477,10 @@
             if (otsuState.applied) recomputeOtsu();
             populateThumbnails();
             setupCheckboxDropdown();
+            // ★ サムネイルの着色は「表示中の MSI が 1 つか」で変わるが、
+            //   populateThumbnails の時点ではまだ checkbox が無く判定できない。
+            //   チップを作ったあとに一度塗り直す。
+            refreshMsiThumbnails();
             setupGraphSelector();
             setupCollapsibleSections();
             setupDrawingHandlers();
@@ -539,8 +585,20 @@ function loadAllImages() {
                     actualMin: min,
                     actualMax: max,
                     raw: false,
+                    // モノクロ表示 (HE/IF)。既定はカラー。
+                    grayscale: !!(savedHe && savedHe.grayscale),
                 };
             }
+        }
+
+        /**
+         * チップに出す短い名前。分子は "MSI (DA)" ではなく "DA" だけにする。
+         * 横一列に並べるので、全部に付く "MSI" は場所の無駄でしかない
+         * (色の丸が MSI であることを示し、下のストリップには正式名が出る)。
+         */
+        function chipLabel(key) {
+            if (key.startsWith('MSI_')) return key.substring(4).replace('_', '-');
+            return formatDisplayName(key);
         }
 
         function formatDisplayName(key) {
@@ -569,7 +627,232 @@ function loadAllImages() {
             }
         }
 
-        // レイヤ選択 UI。プルダウンをやめ、チェックボックスを縦に並べて常時表示する。
+        // =====================================================================
+        // 強度レンジ / 透明度のストリップ
+        //   歯車の開閉をやめ、画面下に 1 組だけ常時表示する。編集対象は
+        //   activeSettingsKey が指すレイヤ 1 つ。チップの名前クリックで切り替える。
+        // =====================================================================
+        let activeSettingsKey = null;
+
+        /** 生値ラスタのあるレイヤ (MSI) は生単位、無ければ 8bit 輝度で表示する */
+        function fmtFor(key) {
+            const isRaw = !!(imageSettings[key] && imageSettings[key].raw);
+            return (v) => !Number.isFinite(v) ? ''
+                : (isRaw ? String(Number(Number(v).toPrecision(6))) : String(Math.round(v)));
+        }
+
+        /** ストリップの DOM は 1 度だけ作り、以後は値の差し替えだけにする */
+        function buildSettingsStrip() {
+            const strip = document.getElementById('layer-settings-strip');
+            if (!strip || strip.dataset.built) return;
+            strip.dataset.built = '1';
+            strip.innerHTML = `
+                <span id="strip-layer-name" class="font-semibold text-gray-800"></span>
+                <span class="strip-group">
+                    <span class="text-gray-600" id="strip-range-label">強度レンジ</span>
+                    <input type="number" step="any" class="vmin-input w-24 text-center border border-gray-300 rounded-sm p-0.5 text-xs">
+                    <span class="text-gray-500">-</span>
+                    <input type="number" step="any" class="vmax-input w-24 text-center border border-gray-300 rounded-sm p-0.5 text-xs">
+                    <button type="button" class="range-reset px-1 rounded border border-gray-300 hover:bg-white" title="自動 (既定) に戻す">⟲</button>
+                    <span id="strip-actual" class="text-[10px] text-gray-400"></span>
+                </span>
+                <span class="strip-group">
+                    <label class="flex items-center gap-1 cursor-pointer text-gray-600" title="OFF にするとこのレイヤは常に不透明で描かれます">
+                        <input type="checkbox" class="apply-opacity-input h-3 w-3 rounded border-gray-300">
+                        透明度
+                    </label>
+                    <input type="number" min="0" max="100" step="1" class="opacity-input w-16 text-right border border-gray-300 rounded-sm p-0.5 text-xs">
+                    <span class="text-gray-500">%</span>
+                </span>
+                <label id="strip-mono-wrap" class="hidden cursor-pointer text-gray-600" title="HE 染色をモノクロ (グレースケール) で表示します">
+                    <input type="checkbox" id="strip-mono" class="h-3 w-3 rounded border-gray-300">
+                    モノクロ
+                </label>`;
+
+            const vminInput = strip.querySelector('.vmin-input');
+            const vmaxInput = strip.querySelector('.vmax-input');
+            const opacityInput = strip.querySelector('.opacity-input');
+            const applyOpacityInput = strip.querySelector('.apply-opacity-input');
+            const monoInput = strip.querySelector('#strip-mono');
+
+            /** 対象レイヤを描き直す。強度を変えたときはサムネイルも追従させる */
+            const repaint = (key) => {
+                renderCompositeImage();
+                if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
+                persistLayerDisplay();
+            };
+
+            const applyRange = () => {
+                const key = activeSettingsKey;
+                const settings = key && imageSettings[key];
+                if (!settings) return;
+                const fmt = fmtFor(key);
+                let vmin = parseFloat(vminInput.value);
+                let vmax = parseFloat(vmaxInput.value);
+                if (!Number.isFinite(vmin)) vmin = settings.actualMin;
+                if (!Number.isFinite(vmax)) vmax = settings.actualMax;
+                if (!(vmax > vmin)) {
+                    // 上下が交差したら、直近に触られていない側を最小限ずらす
+                    const eps = settings.raw ? Math.max(1e-9, Math.abs(vmin) * 1e-6) : 1;
+                    vmax = vmin + eps;
+                }
+                settings.vmin = vmin;
+                settings.vmax = vmax;
+                vminInput.value = fmt(vmin);
+                vmaxInput.value = fmt(vmax);
+                repaint(key);
+            };
+            vminInput.addEventListener('change', applyRange);
+            vmaxInput.addEventListener('change', applyRange);
+
+            strip.querySelector('.range-reset').addEventListener('click', () => {
+                const key = activeSettingsKey;
+                const settings = key && imageSettings[key];
+                if (!settings) return;
+                const vr2 = valueRasters[key];
+                if (vr2) {
+                    const st2 = vr2.stats || (vr2.stats = MSIRaster.deriveBakeStats(vr2.values));
+                    settings.vmin = st2.rawMin; settings.vmax = st2.rawDispMax;
+                } else {
+                    settings.vmin = settings.actualMin; settings.vmax = settings.actualMax;
+                }
+                const fmt = fmtFor(key);
+                vminInput.value = fmt(settings.vmin);
+                vmaxInput.value = fmt(settings.vmax);
+                repaint(key);
+            });
+
+            opacityInput.addEventListener('change', () => {
+                const settings = activeSettingsKey && imageSettings[activeSettingsKey];
+                if (!settings) return;
+                let percentValue = parseInt(opacityInput.value, 10);
+                if (isNaN(percentValue)) percentValue = 100;
+                percentValue = Math.max(0, Math.min(100, percentValue));
+                opacityInput.value = percentValue;
+                settings.opacity = percentValue / 100.0;
+                renderCompositeImage();
+                persistLayerDisplay();
+            });
+
+            applyOpacityInput.addEventListener('change', () => {
+                const settings = activeSettingsKey && imageSettings[activeSettingsKey];
+                if (!settings) return;
+                settings.applyOpacity = applyOpacityInput.checked;
+                opacityInput.disabled = !applyOpacityInput.checked;
+                renderCompositeImage();
+                persistLayerDisplay();
+            });
+
+            // HE/IF のモノクロ表示。サムネイルも同じ見た目にする。
+            monoInput.addEventListener('change', () => {
+                const key = activeSettingsKey;
+                const settings = key && imageSettings[key];
+                if (!settings) return;
+                settings.grayscale = monoInput.checked;
+                renderCompositeImage();
+                refreshHeThumbnail(key);
+                persistLayerDisplay();
+            });
+        }
+
+        /** ストリップの表示を activeSettingsKey のレイヤに合わせる */
+        function fillSettingsStrip() {
+            const strip = document.getElementById('layer-settings-strip');
+            if (!strip || !strip.dataset.built) return;
+            const key = activeSettingsKey;
+            const settings = key ? imageSettings[key] : null;
+            if (!settings) { strip.classList.add('hidden'); return; }
+            strip.classList.remove('hidden');
+
+            const fmt = fmtFor(key);
+            const isRaw = !!settings.raw;
+            const isHeLike = /HE_STAIN|IF_STAIN/i.test(key);
+            strip.querySelector('#strip-layer-name').textContent = formatDisplayName(key);
+            strip.querySelector('#strip-range-label').textContent =
+                '強度レンジ ' + (isRaw ? '(生単位)' : '(輝度 0-255)');
+            strip.querySelector('#strip-actual').textContent =
+                '実測 ' + fmt(settings.actualMin) + ' 〜 ' + fmt(settings.actualMax);
+
+            const vminInput = strip.querySelector('.vmin-input');
+            const vmaxInput = strip.querySelector('.vmax-input');
+            vminInput.step = isRaw ? 'any' : '1';
+            vmaxInput.step = isRaw ? 'any' : '1';
+            vminInput.value = fmt(settings.vmin);
+            vmaxInput.value = fmt(settings.vmax);
+
+            const opacityInput = strip.querySelector('.opacity-input');
+            const applyOpacityInput = strip.querySelector('.apply-opacity-input');
+            opacityInput.value = Math.round(settings.opacity * 100);
+            applyOpacityInput.checked = settings.applyOpacity !== false;
+            opacityInput.disabled = settings.applyOpacity === false;
+
+            // モノクロは HE/IF のときだけ出す (MSI はもともと単色 / カラーマップ)
+            const monoWrap = strip.querySelector('#strip-mono-wrap');
+            monoWrap.classList.toggle('hidden', !isHeLike);
+            strip.querySelector('#strip-mono').checked = !!settings.grayscale;
+        }
+
+        /** 設定の編集対象を切り替える (表示の ON/OFF とは独立) */
+        function setActiveSettingsKey(key) {
+            activeSettingsKey = (key && imageSettings[key]) ? key : null;
+            document.querySelectorAll('#image-selector-options .layer-row').forEach(row => {
+                row.classList.toggle('active', row.dataset.key === activeSettingsKey);
+            });
+            fillSettingsStrip();
+        }
+
+        /**
+         * チェックの数で MSI の着色が変わるので、全 MSI サムネイルを塗り直す。
+         * ★ 着色モードが変わったときだけ焼き直す。チェックのたびに全分子を
+         *   toDataURL すると、グリッドが大きいデータで操作が重くなる。
+         */
+        let lastThumbColormapMode = null;
+        function refreshMsiThumbnails() {
+            const mode = msiColormapMode();
+            if (mode === lastThumbColormapMode) return;
+            lastThumbColormapMode = mode;
+            msiThumbRefs.forEach((el, key) => renderMsiThumbnail(key, el));
+        }
+
+        /**
+         * HE/IF サムネイルをモノクロ設定に合わせる。
+         * ★ 常に元画像 (imageSources[key]) から作り直す。表示中の <img> を読み直すと
+         *   一度モノクロにした結果を再度潰すことになり、カラーへ戻せなくなる。
+         */
+        const HE_THUMB_MAX_EDGE = 384;
+        function refreshHeThumbnail(key) {
+            const el = heThumbRefs.get(key);
+            if (!el) return;
+            const settings = imageSettings[key] || {};
+            if (!settings.grayscale) {
+                const original = atlasData.images[key];
+                if (original && el.src !== original) el.src = original;
+                return;
+            }
+            const source = imageSources[key];
+            if (!source || !source.complete || source.naturalWidth === 0) return;
+            // ★ 復号済み TIFF は数千 px 角になりうる。原寸で toDataURL すると切り替えのたびに
+            //   画面が固まるので、サムネイル表示に要る分まで縮めてから焼く (heTint と同じ手)。
+            const k = Math.max(1, Math.max(source.naturalWidth, source.naturalHeight) / HE_THUMB_MAX_EDGE);
+            const w = Math.max(8, Math.round(source.naturalWidth / k));
+            const h = Math.max(8, Math.round(source.naturalHeight / k));
+            const c = document.createElement('canvas');
+            c.width = w; c.height = h;
+            const ctx = c.getContext('2d', { willReadFrequently: true });
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(source, 0, 0, w, h);
+            const img = ctx.getImageData(0, 0, c.width, c.height);
+            const d = img.data;
+            for (let i = 0; i < d.length; i += 4) {
+                const y = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+                d[i] = y; d[i + 1] = y; d[i + 2] = y;
+            }
+            ctx.putImageData(img, 0, 0);
+            el.src = c.toDataURL();
+        }
+
+        // レイヤ選択 UI。プルダウンをやめ、チェックボックスを横に並べて常時表示する。
         // 描画側は #image-selector-options の :checked を読むだけなので、
         // id と構造を保っている限り renderCompositeImage 側の変更は不要。
         function setupCheckboxDropdown() {
@@ -586,74 +869,42 @@ function loadAllImages() {
             imageKeys.forEach((key, index) => {
                 if (!atlasData.images[key] || !imageSettings[key]) return;
 
-                const settings = imageSettings[key];
+                // チップ 1 つ = レイヤ 1 つ。クラス名 layer-row / layer-check は
+                // サムネイル連動 (setActiveImage) と既存テストが値で引いているので変えない。
                 const optionDiv = document.createElement('div');
-                optionDiv.className = 'layer-row px-2 py-1';
+                optionDiv.className = 'layer-row';
+                optionDiv.dataset.key = key;
 
-                const topRow = document.createElement('div');
-                topRow.className = 'flex items-center justify-between';
-                const label = document.createElement('label');
-                label.className = 'flex items-center text-xs font-medium text-gray-800 cursor-pointer';
                 const checkbox = document.createElement('input');
                 checkbox.type = 'checkbox';
                 checkbox.value = key;
-                checkbox.className = 'layer-check mr-2 h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500';
+                checkbox.className = 'layer-check h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer';
                 checkbox.checked = visible.size ? visible.has(key) : index === 0;
+                checkbox.title = 'このレイヤを表示する';
+
+                const name = document.createElement('span');
+                name.className = 'layer-name flex items-center gap-1 text-xs font-medium text-gray-800';
                 const msiColDD = getMsiColor(key);
                 if (msiColDD) {
                     const ddDot = document.createElement('span');
-                    ddDot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:rgb(${msiColDD.join(',')});margin-right:4px;flex-shrink:0;`;
-                    label.append(checkbox, ddDot, document.createTextNode(formatDisplayName(key)));
-                } else {
-                    label.append(checkbox, document.createTextNode(formatDisplayName(key)));
+                    ddDot.style.cssText = `display:inline-block;width:10px;height:10px;border-radius:50%;background:rgb(${msiColDD.join(',')});flex-shrink:0;`;
+                    name.append(ddDot);
                 }
-                
-                const settingsButton = document.createElement('button');
-                settingsButton.className = 'p-0.5 rounded-full hover:bg-gray-200 focus:outline-none';
-                settingsButton.title = '強度 / 透明度を調整';
-                settingsButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 text-gray-500" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.49 3.17c-.38-1.56-2.6-1.56-2.98 0l-.1.41a1.5 1.5 0 01-2.1 1.45l-.4-.17c-1.5-.65-3.22.8-2.57 2.3l.17.4a1.5 1.5 0 01-1.45 2.1l-.41.1c-1.56.38-1.56 2.6 0 2.98l.41.1a1.5 1.5 0 011.45 2.1l-.17.4c.65 1.5 1.07 3 2.57 2.3l.4-.17a1.5 1.5 0 012.1 1.45l.1.41c.38 1.56 2.6 1.56 2.98 0l.1-.41a1.5 1.5 0 012.1-1.45l.4.17c1.5.65 3.22-.8 2.57-2.3l-.17-.4a1.5 1.5 0 011.45-2.1l.41-.1c-1.56-.38-1.56-2.6 0-2.98l-.41-.1a1.5 1.5 0 01-1.45-2.1l.17-.4c.65-1.5-1.07-3-2.57-2.3l-.4.17a1.5 1.5 0 01-2.1-1.45l-.1-.41zM10 13a3 3 0 100-6 3 3 0 000 6z" clip-rule="evenodd" /></svg>`;
-                topRow.append(label, settingsButton);
+                name.append(document.createTextNode(chipLabel(key)));
+                name.title = formatDisplayName(key) +
+                    ' — クリックすると、下の強度レンジ / 透明度がこのレイヤのものになります';
 
-                const settingsPanel = document.createElement('div');
-                settingsPanel.className = 'settings-panel hidden pl-6 mt-2 mb-1 space-y-2';
-
-                // 透明度: Share_Test と同じく「透明化の有効 / 無効」を別に持つ
-                const opacityDiv = document.createElement('div');
-                opacityDiv.innerHTML = `<div class="flex justify-between items-center text-xs text-gray-600">
-                                            <label class="flex items-center gap-1 cursor-pointer" title="OFF にするとこのレイヤは常に不透明で描かれます">
-                                                <input type="checkbox" class="h-3 w-3 rounded border-gray-300 apply-opacity-input" ${settings.applyOpacity !== false ? 'checked' : ''}>
-                                                透明度
-                                            </label>
-                                            <div class="flex items-center">
-                                                <input type="number" min="0" max="100" step="1" value="${Math.round(settings.opacity * 100)}" class="w-16 text-right border border-gray-300 rounded-sm p-0.5 text-xs opacity-input">
-                                                <span class="ml-1">%</span>
-                                            </div>
-                                        </div>`;
-                // 強度: 生値ラスタがあるレイヤは生単位、無ければ従来どおり 8bit 輝度
-                const isRaw = !!settings.raw;
-                const step = isRaw ? 'any' : '1';
-                const fmt = (v) => isRaw ? String(Number(Number(v).toPrecision(6))) : String(Math.round(v));
-                const rangeDiv = document.createElement('div');
-                rangeDiv.innerHTML = `<div class="flex items-center justify-between mb-0.5">
-                        <label class="text-xs text-gray-600">強度レンジ ${isRaw ? '(生単位)' : '(輝度 0-255)'}</label>
-                        <button type="button" class="range-reset text-xs px-1 rounded border border-gray-300 hover:bg-gray-50" title="自動 (既定) に戻す">⟲</button>
-                    </div>
-                    <div class="flex items-center space-x-2">
-                        <input type="number" step="${step}" value="${fmt(settings.vmin)}" class="w-24 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmin-input">
-                        <span class="text-gray-500">-</span>
-                        <input type="number" step="${step}" value="${fmt(settings.vmax)}" class="w-24 text-center border border-gray-300 rounded-sm p-0.5 text-xs vmax-input">
-                    </div>
-                    <div class="text-[10px] text-gray-400 mt-0.5">実測 ${fmt(settings.actualMin)} 〜 ${fmt(settings.actualMax)}</div>`;
-
-                settingsPanel.append(opacityDiv, rangeDiv);
-                optionDiv.append(topRow, settingsPanel);
+                optionDiv.append(checkbox, name);
                 optionsContainer.appendChild(optionDiv);
 
                 // チェックで Image Viewer 合成 + サムネイル連動
                 checkbox.addEventListener('change', () => {
+                    // 1 分子だけ表示中かどうかで着色が変わるので、サムネイルも塗り直す
                     renderCompositeImage();
+                    refreshMsiThumbnails();
                     persistVisibleLayers();
                     if (checkbox.checked) {
+                        setActiveSettingsKey(key);
                         focusThumbnail(key);   // サムネイルをハイライト＆スクロール
                     } else {
                         // 解除時は、他にチェックが残っていればそちらをハイライト
@@ -667,64 +918,13 @@ function loadAllImages() {
                     }
                 });
 
-                settingsButton.addEventListener('click', (e) => { e.stopPropagation(); settingsPanel.classList.toggle('hidden'); });
-
-                const opacityInput = optionDiv.querySelector('.opacity-input');
-                opacityInput.addEventListener('change', () => {
-                    let percentValue = parseInt(opacityInput.value, 10);
-                    if (isNaN(percentValue)) percentValue = 100;
-                    percentValue = Math.max(0, Math.min(100, percentValue));
-                    opacityInput.value = percentValue;
-                    settings.opacity = percentValue / 100.0;
-                    renderCompositeImage();
-                    persistLayerDisplay();
-                });
-                const applyOpacityInput = optionDiv.querySelector('.apply-opacity-input');
-                applyOpacityInput.addEventListener('change', () => {
-                    settings.applyOpacity = applyOpacityInput.checked;
-                    opacityInput.disabled = !applyOpacityInput.checked;
-                    renderCompositeImage();
-                    persistLayerDisplay();
-                });
-                opacityInput.disabled = settings.applyOpacity === false;
-
-                const vminInput = optionDiv.querySelector('.vmin-input');
-                const vmaxInput = optionDiv.querySelector('.vmax-input');
-                const applyRange = () => {
-                    let vmin = parseFloat(vminInput.value);
-                    let vmax = parseFloat(vmaxInput.value);
-                    if (!Number.isFinite(vmin)) vmin = settings.actualMin;
-                    if (!Number.isFinite(vmax)) vmax = settings.actualMax;
-                    if (!(vmax > vmin)) {
-                        // 上下が交差したら、直近に触られていない側を最小限ずらす
-                        const eps = isRaw ? Math.max(1e-9, Math.abs(vmin) * 1e-6) : 1;
-                        vmax = vmin + eps;
-                    }
-                    settings.vmin = vmin;
-                    settings.vmax = vmax;
-                    vminInput.value = fmt(vmin);
-                    vmaxInput.value = fmt(vmax);
-                    renderCompositeImage();
-                    if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
-                    persistLayerDisplay();
-                };
-                vminInput.addEventListener('change', applyRange);
-                vmaxInput.addEventListener('change', applyRange);
-                optionDiv.querySelector('.range-reset').addEventListener('click', () => {
-                    const vr2 = valueRasters[key];
-                    if (vr2) {
-                        const st2 = vr2.stats || (vr2.stats = MSIRaster.deriveBakeStats(vr2.values));
-                        settings.vmin = st2.rawMin; settings.vmax = st2.rawDispMax;
-                    } else {
-                        settings.vmin = settings.actualMin; settings.vmax = settings.actualMax;
-                    }
-                    vminInput.value = fmt(settings.vmin);
-                    vmaxInput.value = fmt(settings.vmax);
-                    renderCompositeImage();
-                    if (msiThumbRefs.has(key)) renderMsiThumbnail(key, msiThumbRefs.get(key));
-                    persistLayerDisplay();
-                });
+                // 名前クリックは表示の ON/OFF ではなく「設定の対象を切り替える」
+                name.addEventListener('click', () => setActiveSettingsKey(key));
             });
+
+            buildSettingsStrip();
+            const firstChecked = checkedLayerKeys()[0];
+            setActiveSettingsKey(firstChecked || imageKeys.find(k => atlasData.images[k] && imageSettings[k]) || null);
 
             if (imageKeys.length > 0) {
                 // MSI 座標系をキャンバスの基準にする。MSI が無ければ HE/IF → なんでも の順でフォールバック
@@ -791,9 +991,12 @@ function loadAllImages() {
                             }
                         }
 
+                        refreshPixelated();
                         renderCompositeImage();
                         drawAllRois();
-                        focusThumbnail(firstKey);
+                        // ★ ここで常に firstKey を掴むと、ウィンドウリサイズや
+                        //   ResizeObserver のたびに選択中レイヤのハイライトが奪われる。
+                        focusThumbnail(activeSettingsKey || firstKey);
                     };
                     if (firstImage && firstImage.complete && firstImage.naturalWidth > 0) setCanvasSize();
                     else if (firstImage) firstImage.addEventListener('load', setCanvasSize, { once: true });
@@ -834,6 +1037,7 @@ function loadAllImages() {
                 const s = imageSettings[key];
                 currentProject.layerDisplay[key] = {
                     vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
+                    grayscale: !!s.grayscale,
                 };
             }
             queueSaveProject();
@@ -882,6 +1086,10 @@ function loadAllImages() {
                 return am - bm;
             });
 
+            // 表示中の MSI が 1 つだけならカラーマップ、2 つ以上なら分子色 + 加算合成
+            const colormapMode = msiColormapMode();
+            refreshPixelated();
+
             displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
 
             for (const key of keysToRender) {
@@ -890,14 +1098,17 @@ function loadAllImages() {
                 const vr = valueRasters[key];
                 if (!vr && (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0)) continue;
 
+                const isMsiLayer = /^MSI/i.test(key);
+                const isHeLike   = /HE_STAIN|IF_STAIN/i.test(key);
+
                 let tempCanvas;
                 if (vr) {
                     // 生値ラスタから直接着色する。8bit を経由しないので、生単位の
                     // 強度ウィンドウがそのまま効き、大津法のマスクも適用できる。
                     tempCanvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
-                        color: getMsiColor(key),
+                        lut: colormapMode ? MSIRaster.PLASMA_LUT : null,
+                        color: colormapMode ? null : getMsiColor(key),
                         win: { min: settings.vmin, max: settings.vmax },
-                        gamma: 0.5,
                         keep: otsuKeepFor(key),
                     });
                 } else {
@@ -912,38 +1123,54 @@ function loadAllImages() {
                 const { vmin, vmax } = settings;
                 const range = vmax - vmin;
                 const msiColor = getMsiColor(key);
+                const mono = !!settings.grayscale;
 
-                if (range > 0) {
+                // range が 0 だと下のループを丸ごと飛ばしていたが、それだとモノクロ化も
+                // 効かなくなるので、モノクロのときは通す。
+                if (range > 0 || mono) {
                     for (let i = 0; i < data.length; i += 4) {
                         const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
                         const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-                        const normalized = Math.max(0, Math.min(1, (lum - vmin) / range));
+                        const normalized = range > 0 ? Math.max(0, Math.min(1, (lum - vmin) / range)) : lum / 255;
 
-                        if (msiColor) {
-                            // MSI画像: 単色グラデーション（色 × 強度）
+                        if (isMsiLayer) {
+                            // MSI画像: カラーマップ、または単色グラデーション（色 × 強度）
                             if (a === 0 || (lum < 1 && normalized < 0.01)) {
                                 // 透明またはほぼゼロ → 透明のまま
                                 data[i] = 0; data[i+1] = 0; data[i+2] = 0; data[i+3] = 0;
-                            } else {
-                                // サムネイルと同じ γ=0.5 でミッドトーンを持ち上げ、弱信号の脳辺縁を可視化
-                                const bright = Math.pow(normalized, 0.5);
-                                data[i]   = Math.min(255, Math.round(msiColor[0] * bright));
-                                data[i+1] = Math.min(255, Math.round(msiColor[1] * bright));
-                                data[i+2] = Math.min(255, Math.round(msiColor[2] * bright));
+                            } else if (colormapMode) {
+                                const c = MSIRaster.PLASMA_LUT[Math.round(normalized * 255)];
+                                data[i] = c[0]; data[i+1] = c[1]; data[i+2] = c[2]; data[i+3] = 255;
+                            } else if (msiColor) {
+                                // 明るさは線形 (γ=1)。Share_Test に合わせて測定値に比例させる。
+                                data[i]   = Math.min(255, Math.round(msiColor[0] * normalized));
+                                data[i+1] = Math.min(255, Math.round(msiColor[1] * normalized));
+                                data[i+2] = Math.min(255, Math.round(msiColor[2] * normalized));
                                 data[i+3] = 255;
+                            } else {
+                                const v = Math.min(255, Math.round(255 * normalized));
+                                data[i] = v; data[i+1] = v; data[i+2] = v; data[i+3] = 255;
                             }
                         } else {
-                            // HE/IF画像: 従来のグレースケール輝度正規化
-                            const targetLum = normalized * 255;
-                            if (lum < 1) {
-                                const v = Math.round(targetLum);
-                                data[i] = v; data[i+1] = v; data[i+2] = v;
-                            } else {
-                                const scale = targetLum / lum;
-                                data[i]   = Math.min(255, Math.max(0, Math.round(r * scale)));
-                                data[i+1] = Math.min(255, Math.max(0, Math.round(g * scale)));
-                                data[i+2] = Math.min(255, Math.max(0, Math.round(b * scale)));
+                            // HE/IF画像: 輝度だけを動かし、色相 (HE の紫〜ピンク) は残す
+                            let nr = r, ng = g, nb = b;
+                            if (range > 0) {
+                                const targetLum = normalized * 255;
+                                if (lum < 1) {
+                                    nr = ng = nb = Math.round(targetLum);
+                                } else {
+                                    const scale = targetLum / lum;
+                                    nr = Math.min(255, Math.max(0, Math.round(r * scale)));
+                                    ng = Math.min(255, Math.max(0, Math.round(g * scale)));
+                                    nb = Math.min(255, Math.max(0, Math.round(b * scale)));
+                                }
                             }
+                            if (mono) {
+                                // BT.601 で 1 チャンネルに潰す。強度レンジの調整とは両立する。
+                                const y = Math.round(0.299 * nr + 0.587 * ng + 0.114 * nb);
+                                nr = ng = nb = y;
+                            }
+                            data[i] = nr; data[i+1] = ng; data[i+2] = nb;
                         }
                     }
                 }
@@ -951,10 +1178,12 @@ function loadAllImages() {
                 }
 
                 displayCtx.globalAlpha = settings.applyOpacity === false ? 1.0 : settings.opacity;
-                // MSI画像は加算合成（lighter）で重ねる → 複数MSIの色が混ざって見える
-                const isMsiLayer = /^MSI/i.test(key);
-                const isHeLike   = /HE_STAIN|IF_STAIN/i.test(key);
-                displayCtx.globalCompositeOperation = isMsiLayer ? 'lighter' : 'source-over';
+                // Share_Test と同じ規則。カラーマップ表示 (MSI 1 つ) は source-over で
+                // そのまま重ね、複数分子のときだけ加算合成 → 色が混ざって共局在が見える。
+                displayCtx.globalCompositeOperation = (isMsiLayer && !colormapMode) ? 'lighter' : 'source-over';
+                // MSI は測定点そのものなので拡大しても補間しない (Share_Test と同じ)。
+                // HE は縮小がかかるので補間を残す (切るとザラつく)。
+                displayCtx.imageSmoothingEnabled = !isMsiLayer;
 
                 const T = atlasData.world_coords && atlasData.world_coords.T_he_to_msi;
                 const isPortrait = sourceImg ? sourceImg.naturalHeight > sourceImg.naturalWidth
@@ -1000,6 +1229,7 @@ function loadAllImages() {
 
             displayCtx.globalCompositeOperation = 'source-over';
             displayCtx.globalAlpha = 1.0;
+            displayCtx.imageSmoothingEnabled = true;
             } finally {
                 isRendering = false;
             }
@@ -1056,6 +1286,10 @@ function loadAllImages() {
 
                 if (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN')) {
                   thumb.classList.add('heif-thumb');
+                  heThumbRefs.set(key, thumb);
+                  // モノクロ指定なら、読み込み後に潰した画像へ差し替える
+                  if (thumb.complete && thumb.naturalWidth > 0) refreshHeThumbnail(key);
+                  else thumb.addEventListener('load', () => refreshHeThumbnail(key), { once: true });
                 }
 
                 const applyRotAr = () => {
@@ -1105,8 +1339,10 @@ function loadAllImages() {
             if (checkbox) {
                 checkbox.checked = !checkbox.checked;
                 renderCompositeImage();
+                refreshMsiThumbnails();   // 1 分子 ⇔ 複数分子で着色が変わるため
                 persistVisibleLayers();
                 if (checkbox.checked) {
+                    setActiveSettingsKey(imageKey);
                     focusThumbnail(imageKey); // <<< added: サムネイル側も同期
                 } else {
                     const remain = document.querySelector('#image-selector-options input.layer-check:checked');
@@ -1971,6 +2207,7 @@ function loadAllImages() {
                 const s = imageSettings[key];
                 currentProject.layerDisplay[key] = {
                     vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
+                    grayscale: !!s.grayscale,
                 };
             }
         }
@@ -2044,6 +2281,7 @@ function loadAllImages() {
             }
             const out = document.getElementById('zoom-readout');
             if (out) out.textContent = Math.round(viewTransform.scale * 100) + '%';
+            refreshPixelated();
         }
 
         function setupViewTransform() {
