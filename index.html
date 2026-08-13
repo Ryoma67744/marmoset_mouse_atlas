@@ -730,7 +730,9 @@
             });
             row.addEventListener('dragend', () => row.classList.remove('dragging'));
 
-            const mols = (p.molecules || []).map(m => m.name).join(', ') || '—';
+            // TIC は登録も表示もしない (登録済みのデータに残っていても一覧には出さない)
+            const mols = (p.molecules || []).map(m => m.name)
+                .filter(n => !ImzML.isTicName(n)).join(', ') || '—';
             const grid = p.grid && p.grid.W ? `${p.grid.W} × ${p.grid.H} px` : '—';
             const um = p.grid && p.grid.umPerPxX ? ` / ${p.grid.umPerPxX} µm` : '';
             const he = p.images && p.images.HE_Stain ? 'あり' : 'なし';

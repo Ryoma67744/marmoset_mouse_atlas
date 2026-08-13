@@ -375,15 +375,6 @@
         // MSI サムネイルを imageSources から着色+CCW90°回転で再描画する。
         // vmin/vmax が変わるたびに呼び直すために抽出。
         /**
-         * MSI の着色モード。Share_Test と同じ規則:
-         *   表示中の MSI が 1 つだけ → カラーマップ (plasma)
-         *   2 つ以上             → 分子ごとの固定色で加算合成 (色の混ざりで共局在を見る)
-         */
-        function msiColormapMode() {
-            return checkedLayerKeys().filter(k => /^MSI/i.test(k)).length === 1;
-        }
-
-        /**
          * CSS 側の拡大でもドットを保つ。canvas の drawImage は
          * imageSmoothingEnabled で止めているが、canvas → CSS 寸法と
          * --vt-scale のズームはそちらでは止まらないため。
@@ -397,16 +388,18 @@
             displayCanvas.classList.toggle('px-nearest', hasMsi && net >= 1);
         }
 
+        /**
+         * IMAGES のサムネイル。着色は常に分子ごとの固定色 (メインキャンバスと同じ)。
+         * 表示の ON/OFF で絵が変わらないので、一覧として落ち着いて見られる。
+         */
         function renderMsiThumbnail(key, thumbEl) {
             if (!thumbEl) return;
-            const useLut = msiColormapMode();
             // 生値ラスタがあるならそちらから描く (生単位のウィンドウ + 大津法が効く)
             const vr = valueRasters[key];
             if (vr) {
                 const st = imageSettings[key] || {};
                 const canvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
-                    lut: useLut ? MSIRaster.PLASMA_LUT : null,
-                    color: useLut ? null : getMsiColor(key),
+                    color: getMsiColor(key),
                     win: { min: st.vmin, max: st.vmax },
                     keep: otsuKeepFor(key),
                 });
@@ -416,7 +409,6 @@
             }
             const source = imageSources[key];
             if (!source || !source.complete || source.naturalWidth === 0) return;
-            const color = getMsiColor(key);
             const iw = source.naturalWidth;
             const ih = source.naturalHeight;
             const tc = document.createElement('canvas');
@@ -428,16 +420,14 @@
             const st = imageSettings[key] || { vmin: 0, vmax: 255 };
             const lumMin = st.vmin;
             const lumRange = (st.vmax - st.vmin) || 1;
+            const color = getMsiColor(key);
             for (let i = 0; i < d.length; i += 4) {
                 if (d[i+3] === 0) continue;
                 const l = 0.299*d[i] + 0.587*d[i+1] + 0.114*d[i+2];
                 if (l < 1) { d[i] = 0; d[i+1] = 0; d[i+2] = 0; continue; }
                 // 明るさは線形 (γ=1)。Share_Test と同じで測定値に比例させる。
                 const n = Math.max(0, Math.min(1, (l - lumMin) / lumRange));
-                if (useLut) {
-                    const c = MSIRaster.PLASMA_LUT[Math.round(n * 255)];
-                    d[i] = c[0]; d[i+1] = c[1]; d[i+2] = c[2];
-                } else if (color) {
+                if (color) {
                     d[i]   = Math.min(255, Math.round(color[0] * n));
                     d[i+1] = Math.min(255, Math.round(color[1] * n));
                     d[i+2] = Math.min(255, Math.round(color[2] * n));
@@ -477,10 +467,6 @@
             if (otsuState.applied) recomputeOtsu();
             populateThumbnails();
             setupCheckboxDropdown();
-            // ★ サムネイルの着色は「表示中の MSI が 1 つか」で変わるが、
-            //   populateThumbnails の時点ではまだ checkbox が無く判定できない。
-            //   チップを作ったあとに一度塗り直す。
-            refreshMsiThumbnails();
             setupGraphSelector();
             setupCollapsibleSections();
             setupDrawingHandlers();
@@ -729,7 +715,8 @@ function loadAllImages() {
                 if (isNaN(percentValue)) percentValue = 100;
                 percentValue = Math.max(0, Math.min(100, percentValue));
                 opacityInput.value = percentValue;
-                settings.opacity = percentValue / 100.0;
+                // 透明度は同じ種類のレイヤ全部に効かせる (分子ごとに指定し直さない)
+                propagateOpacity(activeSettingsKey, { opacity: percentValue / 100.0 });
                 renderCompositeImage();
                 persistLayerDisplay();
             });
@@ -737,7 +724,7 @@ function loadAllImages() {
             applyOpacityInput.addEventListener('change', () => {
                 const settings = activeSettingsKey && imageSettings[activeSettingsKey];
                 if (!settings) return;
-                settings.applyOpacity = applyOpacityInput.checked;
+                propagateOpacity(activeSettingsKey, { applyOpacity: applyOpacityInput.checked });
                 opacityInput.disabled = !applyOpacityInput.checked;
                 renderCompositeImage();
                 persistLayerDisplay();
@@ -753,6 +740,20 @@ function loadAllImages() {
                 refreshHeThumbnail(key);
                 persistLayerDisplay();
             });
+        }
+
+        /**
+         * 透明度は「そのレイヤだけ」ではなく、同じ種類のレイヤ全部に効かせる。
+         * 分子を切り替えるたびに指定し直すのは手間なので (Share_Test も MSI 全体に効く)。
+         * ★ MSI と HE をまとめて動かすと、MSI を薄くしたつもりで下の HE まで
+         *   薄くなってしまうため、MSI 同士 / HE・IF 同士でのみ揃える。
+         */
+        function propagateOpacity(fromKey, patch) {
+            const isMsi = /^MSI/i.test(fromKey);
+            for (const key of Object.keys(imageSettings)) {
+                if (/^MSI/i.test(key) !== isMsi) continue;
+                Object.assign(imageSettings[key], patch);
+            }
         }
 
         /** ストリップの表示を activeSettingsKey のレイヤに合わせる */
@@ -799,19 +800,6 @@ function loadAllImages() {
                 row.classList.toggle('active', row.dataset.key === activeSettingsKey);
             });
             fillSettingsStrip();
-        }
-
-        /**
-         * チェックの数で MSI の着色が変わるので、全 MSI サムネイルを塗り直す。
-         * ★ 着色モードが変わったときだけ焼き直す。チェックのたびに全分子を
-         *   toDataURL すると、グリッドが大きいデータで操作が重くなる。
-         */
-        let lastThumbColormapMode = null;
-        function refreshMsiThumbnails() {
-            const mode = msiColormapMode();
-            if (mode === lastThumbColormapMode) return;
-            lastThumbColormapMode = mode;
-            msiThumbRefs.forEach((el, key) => renderMsiThumbnail(key, el));
         }
 
         /**
@@ -899,9 +887,7 @@ function loadAllImages() {
 
                 // チェックで Image Viewer 合成 + サムネイル連動
                 checkbox.addEventListener('change', () => {
-                    // 1 分子だけ表示中かどうかで着色が変わるので、サムネイルも塗り直す
                     renderCompositeImage();
-                    refreshMsiThumbnails();
                     persistVisibleLayers();
                     if (checkbox.checked) {
                         setActiveSettingsKey(key);
@@ -1086,8 +1072,6 @@ function loadAllImages() {
                 return am - bm;
             });
 
-            // 表示中の MSI が 1 つだけならカラーマップ、2 つ以上なら分子色 + 加算合成
-            const colormapMode = msiColormapMode();
             refreshPixelated();
 
             displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
@@ -1106,8 +1090,7 @@ function loadAllImages() {
                     // 生値ラスタから直接着色する。8bit を経由しないので、生単位の
                     // 強度ウィンドウがそのまま効き、大津法のマスクも適用できる。
                     tempCanvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
-                        lut: colormapMode ? MSIRaster.PLASMA_LUT : null,
-                        color: colormapMode ? null : getMsiColor(key),
+                        color: getMsiColor(key),
                         win: { min: settings.vmin, max: settings.vmax },
                         keep: otsuKeepFor(key),
                     });
@@ -1134,13 +1117,10 @@ function loadAllImages() {
                         const normalized = range > 0 ? Math.max(0, Math.min(1, (lum - vmin) / range)) : lum / 255;
 
                         if (isMsiLayer) {
-                            // MSI画像: カラーマップ、または単色グラデーション（色 × 強度）
+                            // MSI画像: 単色グラデーション（分子ごとの固定色 × 強度）
                             if (a === 0 || (lum < 1 && normalized < 0.01)) {
                                 // 透明またはほぼゼロ → 透明のまま
                                 data[i] = 0; data[i+1] = 0; data[i+2] = 0; data[i+3] = 0;
-                            } else if (colormapMode) {
-                                const c = MSIRaster.PLASMA_LUT[Math.round(normalized * 255)];
-                                data[i] = c[0]; data[i+1] = c[1]; data[i+2] = c[2]; data[i+3] = 255;
                             } else if (msiColor) {
                                 // 明るさは線形 (γ=1)。Share_Test に合わせて測定値に比例させる。
                                 data[i]   = Math.min(255, Math.round(msiColor[0] * normalized));
@@ -1178,9 +1158,9 @@ function loadAllImages() {
                 }
 
                 displayCtx.globalAlpha = settings.applyOpacity === false ? 1.0 : settings.opacity;
-                // Share_Test と同じ規則。カラーマップ表示 (MSI 1 つ) は source-over で
-                // そのまま重ね、複数分子のときだけ加算合成 → 色が混ざって共局在が見える。
-                displayCtx.globalCompositeOperation = (isMsiLayer && !colormapMode) ? 'lighter' : 'source-over';
+                // MSI は加算合成 (lighter)。信号のある所だけが光り、無い所は
+                // 下の HE がそのまま見える。複数分子なら色が混ざって共局在が読める。
+                displayCtx.globalCompositeOperation = isMsiLayer ? 'lighter' : 'source-over';
                 // MSI は測定点そのものなので拡大しても補間しない (Share_Test と同じ)。
                 // HE は縮小がかかるので補間を残す (切るとザラつく)。
                 displayCtx.imageSmoothingEnabled = !isMsiLayer;
@@ -1339,7 +1319,6 @@ function loadAllImages() {
             if (checkbox) {
                 checkbox.checked = !checkbox.checked;
                 renderCompositeImage();
-                refreshMsiThumbnails();   // 1 分子 ⇔ 複数分子で着色が変わるため
                 persistVisibleLayers();
                 if (checkbox.checked) {
                     setActiveSettingsKey(imageKey);
@@ -3030,16 +3009,20 @@ function loadAllImages() {
       if (!p) throw new Error('登録データが見つかりません (id=' + projectId + ')');
       currentProject = p;
 
+      // TIC は分子の像ではないので表示しない。登録済みのデータに入っていても外す
+      // (背景除去が使う TIC は、残りの分子から毎回計算している)。
+      const molecules = (p.molecules || []).filter(m => !ImzML.isTicName(m.name || m.key.replace(/^MSI_/i, '')));
+
       atlasData = {
         meta: { format: 'roi_bundle_v1', dataset_id: p.displayName },
         roi: p.roi || { roi_items: {}, roi_names: {}, palette: {}, roi_show_flags: {} },
         images: {},
         world_coords: p.world_coords || {},
         alignment: p.alignment || {},
-        thumbnail_order: (p.molecules || []).map(m => m.key),
+        thumbnail_order: molecules.map(m => m.key),
       };
 
-      for (const m of (p.molecules || [])) {
+      for (const m of molecules) {
         const values = await ProjectStorage.getValueRaster(m.blobId);
         if (!values) { console.warn('[loadProject] ラスタが見つかりません', m.key); continue; }
         const r = { values: values, W: p.grid.W, H: p.grid.H };
