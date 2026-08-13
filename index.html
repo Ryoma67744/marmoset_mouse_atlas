@@ -116,7 +116,6 @@
                         <button id="bulk-move" class="btn" disabled>選択を移動</button>
                         <button id="bulk-export" class="btn" disabled>選択を Export</button>
                         <button id="bulk-delete" class="btn btn-danger" disabled>選択を削除</button>
-                        <button id="clear-all" class="btn btn-danger">全データ削除</button>
                     </div>
                 </div>
                 <div class="flex gap-4 items-start">
@@ -964,12 +963,6 @@
             if (!ids.length) return;
             if (!confirm(`選択した ${ids.length} 件を削除しますか?`)) return;
             for (const id of ids) await ProjectStorage.deleteProject(id);
-            await refreshProjectList();
-        });
-
-        document.getElementById('clear-all').addEventListener('click', async () => {
-            if (!confirm('登録データをすべて削除します。よろしいですか?\n(この操作は取り消せません)')) return;
-            await ProjectStorage.clearAll();
             await refreshProjectList();
         });
 
