@@ -100,6 +100,10 @@
         #rot-group input { width: 46px; text-align: right; }
         #rot-reset { padding: 0 4px; line-height: 1.2; font-size: 13px; }
         #rot-reset:hover { color: #111827; }
+        /* 左右 2 分割。Atlas が無いときは #atlas-pane が hidden なので右が全幅になる。
+           min-width:0 が無いと、中身 (canvas) の実寸に押されて 50% を割り込む。 */
+        #atlas-pane, #image-viewer { flex: 1 1 0; min-width: 0; }
+        #atlas-pane.hidden { display: none; }
         #image-viewer { touch-action: none; }
         #image-viewer.panning { cursor: grabbing; }
         #image-viewer.pannable { cursor: grab; }
@@ -275,11 +279,19 @@
                         </div>
                         <canvas id="otsu-hist" width="600" height="90"></canvas>
                     </div>
-                    <div id="image-viewer" class="relative flex-1 min-h-0 border border-gray-300 rounded bg-black overflow-hidden">
-                        <img id="sizing-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'%3E%3Crect width='1200' height='900' fill='%23000'/%3E%3C/svg%3E" alt="Sizing reference" class="absolute w-full h-full opacity-0 object-contain">
-                        <div id="image-viewer-rot">
-                            <canvas id="display-canvas" class="absolute"></canvas>
-                            <canvas id="roi-canvas" class="absolute pointer-events-none"></canvas>
+                    <!-- Atlas を登録してあるときは左右 2 分割。左が Atlas、右がこれまでの表示。
+                         Atlas が無ければ #atlas-pane は隠れ、右が全幅になる (従来と同じ)。 -->
+                    <div id="viewer-split" class="flex-1 min-h-0 flex gap-1">
+                        <div id="atlas-pane" class="hidden relative border border-gray-300 rounded bg-black overflow-hidden">
+                            <img id="atlas-image" alt="Atlas" class="absolute inset-0 w-full h-full object-contain">
+                            <span class="absolute top-1 left-1 text-[10px] text-gray-300 bg-black/50 px-1 rounded pointer-events-none">Atlas</span>
+                        </div>
+                        <div id="image-viewer" class="relative border border-gray-300 rounded bg-black overflow-hidden">
+                            <img id="sizing-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'%3E%3Crect width='1200' height='900' fill='%23000'/%3E%3C/svg%3E" alt="Sizing reference" class="absolute w-full h-full opacity-0 object-contain">
+                            <div id="image-viewer-rot">
+                                <canvas id="display-canvas" class="absolute"></canvas>
+                                <canvas id="roi-canvas" class="absolute pointer-events-none"></canvas>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -491,6 +503,9 @@
 
         async function initializeViewer() {
             populateRoiList();
+            // ★ キャンバスの寸法を決める前に出す。あとから左半分が現れると
+            //   #image-viewer の幅が縮み、フィット計算が古い幅のままずれる。
+            refreshAtlasPane();
             await loadAllImages();
             // ★ 設定 (生単位のウィンドウ) を先に作る。サムネイルを先に描くと
             //   imageSettings がまだ無く、既定ウィンドウ [0,1] で真っ白に焼ける。
@@ -622,6 +637,7 @@ function loadAllImages() {
         }
 
         function formatDisplayName(key) {
+            if (key === ATLAS_KEY) return "Atlas";
             if (key.startsWith("MSI_")) {
                 return `MSI (${key.substring(4).replace('_', '-')})`;
             }
@@ -882,7 +898,10 @@ function loadAllImages() {
             if (!optionsContainer) return;
 
             optionsContainer.innerHTML = '';
-            const imageKeys = atlasData.images ? Object.keys(atlasData.images) : [];
+            // ★ Atlas は重ね合わせの対象ではない (左に並べて出すだけ) ので、
+            //   チェックボックスには出さない。ここに出すと合成側にも流れてしまう。
+            const imageKeys = (atlasData.images ? Object.keys(atlasData.images) : [])
+                .filter(k => k !== ATLAS_KEY);
             const visible = new Set(
                 (currentProject && Array.isArray(currentProject.visibleLayers) && currentProject.visibleLayers.length)
                     ? currentProject.visibleLayers
@@ -1266,11 +1285,28 @@ function loadAllImages() {
             }
         }
 
+        /**
+         * Atlas を左半分に出す。登録されていなければ枠ごと隠して、
+         * これまでどおり右側 (通常の表示) が全幅を使う。
+         * ★ 重ね合わせはしない。並べて見るための参照画像なので、
+         *   合成にもチェックボックスにも関わらせない。
+         */
+        function refreshAtlasPane() {
+            const pane = document.getElementById('atlas-pane');
+            const img = document.getElementById('atlas-image');
+            if (!pane || !img) return;
+            const src = atlasData.images && atlasData.images[ATLAS_KEY];
+            if (!src) { pane.classList.add('hidden'); img.removeAttribute('src'); return; }
+            if (img.getAttribute('src') !== src) img.src = src;
+            pane.classList.remove('hidden');
+        }
+
         function populateThumbnails() {
             const container = document.getElementById('thumbnail-container');
             container.innerHTML = ''; 
 
             const allKeys = atlasData.images ? Object.keys(atlasData.images) : [];
+            const atlasKeys = allKeys.filter(k => k === ATLAS_KEY);
             const heKeys = allKeys.filter(k => k.toUpperCase().includes('HE_STAIN'));
             const ifKeys = allKeys.filter(k => k.toUpperCase().includes('IF_STAIN'));
             const rawMsi = allKeys.filter(k => k.toUpperCase().includes('MSI_'));
@@ -1281,7 +1317,9 @@ function loadAllImages() {
             const msiKeys = ordered.concat(rest);
 
             // 実画像のみ残す。 "No Image" placeholder はユーザー要件により描画しない。
+            // Atlas は一番左。以降はこれまでどおり HE → IF → MSI の順。
             const rawSlots = [
+                atlasKeys[0] || null,
                 heKeys[0] || null, ifKeys[0] || null, ifKeys[1] || null, ifKeys[2] || null,
                 msiKeys[0] || null, msiKeys[1] || null, msiKeys[2] || null, msiKeys[3] || null
             ];
