@@ -54,9 +54,36 @@
                     </div>
                     <p class="text-xs text-gray-500 mt-0.5">データ登録と一括管理</p>
                 </div>
-                <a href="USER_GUIDE.md" class="text-xs text-blue-600 hover:underline">User Guide</a>
+                <div class="flex items-center gap-3">
+                    <!-- クラウドの状態。接続先が未設定なら出さない (ローカルのみモード) -->
+                    <span id="cloud-chip" class="hidden text-xs px-2 py-0.5 rounded-full border"></span>
+                    <button id="cloud-signout" class="btn hidden">ログアウト</button>
+                    <a href="USER_GUIDE.md" class="text-xs text-blue-600 hover:underline">User Guide</a>
+                </div>
             </div>
         </header>
+
+        <!-- クラウドを使う設定のときだけ出る。パスワードを入れるまで中身は見せない -->
+        <div id="cloud-gate" class="hidden fixed inset-0 z-50 bg-gray-100 flex items-center justify-center p-6">
+            <div class="bg-white border border-gray-200 rounded-lg p-6 w-full max-w-sm space-y-3">
+                <h2 class="text-base font-bold text-gray-900">Marmoset Brain Atlas</h2>
+                <p class="text-xs text-gray-500">
+                    登録データはクラウド (Supabase) に保存されています。
+                    パスワードを入れると、どの PC からでも同じ一覧が開きます。
+                </p>
+                <input id="cloud-password" type="password" autocomplete="current-password"
+                       class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" placeholder="パスワード">
+                <div>
+                    <input id="cloud-who" type="text" maxlength="40"
+                           class="w-full border border-gray-300 rounded px-2 py-1.5 text-sm" placeholder="あなたの名前 (任意)">
+                    <p class="text-xs text-gray-400 mt-1">
+                        「誰が最後に保存したか」の表示に使うだけの札です。認証には関係ありません。
+                    </p>
+                </div>
+                <button id="cloud-signin" class="btn btn-primary w-full">ログイン</button>
+                <p id="cloud-gate-error" class="hidden text-xs text-red-600 whitespace-pre-wrap"></p>
+            </div>
+        </div>
 
         <main class="flex-1 max-w-5xl w-full mx-auto px-6 py-8 space-y-8">
 
@@ -153,6 +180,8 @@
     <script src="lib/ingest.js"></script>
     <script src="lib/imzml.js"></script>
     <script src="lib/zipio.js"></script>
+    <script src="lib/cloud-config.js"></script>
+    <script src="lib/cloud.js"></script>
     <script>
     (function () {
         'use strict';
@@ -311,22 +340,54 @@
         document.getElementById('register-btn').addEventListener('click', async () => {
             const btn = document.getElementById('register-btn');
             btn.disabled = true;
+            // ★ 1 件でも失敗したら残り全部を諦める、という作りにはしない。
+            //   5 件まとめて選んだうちの 3 件目だけ壊れていたとき、4・5 件目まで
+            //   登録されないのは分かりにくいため。失敗したぶんだけ名前を出す。
+            const failed = [];
+            const notSent = [];
+            let done = 0;
+            // クラウドを使うときは、進み具合の前半を読み込み・後半を送信に割り当てる
+            const share = (cloudOn() && Cloud.signedIn()) ? 0.5 : 1;
             try {
                 for (let gi = 0; gi < pendingGroups.length; gi++) {
                     const g = pendingGroups[gi];
-                    await registerGroup(g, gi === 0 ? pendingHe : null,
-                        (frac, label) => {
-                            setProgress((gi + frac) / pendingGroups.length);
-                            setStatus(label);
+                    let project = null;
+                    try {
+                        project = await registerGroup(g, gi === 0 ? pendingHe : null,
+                            (frac, label) => {
+                                setProgress((gi + frac * share) / pendingGroups.length);
+                                setStatus(label);
+                            });
+                        done++;
+                    } catch (e) {
+                        console.error(e);
+                        failed.push(groupDisplayName(g) + ': ' + e.message);
+                    }
+                    // ★ 送信の失敗と登録の失敗を混ぜない。ここに来た時点で
+                    //   データは手元に入っているので、「登録できませんでした」は嘘になる。
+                    if (project) {
+                        const r = await pushNew(project, (frac) => {
+                            setProgress((gi + share + frac * (1 - share)) / pendingGroups.length);
+                            setStatus('クラウドへ送信中… ' + Math.round(frac * 100) + '%');
                         });
+                        if (r && r.__error) notSent.push(project.displayName + ': ' + r.__error);
+                    }
                 }
                 setProgress(null);
-                setStatus('登録が完了しました。');
+                setStatus(failed.length === 0 ? '登録が完了しました。'
+                    : done + ' 件を登録しました (' + failed.length + ' 件は失敗)。');
                 pendingGroups = []; pendingFiles = []; pendingNames = {}; pendingHe = null;
                 document.getElementById('msi-input').value = '';
                 document.getElementById('he-input').value = '';
                 renderMsiSummary([], []); renderHeSummary();
                 await refreshProjectList();
+                const notes = [];
+                if (failed.length) notes.push('次のデータは登録できませんでした:\n' + failed.join('\n'));
+                if (notSent.length) {
+                    notes.push('次のデータはこの PC には入りましたが、クラウドへ送れませんでした ' +
+                        '(一覧の「未アップロード」から送り直せます):\n' + notSent.join('\n'));
+                }
+                if (notes.length) showError(notes.join('\n\n'));
             } catch (e) {
                 console.error(e);
                 setProgress(null);
@@ -456,6 +517,31 @@
 
         /** 保存層から読み直してツリーを組み直す */
         async function reload() {
+            // ---- クラウドの行を先に取る -------------------------------------
+            const pathToFolderId = new Map();
+            if (cloudOn() && Cloud.signedIn()) {
+                try {
+                    cloudRows = await Cloud.listProjects();
+                    cloudOffline = false;
+                    cloudErrorText = '';
+                    // 別の PC で作られたフォルダを、名前の列からこちらにも作る。
+                    // ★ 中身のあるフォルダだけ再現される (空のフォルダは行が無いので出ない)。
+                    for (const r of cloudRows) {
+                        const names = r.folder_path || [];
+                        const key = JSON.stringify(names);
+                        if (pathToFolderId.has(key)) continue;
+                        pathToFolderId.set(key, names.length ? await ProjectStorage.ensureFolderPath(names) : null);
+                    }
+                } catch (e) {
+                    console.warn('[cloud] 一覧を取得できません', e);
+                    cloudRows = null;
+                    cloudOffline = true;
+                    cloudErrorText = e.status === 540 ? 'Supabase が休止中'
+                        : (e.status === 401 ? 'ログインが必要' : 'クラウド未接続');
+                    if (e.status === 401) { showGate(e.message); }
+                }
+            }
+
             const [folders, projects] = await Promise.all([
                 ProjectStorage.listFolders(), ProjectStorage.listProjects(),
             ]);
@@ -474,7 +560,11 @@
                 }
             }
             if (currentFolderId && !tree.byId.has(currentFolderId)) currentFolderId = null;
-            cache = { folders: folders, projects: projects, tree: tree };
+            cache = {
+                folders: folders,
+                projects: mergeWithCloud(projects, cloudRows, pathToFolderId),
+                tree: tree,
+            };
         }
 
         async function refreshProjectList() {
@@ -485,7 +575,10 @@
                 return;
             }
             render();
+            paintCloudChip();
             updateStorageNote();
+            // フォルダを動かしたぶんをクラウドへ反映する (ずれが無ければ何も送らない)
+            reconcileFolderPaths().catch(e => console.warn('[cloud] 反映に失敗', e));
         }
 
         function render() {
@@ -596,9 +689,14 @@
         async function moveProjects(ids, folderId) {
             for (const id of ids) {
                 const p = await ProjectStorage.getProject(id);
-                if (!p) continue;
-                p.folderId = folderId || null;
-                await ProjectStorage.putProject(p);
+                if (p) { p.folderId = folderId || null; await ProjectStorage.putProject(p); continue; }
+                // まだ手元に落としていないデータ。行の folder_path だけ動かす。
+                const stub = cache.projects.find(x => x.id === id && x.__cloudOnly);
+                if (stub) {
+                    stub.folderId = folderId || null;
+                    await patchCloudMeta(stub,
+                        { folder_path: ProjectStorage.folderPathNames(folderId || null, cache.tree.byId) });
+                }
             }
             await refreshProjectList();
         }
@@ -740,7 +838,7 @@
             row.innerHTML =
                 '<input type="checkbox" class="sel h-4 w-4 rounded border-gray-300" value="' + esc(p.id) + '">' +
                 '<div class="flex-1 min-w-0">' +
-                  '<div class="font-semibold text-gray-900 truncate">' + esc(p.displayName) + '</div>' +
+                  '<div class="font-semibold text-gray-900 truncate">' + esc(p.displayName) + cloudBadge(p) + '</div>' +
                   '<div class="text-xs text-gray-500 mt-0.5">' +
                     '分子: ' + esc(mols) + ' &nbsp;·&nbsp; グリッド: ' + esc(grid + um) +
                     ' &nbsp;·&nbsp; HE: ' + he + ' &nbsp;·&nbsp; ' + aligned +
@@ -748,6 +846,10 @@
                   '<div class="text-xs text-gray-400 mt-0.5">更新 ' + esc((p.updatedAt || '').slice(0, 19).replace('T', ' ')) + '</div>' +
                 '</div>' +
                 '<div class="flex items-center gap-1 shrink-0">' +
+                  // 送れていない / クラウド側で消えたものだけ、送り直す口を出す
+                  (cloudOn() && !p.__row && !p.__cloudOnly
+                      ? '<button class="btn" data-act="push">' +
+                        (p.__deletedElsewhere ? '再アップロード' : 'アップロード') + '</button>' : '') +
                   '<button class="btn" data-act="open">開く</button>' +
                   '<button class="btn" data-act="rename">名前変更</button>' +
                   '<button class="btn" data-act="move">移動</button>' +
@@ -756,22 +858,60 @@
                 '</div>';
 
             row.querySelector('.sel').addEventListener('change', refreshBulkButtons);
-            row.querySelector('[data-act="open"]').addEventListener('click', () => {
+            const pushBtn = row.querySelector('[data-act="push"]');
+            if (pushBtn) pushBtn.addEventListener('click', async () => {
+                const local = await ProjectStorage.getProject(p.id);
+                if (!local) { showError('この PC に実体がありません。'); return; }
+                pushBtn.disabled = true;
+                setStatus('クラウドへ送信中…');
+                setProgress(0);
+                try {
+                    await uploadProject(local, (f) => {
+                        setProgress(f);
+                        setStatus('クラウドへ送信中… ' + Math.round(f * 100) + '%');
+                    });
+                    setProgress(null);
+                    setStatus(`「${local.displayName}」をクラウドに保存しました。`);
+                } catch (e) {
+                    setProgress(null);
+                    setStatus('');
+                    showError('アップロードに失敗しました: ' + e.message);
+                } finally {
+                    pushBtn.disabled = false;
+                }
+                await refreshProjectList();
+            });
+            row.querySelector('[data-act="open"]').addEventListener('click', async () => {
+                try { await ensureLocal(p); }
+                catch (e) { showError('クラウドから取得できませんでした: ' + e.message); return; }
                 location.href = 'viewer/index.html?project=' + encodeURIComponent(p.id);
             });
             row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
                 const name = (prompt('新しい名前', p.displayName) || '').trim();
                 if (!name) return;
                 p.displayName = name;
-                await ProjectStorage.putProject(p);
+                // 名前だけなら ZIP は送り直さない (中身は何も変わっていない)
+                if (!p.__cloudOnly) await ProjectStorage.putProject(p);
+                await patchCloudMeta(p, { display_name: name });
                 await refreshProjectList();
             });
             row.querySelector('[data-act="move"]').addEventListener('click', () => {
                 openFolderPicker('「' + p.displayName + '」の移動先', (target) => moveProjects([p.id], target), null);
             });
-            row.querySelector('[data-act="export"]').addEventListener('click', () => exportOne(p));
+            row.querySelector('[data-act="export"]').addEventListener('click', async () => {
+                let target = p;
+                try { target = await ensureLocal(p); }
+                catch (e) { showError('クラウドから取得できませんでした: ' + e.message); return; }
+                exportOne(target);
+            });
             row.querySelector('[data-act="delete"]').addEventListener('click', async () => {
-                if (!confirm(`「${p.displayName}」を削除しますか?`)) return;
+                // ★ クラウドを使っているときは「どの PC からも消える」ことを明記する。
+                //   1 台の掃除のつもりで全員のデータを消せてしまうため。
+                const msg = cloudOn() && (p.__row || p.cloudUpdatedAt)
+                    ? `「${p.displayName}」を削除します。\nクラウドからも消えるので、他の PC でも開けなくなります。`
+                    : `「${p.displayName}」を削除しますか?`;
+                if (!confirm(msg)) return;
+                await deleteFromCloud(p);
                 await ProjectStorage.deleteProject(p.id);
                 await refreshProjectList();
             });
@@ -831,6 +971,12 @@
         async function mergeProjects(ids) {
             const list = [];
             for (const id of ids) {
+                // 統合は中身を触るので、未取得のものは先に落としてくる
+                const stub = cache.projects.find(x => x.id === id);
+                if (stub && stub.__cloudOnly) {
+                    try { await ensureLocal(stub); }
+                    catch (e) { showError('「' + stub.displayName + '」を取得できませんでした: ' + e.message); return; }
+                }
                 const p = await ProjectStorage.getProject(id);
                 if (p) list.push(p);
             }
@@ -893,6 +1039,22 @@
             await ProjectStorage.putProject(target);
             // ★ blob は target が参照しているので、レコードだけ消す
             for (const src of rest) await ProjectStorage.deleteProjectRecord(src.id);
+            // クラウド側も 1 つにする。まとめた本体を送り直してから、元の行を消す。
+            if (cloudOn() && Cloud.signedIn()) {
+                setStatus('クラウドへ送信中…');
+                setProgress(0);
+                const r = await pushNew(target, (f) => setProgress(f));
+                setProgress(null);
+                setStatus('');
+                if (r && r.__error) {
+                    showError('統合はできましたが、クラウドへ送れませんでした ' +
+                        '(一覧の「アップロード」から送り直せます): ' + r.__error);
+                } else {
+                    for (const src of rest) {
+                        await deleteFromCloud(cache.projects.find(x => x.id === src.id) || src);
+                    }
+                }
+            }
             await refreshProjectList();
             return target;
         }
@@ -909,6 +1071,8 @@
                 if (name && name !== merged.displayName) {
                     merged.displayName = name;
                     await ProjectStorage.putProject(merged);
+                    await patchCloudMeta(cache.projects.find(x => x.id === merged.id) || merged,
+                        { display_name: name });
                     await refreshProjectList();
                 }
             }
@@ -922,11 +1086,14 @@
 
         async function updateStorageNote() {
             const el = document.getElementById('storage-note');
+            const head = cloudOn()
+                ? '登録データはクラウド (Supabase) に保存され、この PC には作業用の控えが置かれます。'
+                : '登録データはこのブラウザ内 (IndexedDB) に保存されます。';
             const est = await ProjectStorage.estimate();
-            if (!est || !est.usage) { el.textContent = '登録データはこのブラウザ内 (IndexedDB) に保存されます。'; return; }
+            if (!est || !est.usage) { el.textContent = head; return; }
             const mb = (est.usage / 1048576).toFixed(1);
             const quota = est.quota ? ' / 約 ' + (est.quota / 1048576).toFixed(0) + ' MB' : '';
-            el.textContent = `登録データはこのブラウザ内 (IndexedDB) に保存されます。使用量 約 ${mb} MB${quota}。`;
+            el.textContent = head + `この PC の使用量 約 ${mb} MB${quota}。`;
         }
 
         async function exportOne(p) {
@@ -953,16 +1120,31 @@
 
         document.getElementById('bulk-export').addEventListener('click', async () => {
             for (const id of selectedIds()) {
-                const p = await ProjectStorage.getProject(id);
-                if (p) await exportOne(p);
+                const row = cache.projects.find(x => x.id === id);
+                if (!row) continue;
+                try {
+                    const p = await ensureLocal(row);
+                    if (p && p.molecules) await exportOne(p);
+                } catch (e) { showError('「' + row.displayName + '」を取得できませんでした: ' + e.message); }
             }
         });
 
         document.getElementById('bulk-delete').addEventListener('click', async () => {
             const ids = selectedIds();
             if (!ids.length) return;
-            if (!confirm(`選択した ${ids.length} 件を削除しますか?`)) return;
-            for (const id of ids) await ProjectStorage.deleteProject(id);
+            const anyCloud = cloudOn() && ids.some(id => {
+                const p = cache.projects.find(x => x.id === id);
+                return p && (p.__row || p.cloudUpdatedAt);
+            });
+            const msg = anyCloud
+                ? `選択した ${ids.length} 件を削除します。\nクラウドからも消えるので、他の PC でも開けなくなります。`
+                : `選択した ${ids.length} 件を削除しますか?`;
+            if (!confirm(msg)) return;
+            for (const id of ids) {
+                const p = cache.projects.find(x => x.id === id);
+                if (p) await deleteFromCloud(p);
+                await ProjectStorage.deleteProject(id);
+            }
             await refreshProjectList();
         });
 
@@ -977,8 +1159,18 @@
             setProgress(0.5);
             try {
                 const { project, warnings } = await ZipIO.importZip(file);
+                // 読み込んだものもクラウドへ送る。送らないと一覧から消えてしまう
+                // (一覧はクラウドの行から作るため)。
+                const r = await pushNew(project, (f) => {
+                    setProgress(0.5 + f * 0.5);
+                    setStatus('クラウドへ送信中… ' + Math.round(f * 100) + '%');
+                });
                 setProgress(null);
                 setStatus(`「${project.displayName}」を読み込みました。`);
+                if (r && r.__error) {
+                    showError('この PC には読み込めましたが、クラウドへ送れませんでした ' +
+                        '(一覧の「アップロード」から送り直せます): ' + r.__error);
+                }
                 if (warnings.length) {
                     console.warn('[import] 警告:', warnings);
                     showError('読み込みは完了しましたが、次の警告があります:\n' + warnings.join('\n'));
@@ -992,7 +1184,294 @@
             }
         });
 
-        refreshProjectList();
+        // =================================================================
+        // クラウド (Supabase)
+        // =================================================================
+        // ★ lib/cloud-config.js が空なら、この節はまるごと働かない。
+        //   設定を入れるまでは今までどおり、この PC の中だけで完結する。
+        let cloudRows = null;        // 直近に取れた行 (取れなかったら null)
+        let cloudOffline = false;
+        let cloudErrorText = '';
+
+        function cloudOn() { return !!(window.Cloud && Cloud.configured()); }
+        function cloudReady() { return cloudOn() && Cloud.signedIn() && !cloudOffline; }
+
+        function paintCloudChip() {
+            const chip = document.getElementById('cloud-chip');
+            const out = document.getElementById('cloud-signout');
+            if (!cloudOn()) { chip.classList.add('hidden'); out.classList.add('hidden'); return; }
+            chip.classList.remove('hidden');
+            const set = (text, cls) => {
+                chip.textContent = text;
+                chip.className = 'text-xs px-2 py-0.5 rounded-full border ' + cls;
+            };
+            if (!Cloud.signedIn()) {
+                set('ログインが必要', 'bg-gray-50 text-gray-600 border-gray-300');
+                out.classList.add('hidden');
+                return;
+            }
+            out.classList.remove('hidden');
+            if (cloudOffline) set(cloudErrorText || 'クラウド未接続', 'bg-red-50 text-red-700 border-red-300');
+            else set('クラウド接続中', 'bg-green-50 text-green-700 border-green-300');
+        }
+
+        // ---- 一覧の合流 ------------------------------------------------------
+        /**
+         * クラウドの行と手元のレコードを突き合わせて、画面に出す一覧を作る。
+         * ★ 手元にしか無い古いデータは出さない (クラウド運用を始める前のもの)。
+         *   ただし「送ろうとして失敗したぶん」と「クラウド側で消えたぶん」は、
+         *   黙って見えなくすると復旧のしようが無いので必ず出す。
+         */
+        function mergeWithCloud(localProjects, rows, pathToFolderId) {
+            if (!cloudOn()) return localProjects;
+            const byId = new Map(localProjects.map(p => [p.id, p]));
+            if (!rows) {
+                // 接続できなかったとき。手元に控えのあるものだけで動かし続ける。
+                return localProjects.filter(p => p.cloudUpdatedAt || p.cloudPending);
+            }
+            const out = [];
+            for (const r of rows) {
+                const p = byId.get(r.id);
+                if (p) { p.__row = r; p.__cloudOnly = false; p.__deletedElsewhere = false; out.push(p); byId.delete(r.id); }
+                else out.push(cloudStub(r, pathToFolderId));
+            }
+            for (const p of byId.values()) {
+                p.__row = null; p.__cloudOnly = false;
+                if (p.cloudUpdatedAt) { p.__deletedElsewhere = true; out.push(p); }
+                else if (p.cloudPending) { p.__deletedElsewhere = false; out.push(p); }
+            }
+            return out;
+        }
+
+        /** まだ手元に落としていないデータの、一覧に出すためだけの見かけ。 */
+        function cloudStub(r, pathToFolderId) {
+            const meta = r.meta || {};
+            const state = r.state || {};
+            return {
+                id: r.id,
+                displayName: r.display_name || '(名前なし)',
+                folderId: pathToFolderId.get(JSON.stringify(r.folder_path || [])) || null,
+                grid: meta.grid || {},
+                molecules: (meta.molecules || []).map(n => ({ name: n })),
+                images: meta.hasHe ? { HE_Stain: {} } : {},
+                world_coords: state.world_coords || {},
+                updatedAt: r.updated_at || '',
+                __row: r, __cloudOnly: true, __deletedElsewhere: false,
+            };
+        }
+
+        function cloudBadge(p) {
+            if (!cloudOn()) return '';
+            const pill = (t, c) => ' <span class="text-xs px-1.5 py-0.5 rounded border ' + c + '">' + t + '</span>';
+            const r = p.__row;
+            if (!r) {
+                if (p.__deletedElsewhere) return pill('クラウドで削除されました', 'bg-red-50 text-red-700 border-red-200');
+                return pill('未アップロード', 'bg-amber-50 text-amber-700 border-amber-200');
+            }
+            if (p.__cloudOnly) return pill('未取得', 'bg-gray-50 text-gray-500 border-gray-200');
+            if (r.updated_at !== p.cloudUpdatedAt) return pill('クラウドが新しい', 'bg-blue-50 text-blue-700 border-blue-200');
+            if (Cloud.hashState(Cloud.stateOf(p)) !== p.cloudStateHash) {
+                return pill('未保存の変更', 'bg-amber-50 text-amber-700 border-amber-200');
+            }
+            return pill('同期済み', 'bg-green-50 text-green-700 border-green-200');
+        }
+
+        // ---- 上りと下り ------------------------------------------------------
+        /** 手元のプロジェクトをクラウドへ送る (ZIP 本体 + 行)。 */
+        async function uploadProject(p, onProgress) {
+            p.folderPath = ProjectStorage.folderPathNames(p.folderId, cache.tree.byId);
+            const blob = await ZipIO.exportProject(p);
+            // ★ 同じパスに上書きしない。CDN が古いほうを返して
+            //   「保存したのに別の PC では前のまま」になるのが一番わかりにくい。
+            const rev = (p.cloudRev | 0) + 1;
+            const path = Cloud.bundlePath(p.id, rev);
+            await Cloud.uploadBundle(path, blob, onProgress);
+            const state = Cloud.stateOf(p);
+            const row = await Cloud.putRow({
+                id: p.id,
+                display_name: p.displayName,
+                folder_path: p.folderPath,
+                meta: Cloud.metaOf(p),
+                state: state,
+                bundle_path: path,
+                bundle_rev: rev,
+            });
+            const old = p.cloudBundlePath;
+            p.cloudRev = rev;
+            p.cloudBundlePath = path;
+            p.cloudUpdatedAt = row.updated_at;
+            p.cloudStateHash = Cloud.hashState(state);
+            p.cloudPending = false;
+            await ProjectStorage.putProject(p);
+            // 古い版は残しても意味が無いので片付ける。消せなくても致命傷ではない。
+            if (old && old !== path) {
+                try { await Cloud.removeBundle(old); } catch (e) { console.warn('[cloud] 旧 ZIP を消せません', old, e); }
+            }
+            return row;
+        }
+
+        /** クラウドから落として、同じ id で取り込む。 */
+        async function downloadProject(row, onProgress) {
+            if (!row.bundle_path) {
+                throw new Error('クラウドに本体がありません (アップロードが途中で終わっています)');
+            }
+            const blob = await Cloud.downloadBundle(row.bundle_path, onProgress);
+            // ★ id を渡すのが要点。渡さないと取り込むたびに別データとして増える。
+            const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id });
+            const project = res.project;
+            Cloud.applyState(project, row.state);
+            if (row.display_name) project.displayName = row.display_name;
+            project.folderId = await ProjectStorage.ensureFolderPath(row.folder_path || []);
+            project.cloudRev = row.bundle_rev | 0;
+            project.cloudBundlePath = row.bundle_path;
+            project.cloudUpdatedAt = row.updated_at;
+            project.cloudStateHash = Cloud.hashState(Cloud.stateOf(project));
+            project.cloudPending = false;
+            await ProjectStorage.putProject(project);
+            return { project: project, warnings: res.warnings };
+        }
+
+        /** 開く / Export のように、実体が手元に要る操作の前に呼ぶ。 */
+        async function ensureLocal(p) {
+            if (!cloudOn() || !p.__row) return await ProjectStorage.getProject(p.id) || p;
+            const fresh = p.__cloudOnly || p.__row.updated_at !== p.cloudUpdatedAt;
+            if (!fresh) return await ProjectStorage.getProject(p.id) || p;
+            if (!p.__cloudOnly &&
+                Cloud.hashState(Cloud.stateOf(p)) !== p.cloudStateHash &&
+                !confirm(`「${p.displayName}」はクラウドのほうが新しく、この PC にも未保存の変更があります。\n` +
+                         'クラウドの内容で置き換えますか? (この PC の変更は失われます)')) {
+                return await ProjectStorage.getProject(p.id) || p;
+            }
+            setStatus(`「${p.displayName}」をクラウドから取得中…`);
+            setProgress(0);
+            try {
+                const out = await downloadProject(p.__row, (f) => setProgress(f));
+                setProgress(null);
+                setStatus(`「${out.project.displayName}」を取得しました。`);
+                if (out.warnings && out.warnings.length) {
+                    console.warn('[cloud] 取得時の警告:', out.warnings);
+                }
+                return out.project;
+            } catch (e) {
+                setProgress(null);
+                setStatus('');
+                throw e;
+            }
+        }
+
+        /**
+         * 登録・ZIP 読み込み・統合のあとに呼ぶ。送れなければ「未アップロード」で残す。
+         * ★ ここで例外を投げない。送信の失敗で登録そのものが失敗したように見えると、
+         *   実際には手元に入っているデータを二重に登録してしまう。
+         */
+        async function pushNew(project, onProgress) {
+            if (!cloudOn() || !Cloud.signedIn()) return null;
+            try {
+                return await uploadProject(project, onProgress);
+            } catch (e) {
+                console.error('[cloud] アップロードに失敗', e);
+                project.cloudPending = true;
+                await ProjectStorage.putProject(project);
+                return { __error: e.message };
+            }
+        }
+
+        /** 行のメタだけ直す (ZIP は送り直さない)。 */
+        async function patchCloudMeta(p, patch) {
+            if (!cloudReady() || !p.__row) return;
+            try {
+                const row = await Cloud.patchRow(p.id, patch);
+                if (row) {
+                    p.__row = row;
+                    p.cloudUpdatedAt = row.updated_at;
+                    // ★ 未取得のものは書き戻さない。一覧に出すためだけの見かけなので、
+                    //   保存すると中身の無いデータが手元にできてしまう。
+                    if (!p.__cloudOnly) await ProjectStorage.putProject(p);
+                }
+            } catch (e) {
+                console.warn('[cloud] メタの更新に失敗', p.id, e);
+                showError('クラウド側の更新に失敗しました: ' + e.message);
+            }
+        }
+
+        async function deleteFromCloud(p) {
+            if (!cloudOn() || !Cloud.signedIn()) return;
+            const path = (p.__row && p.__row.bundle_path) || p.cloudBundlePath;
+            // ★ 実体 → 行 の順。逆にすると、行だけ残って「どの PC でも開けない
+            //   データ」になる。実体だけ残るのは次の登録で上書きされるので害が小さい。
+            if (path) { try { await Cloud.removeBundle(path); } catch (e) { console.warn('[cloud] ZIP を消せません', e); } }
+            try { await Cloud.removeRow(p.id); } catch (e) { console.warn('[cloud] 行を消せません', e); }
+        }
+
+        /**
+         * フォルダの名前変更・移動・削除は、触っていないデータの居場所まで変える。
+         * 3 箇所それぞれに反映を書くと必ず抜けるので、一覧を組み直したあとに
+         * 「ずれている行だけ」まとめて直す。普段は 1 件も送らない。
+         */
+        async function reconcileFolderPaths() {
+            if (!cloudReady()) return;
+            for (const p of cache.projects) {
+                if (!p.__row || p.__cloudOnly) continue;
+                const path = ProjectStorage.folderPathNames(p.folderId, cache.tree.byId);
+                if (JSON.stringify(path) === JSON.stringify(p.__row.folder_path || [])) continue;
+                try {
+                    const row = await Cloud.patchRow(p.id, { folder_path: path });
+                    if (row) { p.__row = row; p.cloudUpdatedAt = row.updated_at; await ProjectStorage.putProject(p); }
+                } catch (e) { console.warn('[cloud] フォルダ位置の反映に失敗', p.id, e); }
+            }
+        }
+
+        // ---- ログイン画面 ----------------------------------------------------
+        function showGate(msg) {
+            const gate = document.getElementById('cloud-gate');
+            gate.classList.remove('hidden');
+            const err = document.getElementById('cloud-gate-error');
+            if (msg) { err.textContent = msg; err.classList.remove('hidden'); }
+            else { err.classList.add('hidden'); }
+            document.getElementById('cloud-who').value = Cloud.who();
+            document.getElementById('cloud-password').focus();
+            paintCloudChip();
+        }
+        function hideGate() { document.getElementById('cloud-gate').classList.add('hidden'); }
+
+        async function doSignIn() {
+            const btn = document.getElementById('cloud-signin');
+            const err = document.getElementById('cloud-gate-error');
+            const pw = document.getElementById('cloud-password');
+            err.classList.add('hidden');
+            btn.disabled = true;
+            btn.textContent = 'ログイン中…';
+            try {
+                await Cloud.signIn(pw.value);
+                Cloud.setWho(document.getElementById('cloud-who').value.trim());
+                pw.value = '';
+                hideGate();
+                await refreshProjectList();
+            } catch (e) {
+                err.textContent = e.message;
+                err.classList.remove('hidden');
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'ログイン';
+            }
+        }
+
+        document.getElementById('cloud-signin').addEventListener('click', doSignIn);
+        document.getElementById('cloud-password').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') doSignIn();
+        });
+        document.getElementById('cloud-signout').addEventListener('click', () => {
+            if (!confirm('クラウドからログアウトします。よろしいですか?')) return;
+            Cloud.signOut();
+            location.reload();
+        });
+
+        // ---- 起動 ------------------------------------------------------------
+        (async function startup() {
+            paintCloudChip();
+            if (cloudOn() && !Cloud.signedIn()) { showGate(); return; }
+            await refreshProjectList();
+        })();
     })();
     </script>
 </body>
