@@ -18,6 +18,9 @@
         .btn { display:inline-flex; align-items:center; gap:.35rem; padding:.35rem .75rem; font-size:.75rem;
                border-radius:.375rem; border:1px solid #d1d5db; background:#fff; color:#374151; cursor:pointer; }
         .btn:hover { background:#f9fafb; }
+        /* ★ .btn の display は Tailwind の .hidden と同じ強さなので、どちらが勝つかは
+           読み込み順まかせになる。隠したいときは必ず隠れるよう、ここで決めておく。 */
+        .btn.hidden { display:none; }
         .btn:disabled { opacity:.5; cursor:not-allowed; }
         .btn-primary { background:#2563eb; border-color:#2563eb; color:#fff; }
         .btn-primary:hover { background:#1d4ed8; }

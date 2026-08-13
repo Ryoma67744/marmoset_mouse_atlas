@@ -174,6 +174,11 @@
                     <input type="checkbox" id="otsu-toggle" class="h-3.5 w-3.5 rounded border-gray-300">
                     背景除去(大津法)
                 </label>
+                <!-- クラウドを使う設定のときだけ出る。ROI や重ね合わせを他の PC にも反映する -->
+                <button id="cloud-save" class="hidden items-center gap-1 px-3 py-1 text-xs font-medium rounded border" title="ROI や重ね合わせをクラウドに保存して、他の PC でも同じ状態で開けるようにする">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-.41-8.98 4.5 4.5 0 0 1 8.08-3.13 4.5 4.5 0 0 1 6.58 5.61A3.75 3.75 0 0 1 19.5 19.5H6.75Z"/></svg>
+                    <span id="cloud-save-label">クラウドに保存</span>
+                </button>
                 <button id="export-zip" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="作業状態ごと ZIP に書き出す">
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
                     Export
@@ -1047,6 +1052,8 @@ function loadAllImages() {
             saveTimer = setTimeout(() => {
                 saveTimer = 0;
                 ProjectStorage.putProject(currentProject).catch(e => console.warn('[save] 失敗', e));
+                // 作業中の保存はこの PC の中だけ。クラウドへ送るかどうかはボタンで決める
+                if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
             }, 400);
         }
 
@@ -2231,7 +2238,80 @@ function loadAllImages() {
             }
         }
 
+        // =================================================================
+        // クラウドへの保存
+        // =================================================================
+        // ★ ここで送るのは ROI・重ね合わせ・表示設定だけ (行の state 列)。
+        //   生値と HE の入った ZIP は登録のときに 1 度上がっていて、
+        //   ビューアでの編集では変わらない。ROI を 1 つ動かすたびに数十 MB を
+        //   送り直すのは、待たされるだけで得るものが無い。
+        function cloudOn() { return !!(window.Cloud && Cloud.configured() && Cloud.signedIn()); }
+
+        function cloudDirty() {
+            if (!cloudOn() || !currentProject || !currentProject.cloudUpdatedAt) return false;
+            return Cloud.hashState(Cloud.stateOf(currentProject)) !== currentProject.cloudStateHash;
+        }
+
+        function refreshCloudSaveState() {
+            const btn = document.getElementById('cloud-save');
+            if (!btn) return;
+            if (!cloudOn() || !currentProject || !currentProject.cloudUpdatedAt) {
+                btn.classList.add('hidden');
+                btn.classList.remove('inline-flex');
+                return;
+            }
+            btn.classList.remove('hidden');
+            btn.classList.add('inline-flex');
+            const dirty = cloudDirty();
+            btn.className = 'inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border ' +
+                (dirty ? 'border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-800'
+                       : 'border-gray-300 bg-white hover:bg-gray-50 text-gray-500');
+            const label = document.getElementById('cloud-save-label');
+            if (label) label.textContent = dirty ? 'クラウドに保存 (未保存)' : 'クラウドに保存済み';
+        }
+
+        async function saveToCloud() {
+            const btn = document.getElementById('cloud-save');
+            const label = document.getElementById('cloud-save-label');
+            if (!cloudOn() || !currentProject) return;
+            syncProjectFromViewer();
+            await ProjectStorage.putProject(currentProject);
+            const state = Cloud.stateOf(currentProject);
+            if (btn) btn.disabled = true;
+            if (label) label.textContent = '保存中…';
+            try {
+                // ★ 見ていた版と一致するときだけ書き換える。一致しなければ 0 行返る。
+                //   これが無いと、2 台で開いていたとき後に押したほうが黙って全部を上書きする。
+                let row = await Cloud.patchRowIfUnchanged(currentProject.id, { state: state },
+                    currentProject.cloudUpdatedAt);
+                if (!row) {
+                    const cur = await Cloud.getProject(currentProject.id);
+                    if (!cur) throw new Error('このデータはクラウド側で削除されています。');
+                    const whoTxt = cur.updated_by ? `${cur.updated_by} さんが` : '別の PC で';
+                    const when = String(cur.updated_at || '').slice(0, 19).replace('T', ' ');
+                    if (!confirm(`${whoTxt} ${when} に更新しています。\n` +
+                                 'この PC の内容で上書きしますか? (相手の変更は失われます)')) {
+                        if (label) label.textContent = 'クラウドに保存';
+                        return;
+                    }
+                    row = await Cloud.patchRow(currentProject.id, { state: state });
+                }
+                currentProject.cloudUpdatedAt = row.updated_at;
+                currentProject.cloudStateHash = Cloud.hashState(state);
+                await ProjectStorage.putProject(currentProject);
+            } catch (e) {
+                console.error('[cloud-save]', e);
+                alert('クラウドへの保存に失敗しました: ' + e.message);
+            } finally {
+                if (btn) btn.disabled = false;
+                refreshCloudSaveState();
+            }
+        }
+
         function setupZipButtons() {
+            const cs = document.getElementById('cloud-save');
+            if (cs) cs.addEventListener('click', saveToCloud);
+            refreshCloudSaveState();
             const ex = document.getElementById('export-zip');
             if (ex) ex.addEventListener('click', exportZip);
             const imBtn = document.getElementById('import-zip');
@@ -3005,9 +3085,41 @@ function loadAllImages() {
     // =====================================================================
     // データ読み込み
     // =====================================================================
+    /**
+     * この PC に無いデータをクラウドから落として取り込む。
+     * 取れなければ null を返す (呼ぶ側が今までどおりのエラーを出す)。
+     */
+    async function fetchProjectFromCloud(projectId) {
+      if (!(window.Cloud && Cloud.configured() && Cloud.signedIn())) return null;
+      try {
+        const row = await Cloud.getProject(projectId);
+        if (!row || !row.bundle_path) return null;
+        const blob = await Cloud.downloadBundle(row.bundle_path);
+        // id を渡して同じ id で取り込む (渡さないと別データとして増える)
+        const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id });
+        const project = res.project;
+        Cloud.applyState(project, row.state);
+        if (row.display_name) project.displayName = row.display_name;
+        project.folderId = await ProjectStorage.ensureFolderPath(row.folder_path || []);
+        project.cloudRev = row.bundle_rev | 0;
+        project.cloudBundlePath = row.bundle_path;
+        project.cloudUpdatedAt = row.updated_at;
+        project.cloudStateHash = Cloud.hashState(Cloud.stateOf(project));
+        project.cloudPending = false;
+        await ProjectStorage.putProject(project);
+        return project;
+      } catch (e) {
+        console.warn('[cloud] 取得できません', e);
+        return null;
+      }
+    }
+
     /** 登録済みプロジェクト (?project=) を IndexedDB から読む。 */
     async function loadProject(projectId) {
-      const p = await ProjectStorage.getProject(projectId);
+      let p = await ProjectStorage.getProject(projectId);
+      // ★ この PC にまだ落としていないだけ、ということがある。ビューアの URL を
+      //   そのまま別の PC で開けるように、無ければクラウドから取ってくる。
+      if (!p) p = await fetchProjectFromCloud(projectId);
       if (!p) throw new Error('登録データが見つかりません (id=' + projectId + ')');
       currentProject = p;
 
@@ -3075,6 +3187,8 @@ function loadAllImages() {
         await loadProject(projectId);
         await domReady;
         await initializeViewer();
+        // 「クラウドに保存」の表示は、開いたデータが決まってからでないと出せない
+        if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
       } catch (e) {
         console.error(e);
         await domReady;
