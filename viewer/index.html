@@ -92,9 +92,14 @@
             inset: 0;
             transform-origin: 50% 50%;
             transform: translate(var(--vt-tx, 0px), var(--vt-ty, 0px))
-                       rotate(-90deg)
+                       rotate(calc(var(--vt-rot, 0deg) - 90deg))
                        scale(var(--vt-scale, 1));
         }
+        /* 回転の操作欄 (ヘッダ) */
+        #rot-group select, #rot-group input { border: 1px solid #d1d5db; border-radius: 4px; padding: 1px 3px; }
+        #rot-group input { width: 46px; text-align: right; }
+        #rot-reset { padding: 0 4px; line-height: 1.2; font-size: 13px; }
+        #rot-reset:hover { color: #111827; }
         #image-viewer { touch-action: none; }
         #image-viewer.panning { cursor: grabbing; }
         #image-viewer.pannable { cursor: grab; }
@@ -170,6 +175,17 @@
                 <span class="app-version text-xs text-gray-400 shrink-0" title="アプリのバージョン"></span>
             </div>
             <div class="flex items-center gap-2">
+                <!-- 表示の回転。角度はデータごとに保存され、次に開いたときも同じ向きで出る -->
+                <span id="rot-group" class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700" title="表示画像を回転します。角度はこのデータに保存されます">
+                    <select id="rot-target" title="回転させる対象。HE と MSI が別の向きで取り込まれているときは、片方だけ回して向きを合わせます">
+                        <option value="both">両方</option>
+                        <option value="he">HEのみ</option>
+                        <option value="msi">MSIのみ</option>
+                    </select>
+                    <input type="number" id="rot-angle" step="1" min="-180" max="180" value="0" title="回転角 (°)">
+                    <span class="text-gray-500">°</span>
+                    <button type="button" id="rot-reset" class="text-gray-600" title="回転・移動・拡大をすべて戻す">↻</button>
+                </span>
                 <label class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 cursor-pointer" title="各ピクセルの総信号量(TIC)から背景スポットを自動判定し、全イオン像から一括で非表示にします。生データは変更しません。">
                     <input type="checkbox" id="otsu-toggle" class="h-3.5 w-3.5 rounded border-gray-300">
                     背景除去(大津法)
@@ -352,6 +368,16 @@
         let otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
         // パン / ズーム
         let viewTransform = { tx: 0, ty: 0, scale: 1 };
+        /*
+         * 表示の回転 (度)。
+         *   all … 画面全体。CSS の transform に載せるだけなので ROI の座標計算には効かない
+         *   he / msi … 片方だけを回す。こちらは canvas に焼き込む
+         *
+         * ★ パン/ズームと分けて持つ。パン/ズームは「その PC でどこを見ているか」なので
+         *   共有しないが、向きは「そのデータがどちらを向いているか」なので、
+         *   保存して他の PC でも同じ向きで開けるようにする。
+         */
+        let rotationState = { all: 0, he: 0, msi: 0 };
 
         // MSI サムネイル要素を key → <img> で保持(輝度変更時に再描画するため)
         const msiThumbRefs = new Map();
@@ -478,6 +504,7 @@
             setupCollapsibleSections();
             setupDrawingHandlers();
             setupZipButtons();
+            setupRotationControls();
             setupViewTransform();
             setupOtsuUi();
             setupAlignButton();
@@ -1174,6 +1201,20 @@ function loadAllImages() {
                 // HE は縮小がかかるので補間を残す (切るとザラつく)。
                 displayCtx.imageSmoothingEnabled = !isMsiLayer;
 
+                // 「HEのみ」「MSIのみ」の回転。キャンバス中心まわりに回してから
+                // 既存の描画をそのまま行う (変換は 外∘内 で合成されるので、下の
+                // T 適用や CCW90° の分岐はそのまま使える)。
+                // ★ 画面全体の回転と違い、こちらは canvas に焼き込む。片方だけ回すには
+                //   CSS では足りないため。
+                const layerRot = isHeLike ? rotationState.he : (isMsiLayer ? rotationState.msi : 0);
+                const needLayerRot = Number.isFinite(layerRot) && layerRot !== 0;
+                if (needLayerRot) {
+                    displayCtx.save();
+                    displayCtx.translate(displayCanvas.width / 2, displayCanvas.height / 2);
+                    displayCtx.rotate(layerRot * Math.PI / 180);
+                    displayCtx.translate(-displayCanvas.width / 2, -displayCanvas.height / 2);
+                }
+
                 const T = atlasData.world_coords && atlasData.world_coords.T_he_to_msi;
                 const isPortrait = sourceImg ? sourceImg.naturalHeight > sourceImg.naturalWidth
                                              : tempCanvas.height > tempCanvas.width;
@@ -1214,6 +1255,7 @@ function loadAllImages() {
                         displayCtx.restore();
                     }
                 }
+                if (needLayerRot) displayCtx.restore();
             }
 
             displayCtx.globalCompositeOperation = 'source-over';
@@ -2183,6 +2225,9 @@ function loadAllImages() {
             if (!currentProject) return;
             currentProject.visibleLayers = checkedLayerKeys();
             currentProject.viewerTransform = Object.assign({}, viewTransform);
+            currentProject.rotation = {
+                all: rotationState.all, he: rotationState.he, msi: rotationState.msi,
+            };
             currentProject.otsu = {
                 applied: otsuState.applied,
                 strength: otsuState.strength,
@@ -2327,6 +2372,75 @@ function loadAllImages() {
         }
 
         // =======================================================================
+        // 表示の回転
+        // =======================================================================
+        function rotTargetNow() {
+            const sel = document.getElementById('rot-target');
+            const v = sel ? sel.value : 'both';
+            return v === 'he' ? 'he' : (v === 'msi' ? 'msi' : 'all');
+        }
+
+        /** 入力欄に、いま選ばれている対象の角度を映す。 */
+        function refreshRotationUi() {
+            const inp = document.getElementById('rot-angle');
+            if (inp) inp.value = Math.round(rotationState[rotTargetNow()] || 0);
+        }
+
+        function persistRotation() {
+            if (!currentProject) return;
+            currentProject.rotation = {
+                all: rotationState.all, he: rotationState.he, msi: rotationState.msi,
+            };
+            queueSaveProject();
+        }
+
+        function applyRotation(deg, target, keepInput) {
+            let v = parseFloat(deg);
+            if (!Number.isFinite(v)) v = 0;
+            v = Math.max(-180, Math.min(180, v));
+            const tgt = target || rotTargetNow();
+            rotationState[tgt] = v;
+            // 全体は CSS だけで済むが、片方だけの回転は焼き込みなので描き直す
+            if (tgt === 'all') applyViewTransform();
+            else renderCompositeImage();
+            if (!keepInput) refreshRotationUi();
+            persistRotation();
+        }
+
+        /** ↻ — 向き・位置・倍率をすべて初期値へ戻す。 */
+        function resetViewAndRotation() {
+            rotationState.all = 0; rotationState.he = 0; rotationState.msi = 0;
+            viewTransform.tx = 0; viewTransform.ty = 0; viewTransform.scale = 1;
+            applyViewTransform();
+            renderCompositeImage();
+            refreshRotationUi();
+            persistRotation();
+            persistViewTransform();
+        }
+
+        function setupRotationControls() {
+            const sel = document.getElementById('rot-target');
+            const inp = document.getElementById('rot-angle');
+            const rst = document.getElementById('rot-reset');
+            // 対象を切り替えたら、その対象の角度を出す (値は書き換えない)
+            if (sel) sel.addEventListener('change', refreshRotationUi);
+            if (inp) {
+                inp.addEventListener('input', () => {
+                    // ★ 空 / "-" だけのときに 0 として扱うと、入力欄を書き戻す拍子に
+                    //   マイナスが消えて負の角度が打てなくなる。打っている間は触らない。
+                    const raw = String(inp.value).trim();
+                    if (raw === '' || raw === '-') return;
+                    applyRotation(raw, null, true);
+                });
+                // 確定したところで正規化する (範囲外の値もここで丸まる)
+                inp.addEventListener('change', () => applyRotation(inp.value));
+                inp.addEventListener('blur', () => refreshRotationUi());
+            }
+            if (rst) rst.addEventListener('click', resetViewAndRotation);
+            refreshRotationUi();
+        }
+
+        // =======================================================================
         // パン / ズーム
         //
         // #image-viewer-rot の CSS transform に --vt-* を載せるだけ。
@@ -2338,6 +2452,7 @@ function loadAllImages() {
             if (rot) {
                 rot.style.setProperty('--vt-tx', viewTransform.tx + 'px');
                 rot.style.setProperty('--vt-ty', viewTransform.ty + 'px');
+                rot.style.setProperty('--vt-rot', (rotationState.all || 0) + 'deg');
                 rot.style.setProperty('--vt-scale', String(viewTransform.scale));
             }
             const out = document.getElementById('zoom-readout');
@@ -3165,6 +3280,11 @@ function loadAllImages() {
         viewTransform.tx = Number(p.viewerTransform.tx) || 0;
         viewTransform.ty = Number(p.viewerTransform.ty) || 0;
         viewTransform.scale = Number(p.viewerTransform.scale) || 1;
+      }
+      if (p.rotation) {
+        rotationState.all = Number(p.rotation.all) || 0;
+        rotationState.he  = Number(p.rotation.he)  || 0;
+        rotationState.msi = Number(p.rotation.msi) || 0;
       }
       const title = document.getElementById('atlas-title');
       if (title) title.textContent = p.displayName;
