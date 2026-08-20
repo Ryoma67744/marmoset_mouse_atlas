@@ -139,6 +139,21 @@
                         </div>
                     </div>
 
+                    <!-- ④ 免疫染色 -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-800 mb-1">④ 免疫染色画像 <span class="text-gray-400 font-normal">(任意)</span></label>
+                        <p class="text-xs text-gray-500 mb-2">
+                            免疫染色の画像です。PNG / JPEG / TIFF に対応します。
+                            <span class="text-gray-400">Atlas と同じく MSI や HE には重ねず、ビューアの左半分で切り替えて表示します。</span>
+                        </p>
+                        <div id="immuno-drop" class="drop-zone rounded-md p-4 text-center">
+                            <input type="file" id="immuno-input" accept=".tif,.tiff,.png,.jpg,.jpeg,image/*" class="hidden">
+                            <button type="button" class="btn" onclick="document.getElementById('immuno-input').click()">画像を選択</button>
+                            <span class="text-xs text-gray-500 ml-2">またはここにドラッグ &amp; ドロップ</span>
+                            <div id="immuno-summary" class="mt-3 text-left text-xs"></div>
+                        </div>
+                    </div>
+
                     <div class="flex items-center gap-3 pt-1">
                         <button id="register-btn" class="btn btn-primary" disabled>登録する</button>
                         <span id="register-status" class="text-xs text-gray-500"></span>
@@ -241,6 +256,7 @@
         let groupMode = 'auto';   // 'auto' | 'single'
         let pendingHe = null;     // File
         let pendingAtlas = null;  // File (Atlas 図。MSI/HE には重ねず、並べて表示する)
+        let pendingImmuno = null; // File (免疫染色。Atlas と同じ扱い)
 
         wireDropZone('msi-drop', 'msi-input', (files) => {
             pendingFiles = files;
@@ -272,6 +288,12 @@
         wireDropZone('atlas-drop', 'atlas-input', (files) => {
             pendingAtlas = files[0] || null;
             renderAtlasSummary();
+            refreshRegisterButton();
+        });
+
+        wireDropZone('immuno-drop', 'immuno-input', (files) => {
+            pendingImmuno = files[0] || null;
+            renderImmunoSummary();
             refreshRegisterButton();
         });
 
@@ -355,6 +377,15 @@
                 ' <span class="text-gray-500">(' + kb + ' KB)</span></div>';
         }
 
+        function renderImmunoSummary() {
+            const el = document.getElementById('immuno-summary');
+            if (!pendingImmuno) { el.innerHTML = ''; return; }
+            const kb = (pendingImmuno.size / 1024).toFixed(0);
+            el.innerHTML = '<div class="border border-gray-200 rounded p-2 bg-gray-50">' +
+                '<span class="font-medium text-gray-800">' + esc(pendingImmuno.name) + '</span>' +
+                ' <span class="text-gray-500">(' + kb + ' KB)</span></div>';
+        }
+
         function refreshRegisterButton() {
             document.getElementById('register-btn').disabled = pendingGroups.length === 0;
         }
@@ -387,9 +418,9 @@
                     const g = pendingGroups[gi];
                     let project = null;
                     try {
-                        // HE / Atlas は先頭のデータセットにだけ紐づける (1 枚しか選べないため)
-                        project = await registerGroup(g, gi === 0 ? pendingHe : null,
-                            gi === 0 ? pendingAtlas : null,
+                        // 画像は先頭のデータセットにだけ紐づける (それぞれ 1 枚しか選べないため)
+                        project = await registerGroup(g,
+                            gi === 0 ? { he: pendingHe, atlas: pendingAtlas, immuno: pendingImmuno } : {},
                             (frac, label) => {
                                 setProgress((gi + frac * share) / pendingGroups.length);
                                 setStatus(label);
@@ -413,11 +444,12 @@
                 setStatus(failed.length === 0 ? '登録が完了しました。'
                     : done + ' 件を登録しました (' + failed.length + ' 件は失敗)。');
                 pendingGroups = []; pendingFiles = []; pendingNames = {};
-                pendingHe = null; pendingAtlas = null;
+                pendingHe = null; pendingAtlas = null; pendingImmuno = null;
                 document.getElementById('msi-input').value = '';
                 document.getElementById('he-input').value = '';
                 document.getElementById('atlas-input').value = '';
-                renderMsiSummary([], []); renderHeSummary(); renderAtlasSummary();
+                document.getElementById('immuno-input').value = '';
+                renderMsiSummary([], []); renderHeSummary(); renderAtlasSummary(); renderImmunoSummary();
                 await refreshProjectList();
                 const notes = [];
                 if (failed.length) notes.push('次のデータは登録できませんでした:\n' + failed.join('\n'));
@@ -436,7 +468,12 @@
             }
         });
 
-        async function registerGroup(group, heFile, atlasFile, report) {
+        // ★ 画像は位置引数ではなく files でまとめて受ける。種類が増えるたびに
+        //   引数が 1 つずつ伸びると、呼ぶ側で順番を間違えても気づけない。
+        async function registerGroup(group, files, report) {
+            const heFile = files && files.he;
+            const atlasFile = files && files.atlas;
+            const immunoFile = files && files.immuno;
             const project = {
                 id: ProjectStorage.uid('proj'),
                 displayName: groupDisplayName(group),
@@ -523,6 +560,20 @@
                     blob: atlasFile, mime: mime, filename: atlasFile.name,
                 });
                 project.images[ATLAS_KEY] = { blobId: blobId, mime: mime, filename: atlasFile.name };
+            }
+
+            if (immunoFile) {
+                report(0.98, '免疫染色画像を登録中…');
+                const mime = Ingest.isTiffName(immunoFile.name) ? 'image/tiff' : (immunoFile.type || '');
+                try {
+                    await Ingest.imageBlobToDataUrl(immunoFile, immunoFile.name);
+                } catch (e) {
+                    throw new Error('免疫染色画像を読めませんでした (' + immunoFile.name + '): ' + e.message);
+                }
+                const blobId = await ProjectStorage.putBlob({
+                    blob: immunoFile, mime: mime, filename: immunoFile.name,
+                });
+                project.images[IMMUNO_KEY] = { blobId: blobId, mime: mime, filename: immunoFile.name };
             }
 
             report(1, '保存中…');
@@ -888,6 +939,7 @@
             const um = p.grid && p.grid.umPerPxX ? ` / ${p.grid.umPerPxX} µm` : '';
             const he = p.images && p.images.HE_Stain ? 'あり' : 'なし';
             const hasAtlas = !!(p.images && p.images[ATLAS_KEY]);
+            const hasImmuno = !!(p.images && p.images[IMMUNO_KEY]);
             const aligned = p.world_coords && p.world_coords.T_he_to_msi
                 ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
             row.innerHTML =
@@ -898,6 +950,7 @@
                     '分子: ' + esc(mols) + ' &nbsp;·&nbsp; グリッド: ' + esc(grid + um) +
                     ' &nbsp;·&nbsp; HE: ' + he +
                     (hasAtlas ? ' &nbsp;·&nbsp; Atlas: あり' : '') +
+                    (hasImmuno ? ' &nbsp;·&nbsp; 免染: あり' : '') +
                     ' &nbsp;·&nbsp; ' + aligned +
                   '</div>' +
                   '<div class="text-xs text-gray-400 mt-0.5">更新 ' + esc((p.updatedAt || '').slice(0, 19).replace('T', ' ')) + '</div>' +
@@ -1311,7 +1364,8 @@
                 grid: meta.grid || {},
                 molecules: (meta.molecules || []).map(n => ({ name: n })),
                 images: Object.assign({}, meta.hasHe ? { HE_Stain: {} } : {},
-                                          meta.hasAtlas ? { [ATLAS_KEY]: {} } : {}),
+                                          meta.hasAtlas ? { [ATLAS_KEY]: {} } : {},
+                                          meta.hasImmuno ? { [IMMUNO_KEY]: {} } : {}),
                 world_coords: state.world_coords || {},
                 updatedAt: r.updated_at || '',
                 __row: r, __cloudOnly: true, __deletedElsewhere: false,
