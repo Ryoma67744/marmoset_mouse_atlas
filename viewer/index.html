@@ -57,6 +57,11 @@
           display: inline-block;
         }
         .thumbnail.active, .thumbnail:hover { border-color: #3b82f6; }
+        /* 左半分に映している参照画像の目印。
+           ★ .active とは別にする。.active は focusThumbnail() が「全サムネイルから
+             一括で外す」作りで、ウィンドウのリサイズなどでも呼ばれるため、
+             共用すると選択の印がすぐ消えてしまう。色も分けて役割を混ぜない。 */
+        .thumbnail.ref-active { border-color: #f59e0b; }
         /* レイヤのチップ (横並び)。
            ★ 並びは Tailwind ではなくここで指定する。ブラウザテストは Tailwind CDN を
              差し替えて動かすので、レイアウトを CDN 側に依存させない。 */
@@ -100,7 +105,7 @@
         #rot-group input { width: 46px; text-align: right; }
         #rot-reset { padding: 0 4px; line-height: 1.2; font-size: 13px; }
         #rot-reset:hover { color: #111827; }
-        /* 左右 2 分割。Atlas が無いときは #atlas-pane が hidden なので右が全幅になる。
+        /* 左右 2 分割。参照画像が無いときは #atlas-pane が hidden なので右が全幅になる。
            min-width:0 が無いと、中身 (canvas) の実寸に押されて 50% を割り込む。 */
         #atlas-pane, #image-viewer { flex: 1 1 0; min-width: 0; }
         #atlas-pane.hidden { display: none; }
@@ -279,12 +284,14 @@
                         </div>
                         <canvas id="otsu-hist" width="600" height="90"></canvas>
                     </div>
-                    <!-- Atlas を登録してあるときは左右 2 分割。左が Atlas、右がこれまでの表示。
-                         Atlas が無ければ #atlas-pane は隠れ、右が全幅になる (従来と同じ)。 -->
+                    <!-- 参照画像 (Atlas / 免疫染色) があるときは左右 2 分割。
+                         左が参照画像、右がこれまでの表示。下の IMAGES で押したほうに切り替わる。
+                         どちらも無ければ左は隠れ、右が全幅になる (従来と同じ)。
+                         ★ 左は常に 1 枚だけ映す。2 枚並べると右が 1/3 になってしまう。 -->
                     <div id="viewer-split" class="flex-1 min-h-0 flex gap-1">
                         <div id="atlas-pane" class="hidden relative border border-gray-300 rounded bg-black overflow-hidden">
                             <img id="atlas-image" alt="Atlas" class="absolute inset-0 w-full h-full object-contain">
-                            <span class="absolute top-1 left-1 text-[10px] text-gray-300 bg-black/50 px-1 rounded pointer-events-none">Atlas</span>
+                            <span id="ref-caption" class="absolute top-1 left-1 text-[10px] text-gray-300 bg-black/50 px-1 rounded pointer-events-none">Atlas</span>
                         </div>
                         <div id="image-viewer" class="relative border border-gray-300 rounded bg-black overflow-hidden">
                             <img id="sizing-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='1200' height='900'%3E%3Crect width='1200' height='900' fill='%23000'/%3E%3C/svg%3E" alt="Sizing reference" class="absolute w-full h-full opacity-0 object-contain">
@@ -390,6 +397,11 @@
          *   保存して他の PC でも同じ向きで開けるようにする。
          */
         let rotationState = { all: 0, he: 0, msi: 0 };
+        // 左半分に映している参照画像のキー (ATLAS_KEY / IMMUNO_KEY / null)
+        let activeRefKey = null;
+
+        /** 重ね合わせに参加しない「並べて見るだけ」の画像か。 */
+        function isRefKey(key) { return key === ATLAS_KEY || key === IMMUNO_KEY; }
 
         // MSI サムネイル要素を key → <img> で保持(輝度変更時に再描画するため)
         const msiThumbRefs = new Map();
@@ -505,7 +517,7 @@
             populateRoiList();
             // ★ キャンバスの寸法を決める前に出す。あとから左半分が現れると
             //   #image-viewer の幅が縮み、フィット計算が古い幅のままずれる。
-            refreshAtlasPane();
+            refreshRefPane();
             await loadAllImages();
             // ★ 設定 (生単位のウィンドウ) を先に作る。サムネイルを先に描くと
             //   imageSettings がまだ無く、既定ウィンドウ [0,1] で真っ白に焼ける。
@@ -558,6 +570,9 @@ function loadAllImages() {
         async function analyzeAndInitializeSettings() {
             const imageKeys = Object.keys(atlasData.images || {});
             for (const key of imageKeys) {
+                // 参照画像は合成しないので、強度レンジなどの設定を作る必要が無い。
+                // 大きい TIFF を 1 枚まるごと走査する処理なので、省くと起動が軽くなる。
+                if (isRefKey(key)) continue;
                 // 生値ラスタがある MSI レイヤは「生単位」でウィンドウを持つ。
                 // ベイク時 p99.5 クリップ / 既定表示上限 p99 は Share_Test に合わせる。
                 const vr = valueRasters[key];
@@ -638,6 +653,8 @@ function loadAllImages() {
 
         function formatDisplayName(key) {
             if (key === ATLAS_KEY) return "Atlas";
+            // ★ includes("HE") / includes("IF") より前に置く
+            if (key === IMMUNO_KEY) return "免疫染色";
             if (key.startsWith("MSI_")) {
                 return `MSI (${key.substring(4).replace('_', '-')})`;
             }
@@ -898,10 +915,11 @@ function loadAllImages() {
             if (!optionsContainer) return;
 
             optionsContainer.innerHTML = '';
-            // ★ Atlas は重ね合わせの対象ではない (左に並べて出すだけ) ので、
-            //   チェックボックスには出さない。ここに出すと合成側にも流れてしまう。
+            // ★ 参照画像 (Atlas / 免疫染色) は重ね合わせの対象ではない
+            //   (左に並べて出すだけ) ので、チェックボックスには出さない。
+            //   ここに出すと合成側にも流れてしまう。
             const imageKeys = (atlasData.images ? Object.keys(atlasData.images) : [])
-                .filter(k => k !== ATLAS_KEY);
+                .filter(k => !isRefKey(k));
             const visible = new Set(
                 (currentProject && Array.isArray(currentProject.visibleLayers) && currentProject.visibleLayers.length)
                     ? currentProject.visibleLayers
@@ -1085,6 +1103,84 @@ function loadAllImages() {
         // プロジェクトへ書き戻す。
         // ★ 以前は書き戻しが無く、opacity 変更などの「ついでの保存」でしか
         //   永続化されなかった (描いてリロードすると消えることがあった)。
+        // =====================================================================
+        // 同じ名前の ROI は「同じ 1 つの ROI」として扱う
+        // =====================================================================
+        // roi_items[key] は元から「場所 (ポリゴン) の配列」なので、統計を出す
+        // extractRoiPixels() は同じキーの場所を全部まとめて平均する。つまり
+        // 「名前が同じなら同じキーに入れる」だけで、離れた 2 箇所の平均になる。
+
+        /** 名前の比較用。前後の空白を落とし、NFC に揃える。 */
+        // ★ macOS の日本語入力は濁点が分解された形 (NFD) で来ることがあり、
+        //   見た目が同じ「が」でも文字列としては別物になる。揃えないと
+        //   「同じ名前を打ったのにまとまらない」という分かりにくい挙動になる。
+        //   大文字小文字や全角半角は揃えない (別物と考える人がいるため)。
+        function roiNameKey(name) {
+            return String(name == null ? '' : name).trim().normalize('NFC');
+        }
+
+        /** 表示名が name と同じ既存 ROI のキー。無ければ null。 */
+        function findRoiKeyByName(name, exceptKey) {
+            const want = roiNameKey(name);
+            if (!want) return null;
+            const roi = atlasData.roi || {};
+            const items = roi.roi_items || {};
+            const names = roi.roi_names || {};
+            for (const k of Object.keys(items)) {
+                if (exceptKey && k === exceptKey) continue;
+                // ★ 名前の無いキーはまとめない。取り込んだデータや仕込みデータで
+                //   名前が空のものが、全部 1 つに潰れてしまう。
+                if (names[k] === undefined) continue;
+                if (roiNameKey(names[k]) === want) return k;
+            }
+            return null;
+        }
+
+        /** その ROI が持つ「場所」の数。壊れたレコードは数えない。 */
+        function roiSiteCount(key) {
+            const recs = (atlasData.roi && atlasData.roi.roi_items && atlasData.roi.roi_items[key]);
+            if (!Array.isArray(recs)) return 0;
+            let n = 0;
+            for (const r of recs) {
+                if (r && Array.isArray(r.poly_msi) && r.poly_msi.length >= 3) n++;
+            }
+            return n;
+        }
+
+        /**
+         * 読み込んだ ROI のうち、名前が同じものを 1 つのキーにまとめる。
+         *
+         * ★ 画面と解析のための整理だけで、保存はしない (persistRoi を呼ばない)。
+         *   ここで保存すると「開いただけで中身が書き換わる」ことになり、
+         *   クラウドの「未保存の変更」が全プロジェクトで点灯し、
+         *   さらに他の PC の状態を上書きしうる。ユーザーが ROI に触れた時点で、
+         *   その操作の一部として保存される。
+         * ★ 残すのは先に出てきたキー。新しいキーは作らない
+         *   (既存の id を指している保存データが行方不明になるため)。
+         */
+        function normalizeRoiByName(roi) {
+            if (!roi || !roi.roi_items) return false;
+            const items = roi.roi_items;
+            const names = roi.roi_names || {};
+            const firstOf = new Map();
+            let merged = false;
+            for (const k of Object.keys(items)) {
+                if (names[k] === undefined) continue;
+                const want = roiNameKey(names[k]);
+                if (!want) continue;
+                if (!firstOf.has(want)) { firstOf.set(want, k); continue; }
+                const target = firstOf.get(want);
+                if (!Array.isArray(items[target]) || !Array.isArray(items[k])) continue;
+                items[target] = items[target].concat(items[k]);
+                delete items[k];
+                delete names[k];
+                if (roi.palette) delete roi.palette[k];
+                if (roi.roi_show_flags) delete roi.roi_show_flags[k];
+                merged = true;
+            }
+            return merged;
+        }
+
         function persistRoi() {
             if (!currentProject) return;
             currentProject.roi = atlasData.roi;
@@ -1286,19 +1382,53 @@ function loadAllImages() {
         }
 
         /**
-         * Atlas を左半分に出す。登録されていなければ枠ごと隠して、
-         * これまでどおり右側 (通常の表示) が全幅を使う。
-         * ★ 重ね合わせはしない。並べて見るための参照画像なので、
+         * 参照画像 (Atlas / 免疫染色) を左半分に出す。
+         * どちらも登録されていなければ枠ごと隠して、これまでどおり
+         * 右側 (通常の表示) が全幅を使う。
+         * ★ 重ね合わせはしない。並べて見るための画像なので、
          *   合成にもチェックボックスにも関わらせない。
          */
-        function refreshAtlasPane() {
+        function refreshRefPane() {
+            const has = (k) => !!(atlasData.images && atlasData.images[k]);
+            // 保存されていたキーが無いデータでは、ある方へ黙って落とす
+            if (!activeRefKey || !has(activeRefKey)) {
+                activeRefKey = has(ATLAS_KEY) ? ATLAS_KEY : (has(IMMUNO_KEY) ? IMMUNO_KEY : null);
+            }
             const pane = document.getElementById('atlas-pane');
             const img = document.getElementById('atlas-image');
+            const cap = document.getElementById('ref-caption');
             if (!pane || !img) return;
-            const src = atlasData.images && atlasData.images[ATLAS_KEY];
-            if (!src) { pane.classList.add('hidden'); img.removeAttribute('src'); return; }
+            if (!activeRefKey) {
+                pane.classList.add('hidden');
+                img.removeAttribute('src');
+                return;
+            }
+            const src = atlasData.images[activeRefKey];
             if (img.getAttribute('src') !== src) img.src = src;
+            if (cap) cap.textContent = formatDisplayName(activeRefKey);
             pane.classList.remove('hidden');
+            markRefThumb();
+        }
+
+        /** 左半分に映すものを切り替える (IMAGES のサムネイルを押したとき)。 */
+        // ★ 切り替えても左右の幅は変わらない (img の src を差し替えるだけ) ので、
+        //   キャンバスのフィット計算はやり直さなくてよい。
+        //   もし将来「片方だけのときは枠を隠す」等で幅が動く作りにしたら、
+        //   setCanvasSize() を呼び直す必要が出てくる。
+        function setRefPane(key) {
+            if (!isRefKey(key)) return;
+            if (!(atlasData.images && atlasData.images[key])) return;
+            activeRefKey = key;
+            refreshRefPane();
+        }
+
+        /** 参照画像のサムネイルのうち、いま映しているものに印を付ける。 */
+        function markRefThumb() {
+            const thumbs = document.querySelectorAll('#thumbnail-container img.thumbnail');
+            thumbs.forEach(t => {
+                if (!isRefKey(t.dataset.key)) return;
+                t.classList.toggle('ref-active', t.dataset.key === activeRefKey);
+            });
         }
 
         function populateThumbnails() {
@@ -1307,6 +1437,7 @@ function loadAllImages() {
 
             const allKeys = atlasData.images ? Object.keys(atlasData.images) : [];
             const atlasKeys = allKeys.filter(k => k === ATLAS_KEY);
+            const immunoKeys = allKeys.filter(k => k === IMMUNO_KEY);
             const heKeys = allKeys.filter(k => k.toUpperCase().includes('HE_STAIN'));
             const ifKeys = allKeys.filter(k => k.toUpperCase().includes('IF_STAIN'));
             const rawMsi = allKeys.filter(k => k.toUpperCase().includes('MSI_'));
@@ -1317,9 +1448,9 @@ function loadAllImages() {
             const msiKeys = ordered.concat(rest);
 
             // 実画像のみ残す。 "No Image" placeholder はユーザー要件により描画しない。
-            // Atlas は一番左。以降はこれまでどおり HE → IF → MSI の順。
+            // 参照画像 (Atlas → 免疫染色) が一番左。以降はこれまでどおり HE → IF → MSI。
             const rawSlots = [
-                atlasKeys[0] || null,
+                atlasKeys[0] || null, immunoKeys[0] || null,
                 heKeys[0] || null, ifKeys[0] || null, ifKeys[1] || null, ifKeys[2] || null,
                 msiKeys[0] || null, msiKeys[1] || null, msiKeys[2] || null, msiKeys[3] || null
             ];
@@ -1352,6 +1483,8 @@ function loadAllImages() {
                 thumb.className = 'thumbnail';
                 thumb.dataset.key = key;
                 thumb.onclick = () => setActiveImage(key);
+                // 左半分に映している参照画像には印を付ける
+                if (isRefKey(key) && key === activeRefKey) thumb.classList.add('ref-active');
 
                 if (key.toUpperCase().includes('HE_STAIN') || key.toUpperCase().includes('IF_STAIN')) {
                   thumb.classList.add('heif-thumb');
@@ -1403,6 +1536,9 @@ function loadAllImages() {
         }
 
         function setActiveImage(imageKey) {
+            // ★ 参照画像 (Atlas / 免疫染色) は重ね合わせの対象ではないので、
+            //   チェックボックスが無い。押されたら左半分の表示を切り替える。
+            if (isRefKey(imageKey)) { setRefPane(imageKey); return; }
             const checkbox = document.querySelector(
                 `#image-selector-options input.layer-check[value="${CSS.escape(imageKey)}"]`);
             if (checkbox) {
@@ -1480,16 +1616,38 @@ function loadAllImages() {
                         const current = atlasData.roi.roi_names[key] || key;
                         const next = (prompt('ROI 名を入力してください', current) || '').trim();
                         if (!next || next === current) return;
-                        atlasData.roi.roi_names[key] = next;
+                        // ★ 既にある名前に変えると 1 つの ROI に統合される。
+                        //   本人は「名前を直しただけ」のつもりのことがあり、行が 1 つ
+                        //   消えるのは戻せないので、ここは黙って統合しない。
+                        const other = findRoiKeyByName(next, key);
+                        let focusKey = key;
+                        if (other) {
+                            const n = roiSiteCount(other) + roiSiteCount(key);
+                            if (!confirm(`「${next}」という ROI はすでにあります。\n` +
+                                         `同じ名前の ROI は 1 つとして扱うので、この ROI は統合され、\n` +
+                                         `${n} 箇所をまとめた平均になります。よろしいですか?`)) return;
+                            const src = atlasData.roi.roi_items[key];
+                            if (Array.isArray(atlasData.roi.roi_items[other]) && Array.isArray(src)) {
+                                atlasData.roi.roi_items[other] = atlasData.roi.roi_items[other].concat(src);
+                            }
+                            delete atlasData.roi.roi_items[key];
+                            delete atlasData.roi.roi_names[key];
+                            if (atlasData.roi.palette) delete atlasData.roi.palette[key];
+                            if (atlasData.roi.roi_show_flags) delete atlasData.roi.roi_show_flags[key];
+                            atlasData.roi.roi_show_flags[other] = true;
+                            focusKey = other;
+                        } else {
+                            atlasData.roi.roi_names[key] = next;
+                        }
                         persistRoi();
                         populateRoiList();
-                        const prev = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(key)}"]`);
+                        const prev = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(focusKey)}"]`);
                         if (prev) {
                             document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                             prev.classList.add('active');
                         }
-                        drawAllRois(key);
-                        displayGraphForRoi(key);
+                        drawAllRois(focusKey);
+                        displayGraphForRoi(focusKey);
                     });
                     pencil = document.createElement('span');
                     pencil.textContent = ' ✎';
@@ -1501,6 +1659,16 @@ function loadAllImages() {
                     });
                 }
                 label.appendChild(nameSpan);
+                // 同じ名前でまとまっているときは、いくつの場所を含むかを出す。
+                // これが無いと「まとまった」ことが画面から分からない。
+                const sites = roiSiteCount(key);
+                if (sites >= 2) {
+                    const badge = document.createElement('span');
+                    badge.className = 'ml-1 text-slate-400 flex-none';
+                    badge.textContent = `(${sites} 箇所)`;
+                    badge.title = '同じ名前の ROI をまとめています。平均は全部の場所の画素をまとめて計算します';
+                    label.appendChild(badge);
+                }
                 if (pencil) label.appendChild(pencil);
 
                 el.appendChild(label);
@@ -1581,27 +1749,34 @@ function loadAllImages() {
                 if (showFlags[roiKey] === false) return;
                 const isHighlight = roiKey === highlightKey;
                 const rgba = palette[roiKey];
-                if (!roiItems[roiKey] || !roiItems[roiKey][0] || !roiItems[roiKey][0].poly_msi || !rgba) return;
-
-                const poly = roiItems[roiKey][0].poly_msi;
-
-                roiCtx.beginPath();
-                if (poly.length > 0) {
-                    const cx = poly[0][1] * syFactor;
-                    const cy = roiCanvas.height - poly[0][0] * sxFactor;
-                    roiCtx.moveTo(cx, cy);
-                }
-                for (let i = 1; i < poly.length; i++) {
-                    const cx = poly[i][1] * syFactor;
-                    const cy = roiCanvas.height - poly[i][0] * sxFactor;
-                    roiCtx.lineTo(cx, cy);
-                }
-                roiCtx.closePath();
+                const recs = roiItems[roiKey];
+                if (!Array.isArray(recs) || !rgba) return;
 
                 roiCtx.strokeStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, 0.95)`;
                 // CSS 表示で 1〜2px になるよう内部座標の lineWidth を計算
                 roiCtx.lineWidth = (isHighlight ? 2.0 : 1.0) * pxPerCss;
-                roiCtx.stroke();
+
+                // ★ 1 つの ROI が離れた複数の場所を持つ (同じ名前でまとめたもの)。
+                //   場所ごとに beginPath() から引き直す。頂点をひと続きに繋いでしまうと、
+                //   離れた場所の間に「繋ぎ線」が引かれてしまう。
+                //   以前はここで recs[0] しか描いていなかったため、2 箇所目以降は
+                //   統計に入っているのに線が出ない、という食い違いが起きていた。
+                for (const rec of recs) {
+                    const poly = rec && rec.poly_msi;
+                    if (!Array.isArray(poly) || poly.length < 3) continue;
+
+                    roiCtx.beginPath();
+                    const cx0 = poly[0][1] * syFactor;
+                    const cy0 = roiCanvas.height - poly[0][0] * sxFactor;
+                    roiCtx.moveTo(cx0, cy0);
+                    for (let i = 1; i < poly.length; i++) {
+                        const cx = poly[i][1] * syFactor;
+                        const cy = roiCanvas.height - poly[i][0] * sxFactor;
+                        roiCtx.lineTo(cx, cy);
+                    }
+                    roiCtx.closePath();
+                    roiCtx.stroke();
+                }
             });
         }
 
@@ -1611,7 +1786,8 @@ function loadAllImages() {
             const select3 = document.getElementById('graph-select-3');
             // 実際に読み込まれている画像レイヤから作る。
             // (以前はスタブの graphData から作っていたため、登録データや MSI_TIC が選べなかった)
-            const allKeys = Object.keys(atlasData.images || {});
+            // 参照画像は定量値ではないので、比較の対象には出さない。
+            const allKeys = Object.keys(atlasData.images || {}).filter(k => !isRefKey(k));
             const graphKeys = allKeys.filter(k => /^MSI_/i.test(k));
             if (!graphKeys.length) graphKeys.push.apply(graphKeys, allKeys);
 
@@ -1646,79 +1822,74 @@ function loadAllImages() {
             const polys = atlasData.roi?.roi_items?.[roiKey];
             if (!polys || polys.length === 0) return [];
 
+            // 1 つの ROI が持つ「場所」の輪郭を集める。壊れたレコードは飛ばす。
+            const rings = [];
+            for (const rec of polys) {
+                if (rec && Array.isArray(rec.poly_msi) && rec.poly_msi.length >= 3) rings.push(rec.poly_msi);
+            }
+            if (!rings.length) return [];
+
+            // ★ 先に「この ROI が占める面」を 1 枚のマスクに塗ってから値を集める。
+            //   同じ名前でまとめた ROI は離れた複数の場所を持つので、場所ごとに集めて
+            //   繋げると、重なった部分を二重に数えてしまう。マスクなら 1 画素 1 回。
+            //   大津法用の配列も、場所の数によらず確保しなくて済む。
+
             // 生値ラスタがあるなら 8bit の輝度ではなく生の強度を返す。
             // ROI 統計は定量値なので、表示用の量子化を通してはいけない。
             const vr = valueRasters[imageKey];
             if (vr) {
+                const mask = new Uint8Array(vr.W * vr.H);
+                for (const ring of rings) MSIRaster.markRoiMask(mask, vr.W, vr.H, ring);
                 const keep = otsuKeepFor(imageKey);
                 const out = [];
-                for (const poly of polys) {
-                    if (!Array.isArray(poly.poly_msi)) continue;
-                    if (!keep) {
-                        out.push.apply(out, MSIRaster.extractRoiValues(vr.values, vr.W, vr.H, poly.poly_msi));
-                        continue;
-                    }
-                    // 背景除去が有効なときは、除去済み画素を統計から外した配列を作る
-                    const masked = new Float32Array(vr.values.length);
-                    for (let i = 0; i < masked.length; i++) masked[i] = keep[i] ? vr.values[i] : NaN;
-                    out.push.apply(out, MSIRaster.extractRoiValues(masked, vr.W, vr.H, poly.poly_msi));
+                for (let i = 0; i < mask.length; i++) {
+                    if (!mask[i]) continue;
+                    if (keep && !keep[i]) continue;      // 背景除去で外した画素は統計にも入れない
+                    const v = vr.values[i];
+                    if (Number.isFinite(v)) out.push(v); // 未測定 (NaN) は除外
                 }
                 return out;
             }
 
             const sourceImg = imageSources[imageKey];
             if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) return [];
-
             const iw = sourceImg.naturalWidth;
             const ih = sourceImg.naturalHeight;
+
+            // ★ こちらは HE のような大きい画像も来る。全面ぶんのマスクと ImageData を
+            //   確保すると数十 MB になるので、ROI の外接矩形だけを切り出して扱う。
+            let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+            for (const ring of rings) {
+                for (const pt of ring) {
+                    if (!pt) continue;
+                    if (pt[0] < minX) minX = pt[0];
+                    if (pt[0] > maxX) maxX = pt[0];
+                    if (pt[1] < minY) minY = pt[1];
+                    if (pt[1] > maxY) maxY = pt[1];
+                }
+            }
+            const x0 = Math.max(0, Math.floor(minX)), x1 = Math.min(iw - 1, Math.ceil(maxX));
+            const y0 = Math.max(0, Math.floor(minY)), y1 = Math.min(ih - 1, Math.ceil(maxY));
+            if (!Number.isFinite(x0) || !Number.isFinite(y0) || x1 < x0 || y1 < y0) return [];
+            const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+
+            const mask = new Uint8Array(bw * bh);
+            for (const ring of rings) MSIRaster.markRoiMask(mask, bw, bh, ring, x0, y0);
+
             const tc = document.createElement('canvas');
-            tc.width = iw; tc.height = ih;
+            tc.width = bw; tc.height = bh;
             const tctx = tc.getContext('2d', { willReadFrequently: true });
-            tctx.drawImage(sourceImg, 0, 0);
-            const imgData = tctx.getImageData(0, 0, iw, ih);
-            const data = imgData.data;
+            tctx.drawImage(sourceImg, x0, y0, bw, bh, 0, 0, bw, bh);
+            const data = tctx.getImageData(0, 0, bw, bh).data;
 
-            // ROIポリゴン内判定（poly_msi座標 = MSI画像ピクセル座標）
             const values = [];
-            for (const poly of polys) {
-                if (!Array.isArray(poly.poly_msi)) continue;
-                const vertices = poly.poly_msi;
-                // バウンディングボックス
-                let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-                for (const [mx, my] of vertices) {
-                    if (mx < minX) minX = mx; if (mx > maxX) maxX = mx;
-                    if (my < minY) minY = my; if (my > maxY) maxY = my;
-                }
-                const x0 = Math.max(0, Math.floor(minX));
-                const x1 = Math.min(iw - 1, Math.ceil(maxX));
-                const y0 = Math.max(0, Math.floor(minY));
-                const y1 = Math.min(ih - 1, Math.ceil(maxY));
-
-                for (let py = y0; py <= y1; py++) {
-                    for (let px = x0; px <= x1; px++) {
-                        if (pointInPolygon(px, py, vertices)) {
-                            const idx = (py * iw + px) * 4;
-                            if (data[idx + 3] === 0) continue; // 透明ピクセル除外
-                            const lum = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-                            values.push(lum);
-                        }
-                    }
-                }
+            for (let i = 0; i < mask.length; i++) {
+                if (!mask[i]) continue;
+                const idx = i * 4;
+                if (data[idx + 3] === 0) continue;       // 透明ピクセル除外
+                values.push(0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]);
             }
             return values;
-        }
-
-        // レイキャスト法による点のポリゴン内判定
-        function pointInPolygon(x, y, vertices) {
-            let inside = false;
-            for (let i = 0, j = vertices.length - 1; i < vertices.length; j = i++) {
-                const xi = vertices[i][0], yi = vertices[i][1];
-                const xj = vertices[j][0], yj = vertices[j][1];
-                if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
-                    inside = !inside;
-                }
-            }
-            return inside;
         }
 
         /** 平均と標準偏差を計算 */
@@ -2157,33 +2328,50 @@ function loadAllImages() {
             if (verts.length < 3) { toggleDrawingMode(false); return; }
             const name = (prompt('新しい ROI の名前を入力してください', `User ROI ${nextUserRoiNumber()}`) || '').trim();
             if (!name) { toggleDrawingMode(false); return; }
-            const newKey = `${USER_ROI_PREFIX}${Date.now()}`;
-            const rgba = pickUnusedPaletteColor();
             atlasData.roi = atlasData.roi || {};
             atlasData.roi.roi_items = atlasData.roi.roi_items || {};
             atlasData.roi.roi_names = atlasData.roi.roi_names || {};
             atlasData.roi.palette   = atlasData.roi.palette   || {};
             atlasData.roi.roi_show_flags = atlasData.roi.roi_show_flags || {};
-            atlasData.roi.roi_items[newKey] = [{ poly_msi: verts }];
-            atlasData.roi.roi_names[newKey] = name;
-            atlasData.roi.palette[newKey]   = rgba;
-            atlasData.roi.roi_show_flags[newKey] = true;
+
+            // ★ 同じ名前の ROI が既にあれば、新しく作らずそこへ「場所」を足す。
+            //   離れた 2 箇所に描いても、名前が同じなら 1 つの ROI として平均を取る。
+            //   既定名 (User ROI N) は重複しないよう採番しているので、
+            //   ここで一致するのは「わざと同じ名前を打った」ときだけ。確認は出さない。
+            const existing = findRoiKeyByName(name);
+            let targetKey;
+            if (existing && Array.isArray(atlasData.roi.roi_items[existing])) {
+                targetKey = existing;
+                atlasData.roi.roi_items[existing].push({ poly_msi: verts });
+                // 統合先が非表示だと、いま描いた線がその場で消えて不具合に見える
+                atlasData.roi.roi_show_flags[existing] = true;
+            } else {
+                targetKey = `${USER_ROI_PREFIX}${Date.now()}`;
+                atlasData.roi.roi_items[targetKey] = [{ poly_msi: verts }];
+                atlasData.roi.roi_names[targetKey] = name;
+                atlasData.roi.palette[targetKey]   = pickUnusedPaletteColor();
+                atlasData.roi.roi_show_flags[targetKey] = true;
+            }
             toggleDrawingMode(false);
             persistRoi();
             populateRoiList();
-            // 新規作成した ROI を active 扱いにしてリストのハイライトも合わせる
-            const newItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(newKey)}"]`);
+            // 描いた ROI (統合したならその統合先) を active 扱いにする
+            const newItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(targetKey)}"]`);
             if (newItem) {
                 document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                 newItem.classList.add('active');
             }
-            drawAllRois(newKey);
-            displayGraphForRoi(newKey);
+            drawAllRois(targetKey);
+            displayGraphForRoi(targetKey);
         }
 
         function deleteUserRoi(key) {
             if (!key || !key.startsWith(USER_ROI_PREFIX)) return;
-            if (!confirm('この ROI を削除しますか?')) return;
+            const sites = roiSiteCount(key);
+            // まとめた ROI は 1 行に見えるが、消えるのは全部の場所。数を出しておく。
+            if (!confirm(sites >= 2
+                ? `この ROI は ${sites} 箇所をまとめています。${sites} 箇所すべてを削除しますか?`
+                : 'この ROI を削除しますか?')) return;
             const wasActive = document.querySelector(`.roi-item.active[data-roi-key="${CSS.escape(key)}"]`) !== null;
             if (atlasData.roi) {
                 delete atlasData.roi.roi_items[key];
@@ -3282,12 +3470,23 @@ function loadAllImages() {
 
       atlasData = {
         meta: { format: 'roi_bundle_v1', dataset_id: p.displayName },
-        roi: p.roi || { roi_items: {}, roi_names: {}, palette: {}, roi_show_flags: {} },
+        // ★ p.roi をそのまま指さず、複製を持つ。
+        //   同じ参照だと、画面を組み立てるだけの書き込み (表示フラグの既定値を
+        //   入れる、同じ名前をまとめる) がそのまま currentProject.roi に伝わり、
+        //   開いただけでクラウドの「未保存の変更」が点灯してしまう。
+        //   ユーザーが ROI を触ったときは persistRoi() が currentProject.roi へ
+        //   入れ直すので、保存すべきものはきちんと保存される。
+        roi: p.roi ? JSON.parse(JSON.stringify(p.roi))
+                   : { roi_items: {}, roi_names: {}, palette: {}, roi_show_flags: {} },
         images: {},
         world_coords: p.world_coords || {},
         alignment: p.alignment || {},
         thumbnail_order: molecules.map(m => m.key),
       };
+
+      // 前に別々に描いてしまった同じ名前の ROI も、ここで 1 つにまとめる。
+      // (保存はしない。上の複製と合わせて「見え方だけ」を整える)
+      normalizeRoiByName(atlasData.roi);
 
       for (const m of molecules) {
         const values = await ProjectStorage.getValueRaster(m.blobId);
