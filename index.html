@@ -41,6 +41,8 @@
             display:flex; align-items:center; justify-content:center; z-index:70; }
         .picker-box { background:#fff; border-radius:8px; width:min(420px,92vw); max-height:80vh;
             overflow:auto; padding:16px; box-shadow:0 20px 40px rgba(0,0,0,.3); }
+        /* 中身パネルは一覧を並べるので、フォルダ選択より広くする */
+        .picker-box.wide { width:min(680px,94vw); }
         .picker-item { padding:4px 6px; border-radius:4px; cursor:pointer; font-size:13px; }
         .picker-item:hover { background:#eff6ff; }
     </style>
@@ -583,6 +585,200 @@
         }
 
         // =================================================================
+        // 登録済みデータの中身をあとから足す / 外す
+        // =================================================================
+        // ★ registerGroup をそのまま呼べない。あれは必ず新しい id の
+        //   プロジェクトを作る (:478) ので、既にあるデータの中身だけを
+        //   変えたいこの用途には使えない。中の処理だけを取り出して使う。
+
+        // 画像の枠。中身パネルの並び順もこの順。
+        const IMAGE_SLOTS = [
+            { key: 'HE_Stain', label: 'HE 染色' },
+            { key: ATLAS_KEY, label: 'Atlas' },
+            { key: IMMUNO_KEY, label: '免疫染色' },
+        ];
+
+        /**
+         * 中身を変えたあとの後始末。保存 → 使われなくなった blob を片付け → クラウドへ送り直す。
+         *
+         * ★ 順序が要点。先に blob を消すと、保存に失敗したときに元のデータまで壊れる
+         *   (lib/zipio.js の「同じ id で上書き」と同じ考え方)。
+         * ★ 中身が変わると ZIP の中身が変わる。行のメタだけを直す patchCloudMeta では
+         *   届かないので、必ず本体を送り直す。
+         */
+        async function commitProjectEdit(project, beforeBlobIds) {
+            await ProjectStorage.putProject(project);
+            const after = new Set(ProjectStorage.collectBlobIds(project));
+            for (const bid of beforeBlobIds) {
+                if (after.has(bid)) continue;
+                try { await ProjectStorage.deleteBlob(bid); }
+                catch (e) { console.warn('[edit] 使われなくなった blob を消せません', bid, e); }
+            }
+            if (!(cloudOn() && Cloud.signedIn())) return null;
+            setStatus('クラウドへ送信中…');
+            setProgress(0);
+            const r = await pushNew(project, (f) => {
+                setProgress(f);
+                setStatus('クラウドへ送信中… ' + Math.round(f * 100) + '%');
+            });
+            setProgress(null);
+            if (r && r.__error) {
+                setStatus('');
+                showError('この PC には反映しましたが、クラウドへ送れませんでした ' +
+                    '(一覧の「アップロード」から送り直せます): ' + r.__error);
+            } else {
+                setStatus('クラウドに保存しました。');
+            }
+            return r;
+        }
+
+        /**
+         * 既にあるデータセットへ分子を足す。
+         * ★ 1 分子ごとに保存する。3 つ選んで 2 つ目で失敗したときに、
+         *   1 つ目まではきちんと残るようにするため (登録画面が 1 グループごとに
+         *   失敗を切り分けているのと同じ考え方)。
+         */
+        async function addMoleculesToProject(project, files, report) {
+            const grouped = ImzML.groupFiles(files, 'single');
+            const items = (grouped.groups[0] && grouped.groups[0].items) || [];
+            const added = [], failed = [], warnings = [];
+            const problems = (grouped.problems || []).slice();
+
+            for (let i = 0; i < items.length; i++) {
+                const item = items[i];
+                let newBlobId = null;
+                try {
+                    const res = await ImzML.parsePair(item.imzmlFile, item.ibdFile, (frac) => {
+                        report((i + frac) / items.length,
+                               `${item.molecule} を解析中… (${i + 1}/${items.length})`);
+                    });
+                    // ★ グリッドの確認は blob を書く前に。弾いた分子の残骸を残さない。
+                    if (project.grid && project.grid.W &&
+                        (project.grid.W !== res.W || project.grid.H !== res.H)) {
+                        throw new Error(`グリッド (${res.W}×${res.H}) が ` +
+                            `このデータ (${project.grid.W}×${project.grid.H}) と一致しません。`);
+                    }
+                    // 名前とキーの重複を避ける (統合と同じ作法)
+                    const base = item.layerName || item.molecule;
+                    const usedNames = new Set((project.molecules || []).map(m => m.name));
+                    const usedKeys  = new Set((project.molecules || []).map(m => m.key));
+                    let name = base, k = 2;
+                    while (usedNames.has(name)) name = base + ' (' + (k++) + ')';
+                    let key = 'MSI_' + name;
+                    while (usedKeys.has(key)) key = 'MSI_' + name + '_' + (k++);
+
+                    const stats = MSIRaster.deriveBakeStats(res.values);
+                    newBlobId = await ProjectStorage.putValueRaster(res.values);
+
+                    project.molecules = project.molecules || [];
+                    project.layerDisplay = project.layerDisplay || {};
+                    project.molecules.push({
+                        key: key, name: name, blobId: newBlobId,
+                        filterString: res.filterString, mode: res.mode,
+                        nSpectra: res.nSpectra, stats: stats,
+                    });
+                    project.layerDisplay[key] = {
+                        vmin: stats.rawMin, vmax: stats.rawDispMax, opacity: 1.0, applyOpacity: true,
+                    };
+                    // 分子が 1 つも無かったデータのときだけ、データセット側の値を種付けする。
+                    // ★ orientation / plane / sliceId は触らない。あれはデータセットの属性で、
+                    //   あとから足したファイルの名前で上書きしてはいけない。
+                    if (!project.grid || !project.grid.W) {
+                        project.grid = { W: res.W, H: res.H,
+                                         umPerPxX: res.umPerPx.x, umPerPxY: res.umPerPx.y };
+                    }
+                    if (project.grid.umPerPxX &&
+                        !(project.world_coords && project.world_coords.msi_um_per_px)) {
+                        project.world_coords = project.world_coords || {};
+                        project.world_coords.msi_um_per_px =
+                            { x: project.grid.umPerPxX, y: project.grid.umPerPxY };
+                    }
+                    if (!project.visibleLayers || !project.visibleLayers.length) {
+                        project.visibleLayers = [key];
+                    }
+
+                    try {
+                        await ProjectStorage.putProject(project);
+                    } catch (e) {
+                        // 保存できなかったぶんはメモリ上からも戻す (次の分子に持ち越さない)
+                        project.molecules.pop();
+                        delete project.layerDisplay[key];
+                        throw e;
+                    }
+                    newBlobId = null;   // 保存できたので、もう孤児ではない
+                    added.push(name);
+                    warnings.push.apply(warnings, res.warnings || []);
+                } catch (e) {
+                    console.error('[edit] 分子を追加できません', item.molecule, e);
+                    failed.push(item.molecule + ': ' + e.message);
+                    if (newBlobId) {
+                        try { await ProjectStorage.deleteBlob(newBlobId); }
+                        catch (e2) { console.warn('[edit] 中途の blob を消せません', e2); }
+                    }
+                }
+            }
+            return { added: added, failed: failed, warnings: warnings, problems: problems };
+        }
+
+        /**
+         * データセットから分子を 1 つ外す (メモリ上の変更のみ。保存は commitProjectEdit)。
+         *
+         * ★ 消し忘れて実害があるのは visibleLayers。ビューアは
+         *   「visibleLayers が空でなければそれに従う」作りなので、外した分子が
+         *   唯一の要素だと、全レイヤ未チェック＝真っ暗な画面で開いてしまう
+         *   (エラーは出ないので原因が分かりにくい)。
+         */
+        function removeMoleculeFromProject(project, key) {
+            // ★ 最後の 1 分子は消させない。分子が 0 件になると ZIP の CSV が
+            //   ヘッダ 1 行だけになり (lib/zipio.js の行出力は「どれかの分子に
+            //   値がある行」しか書かない)、ROI の 0/1 列まで丸ごと消える。
+            //   エラーも警告も出ないので、書き出した本人が気づけない。
+            //   データごと不要なら一覧の「削除」を使う。
+            if ((project.molecules || []).length <= 1) {
+                throw new Error('最後の 1 分子は削除できません。\n' +
+                    '別の分子を先に追加するか、データごと消す場合は一覧の「削除」を使ってください。');
+            }
+            project.molecules = (project.molecules || []).filter(m => m.key !== key);
+            if (project.layerDisplay) delete project.layerDisplay[key];
+            if (Array.isArray(project.visibleLayers)) {
+                project.visibleLayers = project.visibleLayers.filter(k => k !== key);
+                if (!project.visibleLayers.length && project.molecules.length) {
+                    project.visibleLayers = [project.molecules[0].key];
+                }
+            }
+            // ★ 背景除去の「手動しきい値」は生の TIC に対する絶対値。TIC は残った分子から
+            //   計算し直されるので、分子が減れば TIC は下がる。同じ絶対値を残すと
+            //   切りすぎになるため自動に戻す。strength は相対的なずらし量なのでそのまま。
+            if (project.otsu) project.otsu.manualThreshold = null;
+        }
+
+        /** 画像の枠を入れ替える (空なら新規、入っていれば差し替え)。保存は commitProjectEdit。 */
+        async function setProjectImage(project, slot, file) {
+            const mime = Ingest.isTiffName(file.name) ? 'image/tiff' : (file.type || '');
+            // 登録時と同じく、ここで本当に復号できるか確かめる
+            // (ビューアで初めて失敗すると原因が分かりにくい)
+            try {
+                await Ingest.imageBlobToDataUrl(file, file.name);
+            } catch (e) {
+                throw new Error('画像を読めませんでした (' + file.name + '): ' + e.message);
+            }
+            const blobId = await ProjectStorage.putBlob({ blob: file, mime: mime, filename: file.name });
+            project.images = project.images || {};
+            project.images[slot] = { blobId: blobId, mime: mime, filename: file.name };
+        }
+
+        /** 画像の枠を空にする (保存は commitProjectEdit)。 */
+        function removeProjectImage(project, slot) {
+            if (project.images) delete project.images[slot];
+            // ★ HE を外したら位置合わせも捨てる。HE が無いのに変換だけ残ると、
+            //   次に別の HE を入れたときに古い変換がそのまま掛かってしまう。
+            if (slot === 'HE_Stain') {
+                if (project.world_coords) delete project.world_coords.T_he_to_msi;
+                if (project.alignment) delete project.alignment[slot];
+            }
+        }
+
+        // =================================================================
         // 登録済みデータの一覧 / フォルダ / 一括操作
         // =================================================================
         // フォルダは parentId を持つ平坦なレコード (lib/storage.js)。
@@ -957,10 +1153,13 @@
                 '</div>' +
                 '<div class="flex items-center gap-1 shrink-0">' +
                   // 送れていない / クラウド側で消えたものだけ、送り直す口を出す
-                  (cloudOn() && !p.__row && !p.__cloudOnly
+                  // ★ 行があっても cloudPending なら出す。中身を変えて再送に失敗したとき、
+                  //   バッジだけ出しても押す口が無いと直せない
+                  (cloudOn() && (!p.__row || p.cloudPending) && !p.__cloudOnly
                       ? '<button class="btn" data-act="push">' +
                         (p.__deletedElsewhere ? '再アップロード' : 'アップロード') + '</button>' : '') +
                   '<button class="btn" data-act="open">開く</button>' +
+                  '<button class="btn" data-act="contents">中身</button>' +
                   '<button class="btn" data-act="rename">名前変更</button>' +
                   '<button class="btn" data-act="move">移動</button>' +
                   '<button class="btn" data-act="export">Export</button>' +
@@ -996,6 +1195,15 @@
                 catch (e) { showError('クラウドから取得できませんでした: ' + e.message); return; }
                 location.href = 'viewer/index.html?project=' + encodeURIComponent(p.id);
             });
+            row.querySelector('[data-act="contents"]').addEventListener('click', async () => {
+                // ★ ensureLocal の戻り値を使う。cache の p は古いことがある
+                //   (ビューアのタブが ROI などを書き戻していると特に)。
+                let target;
+                try { target = await ensureLocal(p); }
+                catch (e) { showError('クラウドから取得できませんでした: ' + e.message); return; }
+                if (!target || !target.molecules) { showError('この PC に実体がありません。'); return; }
+                openContentsEditor(target);
+            });
             row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
                 const name = (prompt('新しい名前', p.displayName) || '').trim();
                 if (!name) return;
@@ -1026,6 +1234,219 @@
                 await refreshProjectList();
             });
             return row;
+        }
+
+        // ---- 中身パネル -------------------------------------------------------
+        // 登録済みデータの分子 / 画像を 1 つずつ足したり外したりする。
+        // ★ 開く前に呼び出し側が ensureLocal() を済ませ、実体のあるレコードを渡すこと。
+        //   クラウドにしか無い行 (未取得) のままでは中身を触れない。
+        const EDIT_VIEWER_WARN =
+            'このデータをビューアで開いている場合は、先に閉じてください。\n' +
+            '開いたままだと、ビューア側が古い内容を書き戻すことがあります。';
+
+        function openContentsEditor(project) {
+            const back = document.createElement('div');
+            back.className = 'picker-backdrop';
+            back.id = 'contents-backdrop';
+            const box = document.createElement('div');
+            box.className = 'picker-box wide';
+            back.appendChild(box);
+
+            let busy = false;
+
+            const close = () => { if (!busy) back.remove(); };
+            back.addEventListener('click', (e) => { if (e.target === back) close(); });
+
+            // 隠しファイル入力。分子 (複数) と画像 (1 枚) で分ける。
+            const molInput = document.createElement('input');
+            molInput.type = 'file'; molInput.multiple = true;
+            molInput.accept = '.imzML,.ibd'; molInput.className = 'hidden';
+            molInput.id = 'contents-mol-input';
+            const imgInput = document.createElement('input');
+            imgInput.type = 'file';
+            imgInput.accept = '.tif,.tiff,.png,.jpg,.jpeg,image/*'; imgInput.className = 'hidden';
+            imgInput.id = 'contents-img-input';
+            let imgSlot = null;
+            box.appendChild(molInput);
+            box.appendChild(imgInput);
+
+            const body = document.createElement('div');
+            box.appendChild(body);
+            const statusEl = document.createElement('p');
+            statusEl.id = 'contents-status';
+            statusEl.className = 'text-xs text-gray-500 mt-2 min-h-[1em]';
+            box.appendChild(statusEl);
+
+            function setBusy(on, msg) {
+                busy = on;
+                statusEl.textContent = msg || '';
+                box.querySelectorAll('button, input').forEach(el => { el.disabled = on; });
+            }
+
+            /** 変更を保存してクラウドへ送り、パネルと裏の一覧を描き直す。 */
+            // ★ 一覧も毎回組み直す。パネルを開いたまま消したり足したりするので、
+            //   閉じるまで裏の行が古いままだと「効いていない」ように見える。
+            async function commitAndRedraw(beforeIds, msg) {
+                setBusy(true, msg || '保存中…');
+                try {
+                    await commitProjectEdit(project, beforeIds);
+                } catch (e) {
+                    console.error('[contents]', e);
+                    showError('保存に失敗しました: ' + e.message);
+                } finally {
+                    setBusy(false, '');
+                    render();
+                    try { await refreshProjectList(); }
+                    catch (e) { console.warn('[contents] 一覧を更新できません', e); }
+                }
+            }
+
+            function render() {
+                const g = project.grid || {};
+                const gridText = g.W ? `${g.W} × ${g.H} px` : 'グリッド未設定';
+                const mols = project.molecules || [];
+                const rows = mols.map(m =>
+                    '<div class="flex items-center justify-between gap-2 border border-gray-200 rounded px-2 py-1 mb-1" data-mol="' + esc(m.key) + '">' +
+                      '<span class="text-sm text-gray-800 truncate">' + esc(m.name) + '</span>' +
+                      '<button class="btn btn-danger" data-act="mol-del">削除</button>' +
+                    '</div>').join('');
+
+                const imgRows = IMAGE_SLOTS.map(slot => {
+                    const im = (project.images || {})[slot.key];
+                    const fn = im ? (im.filename || '(名前なし)') : '';
+                    return '<div class="flex items-center justify-between gap-2 border border-gray-200 rounded px-2 py-1 mb-1" data-slot="' + esc(slot.key) + '">' +
+                      '<span class="text-sm text-gray-800 truncate">' + esc(slot.label) +
+                        ' <span class="text-xs ' + (im ? 'text-gray-500' : 'text-gray-400') + '">' +
+                        (im ? esc(fn) : '(なし)') + '</span></span>' +
+                      '<span class="flex items-center gap-1 shrink-0">' +
+                        '<button class="btn" data-act="img-set">' + (im ? '差し替え' : '追加') + '</button>' +
+                        (im ? '<button class="btn btn-danger" data-act="img-del">削除</button>' : '') +
+                      '</span>' +
+                    '</div>';
+                }).join('');
+
+                body.innerHTML =
+                    '<h3 class="font-semibold text-gray-900 mb-3">「' + esc(project.displayName) + '」の中身</h3>' +
+                    '<div class="text-xs text-gray-500 mb-1">MSI 分子 <span class="text-gray-400">(' + esc(gridText) + ')</span></div>' +
+                    '<div id="contents-mols">' + (rows || '<p class="text-xs text-gray-400 mb-1">分子はありません。</p>') + '</div>' +
+                    '<button class="btn mb-4" id="contents-add-mol">+ 分子を追加 (imzML + ibd)</button>' +
+                    '<div class="text-xs text-gray-500 mb-1">画像</div>' +
+                    '<div id="contents-images">' + imgRows + '</div>' +
+                    '<div class="flex justify-end mt-3"><button class="btn" id="contents-close">閉じる</button></div>';
+
+                body.querySelector('#contents-close').addEventListener('click', close);
+                body.querySelector('#contents-add-mol').addEventListener('click', () => molInput.click());
+
+                body.querySelectorAll('[data-mol] [data-act="mol-del"]').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const key = btn.closest('[data-mol]').dataset.mol;
+                        const mol = (project.molecules || []).find(m => m.key === key);
+                        if (!mol) return;
+                        // ★ 断るなら確認を出す前に。消せないものに「消しますか?」と
+                        //   聞いてから断るのは分かりにくい。
+                        if ((project.molecules || []).length <= 1) {
+                            showError('最後の 1 分子は削除できません。\n' +
+                                '別の分子を先に追加するか、データごと消す場合は一覧の「削除」を使ってください。');
+                            return;
+                        }
+                        if (!confirm(`分子「${mol.name}」を削除しますか?\n` +
+                                     (cloudOn() ? 'クラウドにも反映され、他の PC でも消えます。\n' : '') +
+                                     '\n' + EDIT_VIEWER_WARN)) return;
+                        const before = new Set(ProjectStorage.collectBlobIds(project));
+                        try { removeMoleculeFromProject(project, key); }
+                        catch (e) { showError(e.message); return; }
+                        await commitAndRedraw(before, `「${mol.name}」を削除中…`);
+                    });
+                });
+
+                body.querySelectorAll('[data-slot] [data-act="img-set"]').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        imgSlot = btn.closest('[data-slot]').dataset.slot;
+                        imgInput.value = '';
+                        imgInput.click();
+                    });
+                });
+                body.querySelectorAll('[data-slot] [data-act="img-del"]').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const slot = btn.closest('[data-slot]').dataset.slot;
+                        const label = (IMAGE_SLOTS.find(x => x.key === slot) || {}).label || slot;
+                        if (!confirm(`${label} の画像を削除しますか?\n` +
+                                     (slot === 'HE_Stain' ? 'HE と MSI の位置合わせも一緒に消えます。\n' : '') +
+                                     (cloudOn() ? 'クラウドにも反映され、他の PC でも消えます。\n' : '') +
+                                     '\n' + EDIT_VIEWER_WARN)) return;
+                        const before = new Set(ProjectStorage.collectBlobIds(project));
+                        removeProjectImage(project, slot);
+                        await commitAndRedraw(before, `${label} を削除中…`);
+                    });
+                });
+            }
+
+            molInput.addEventListener('change', async () => {
+                const files = Array.from(molInput.files || []);
+                molInput.value = '';
+                if (!files.length) return;
+                if (!confirm('選んだ imzML / ibd をこのデータに足します。\n\n' + EDIT_VIEWER_WARN)) return;
+                const before = new Set(ProjectStorage.collectBlobIds(project));
+                setBusy(true, '解析中…');
+                let res;
+                try {
+                    res = await addMoleculesToProject(project, files, (frac, label) => {
+                        statusEl.textContent = label || '解析中…';
+                    });
+                } catch (e) {
+                    console.error('[contents] 追加に失敗', e);
+                    setBusy(false, '');
+                    showError('分子を追加できませんでした: ' + e.message);
+                    return;
+                }
+                setBusy(false, '');
+                if (res.added.length) {
+                    await commitAndRedraw(before, `${res.added.length} 分子を追加しました。保存中…`);
+                } else {
+                    render();
+                }
+                const notes = [];
+                // ★ groupFiles が弾いたぶん (ibd が無い / TIC / imzML でない) は
+                //   黙って捨てると「押したのに何も起きない」になる。必ず出す。
+                if (res.problems.length) notes.push(res.problems.join('\n'));
+                if (res.failed.length) notes.push('次の分子は追加できませんでした:\n' + res.failed.join('\n'));
+                // ★ 名前が重なって連番になったものは知らせる。分子の色は名前で引くので、
+                //   「NE (2)」のような名前は決まった色が無く白黒表示になる。
+                const renamed = res.added.filter(n => / \(\d+\)$/.test(n));
+                if (renamed.length) {
+                    notes.push('同じ名前の分子があったため「' + renamed.join('」「') + '」として追加しました。\n' +
+                        'この名前には決まった色が無いため、白黒で表示されます。');
+                }
+                if (notes.length) showError(notes.join('\n\n'));
+                if (res.warnings.length) console.warn('[contents] 警告:', res.warnings);
+            });
+
+            imgInput.addEventListener('change', async () => {
+                const file = (imgInput.files || [])[0];
+                const slot = imgSlot;
+                imgInput.value = '';
+                if (!file || !slot) return;
+                const label = (IMAGE_SLOTS.find(x => x.key === slot) || {}).label || slot;
+                const replacing = !!((project.images || {})[slot]);
+                if (replacing && !confirm(`${label} の画像を「${file.name}」に差し替えますか?\n` +
+                                          '元の画像はこの PC からもクラウドからも消えます。\n\n' +
+                                          EDIT_VIEWER_WARN)) return;
+                const before = new Set(ProjectStorage.collectBlobIds(project));
+                setBusy(true, `${label} を読み込み中…`);
+                try {
+                    await setProjectImage(project, slot, file);
+                } catch (e) {
+                    console.error('[contents] 画像を入れられません', e);
+                    setBusy(false, '');
+                    showError(e.message);
+                    return;
+                }
+                setBusy(false, '');
+                await commitAndRedraw(before, `${label} を保存中…`);
+            });
+
+            render();
+            document.body.appendChild(back);
         }
 
         // ---- 移動先ピッカー ---------------------------------------------------
@@ -1381,6 +1802,10 @@
                 return pill('未アップロード', 'bg-amber-50 text-amber-700 border-amber-200');
             }
             if (p.__cloudOnly) return pill('未取得', 'bg-gray-50 text-gray-500 border-gray-200');
+            // ★ 送信に失敗して残っているぶん。行があると下の比較はどれも一致してしまい
+            //   「同期済み」に見えてしまう。中身 (molecules / images) は状態ハッシュに
+            //   入っていないので、ここで見ないと送れていないことが画面に出ない。
+            if (p.cloudPending) return pill('未アップロード', 'bg-amber-50 text-amber-700 border-amber-200');
             if (r.updated_at !== p.cloudUpdatedAt) return pill('クラウドが新しい', 'bg-blue-50 text-blue-700 border-blue-200');
             if (Cloud.hashState(Cloud.stateOf(p)) !== p.cloudStateHash) {
                 return pill('未保存の変更', 'bg-amber-50 text-amber-700 border-amber-200');
