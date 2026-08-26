@@ -237,9 +237,11 @@
                 <!-- ROI List Panel -->
                 <div class="bg-white p-2 rounded shadow-sm flex-1 flex flex-col overflow-hidden min-h-0">
                     <div class="flex items-center justify-between mb-1 border-b pb-1 shrink-0 gap-1">
-                        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide">ROI List</h2>
+                        <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-wide truncate min-w-0">ROI List</h2>
                         <div class="flex items-center gap-2">
-                            <button id="roi-draw-toggle" class="text-xs px-2 py-0.5 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="Draw new ROI polygon">+ 新規</button>
+                            <!-- 打ち間違えた頂点を 1 つだけ戻す。描画中だけ出し、点が 0 なら押せない。 -->
+                            <button id="roi-draw-undo" class="hidden shrink-0 whitespace-nowrap text-xs px-2 py-0.5 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700 disabled:opacity-50 disabled:cursor-not-allowed" title="直前に打った頂点を 1 つ取り消す (Ctrl+Z)">1 点戻す</button>
+                            <button id="roi-draw-toggle" class="shrink-0 whitespace-nowrap text-xs px-2 py-0.5 rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="Draw new ROI polygon">+ 新規</button>
                             <label class="flex items-center cursor-pointer select-none">
                                 <span class="text-xs text-gray-500 mr-1">Show</span>
                                 <div class="relative">
@@ -2292,6 +2294,25 @@ function loadAllImages() {
             roiCtx.restore();
         }
 
+        // 「1 点戻す」の出し入れ。描画モードの ON/OFF と頂点数が変わるたびに呼ぶ。
+        function updateDrawUndoButton() {
+            const btn = document.getElementById('roi-draw-undo');
+            if (!btn) return;
+            btn.classList.toggle('hidden', !drawingMode);
+            btn.disabled = drawingVertices.length === 0;
+        }
+
+        // 直前に打った頂点を 1 つだけ取り消す。
+        // 0 点になっても描画モードは続ける (「全部やめる」は Escape / 中止 の役目)。
+        function undoLastVertex() {
+            if (!drawingMode || !drawingVertices.length) return;
+            drawingVertices.pop();
+            // drawDrawingPreview() は先頭で canvas を消してから描き直すので、
+            // 0 点まで戻したときも線と丸がきちんと消える。
+            drawDrawingPreview();
+            updateDrawUndoButton();
+        }
+
         function toggleDrawingMode(on) {
             drawingMode = (on === undefined) ? !drawingMode : !!on;
             const btn = document.getElementById('roi-draw-toggle');
@@ -2308,6 +2329,7 @@ function loadAllImages() {
                 const activeKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
                 drawAllRois(activeKey);
             }
+            updateDrawUndoButton();
         }
 
         function nextUserRoiNumber() {
@@ -2399,6 +2421,9 @@ function loadAllImages() {
             const btn = document.getElementById('roi-draw-toggle');
             if (btn) btn.addEventListener('click', () => toggleDrawingMode());
 
+            const undoBtn = document.getElementById('roi-draw-undo');
+            if (undoBtn) undoBtn.addEventListener('click', undoLastVertex);
+
             roiCanvas.addEventListener('click', (e) => {
                 if (!drawingMode) return;
                 const sxCss = roiCanvas.width  / (roiCanvas.offsetWidth || 1);
@@ -2420,6 +2445,7 @@ function loadAllImages() {
                 const [mx, my] = canvasToMsi(canvasX, canvasY);
                 drawingVertices.push([mx, my]);
                 drawDrawingPreview();
+                updateDrawUndoButton();
             });
 
             roiCanvas.addEventListener('dblclick', (e) => {
@@ -2432,6 +2458,13 @@ function loadAllImages() {
                 if (!drawingMode) return;
                 if (e.key === 'Escape') { toggleDrawingMode(false); }
                 else if (e.key === 'Enter') { finalizeDrawing(); }
+                else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
+                    // ROI 名の入力欄で打ち直している最中の Ctrl+Z は横取りしない
+                    const t = e.target;
+                    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+                    e.preventDefault();   // ブラウザ既定の「元に戻す」を止める
+                    undoLastVertex();
+                }
             });
         }
 
