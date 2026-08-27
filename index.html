@@ -521,6 +521,9 @@
                     key: key, name: label, blobId: blobId,
                     filterString: res.filterString, mode: res.mode,
                     nSpectra: res.nSpectra, stats: stats,
+                    // 走査番号から測定範囲を判定できたかどうか。あとから「測定範囲を修復」を
+                    // 二度掛けしないための目印も兼ねる (lib/imzml.js を参照)。
+                    acqQc: res.acquisitionQc || undefined,
                 });
                 project.layerDisplay[key] = {
                     vmin: stats.rawMin, vmax: stats.rawDispMax, opacity: 1.0, applyOpacity: true,
@@ -676,6 +679,7 @@
                         key: key, name: name, blobId: newBlobId,
                         filterString: res.filterString, mode: res.mode,
                         nSpectra: res.nSpectra, stats: stats,
+                        acqQc: res.acquisitionQc || undefined,
                     });
                     project.layerDisplay[key] = {
                         vmin: stats.rawMin, vmax: stats.rawDispMax, opacity: 1.0, applyOpacity: true,
@@ -776,6 +780,131 @@
                 if (project.world_coords) delete project.world_coords.T_he_to_msi;
                 if (project.alignment) delete project.alignment[slot];
             }
+        }
+
+        /**
+         * 既に登録してあるデータから「測定していない座標」を落とす。
+         *
+         * ImageQuest 由来の imzML は、矩形格子を埋めるために実測範囲の外へも
+         * spectrum を並べる。その中身は最寄りの実測スペクトルの丸ごとコピーで、
+         * 元と違うのは位置だけ。登録時に Scan=N を見ていなかった版で取り込むと、
+         * 保存済みの生値ラスタにその複製がそのまま入っている。
+         *
+         * ★ ラスタには Scan ID が残っていないので、ここでは「値が完全に一致する
+         *   画素は同じスペクトルのコピー」という手掛かりだけで判定する。
+         *   実測どうしがたまたま同じ値になることがある (ほぼ全チャネル 0 の画素) ので、
+         *   元の imzML から登録し直した場合と完全には一致しない。実測 2 組で測ったところ
+         *   IoU 0.993-0.997 (実測を 16-44 画素落とし、filler が 16-19 画素残る) だった。
+         *   放射状の縞は消えるが、厳密にやるなら元データからの再登録が確実。
+         */
+        async function repairAcquisitionInProject(project, report) {
+            const mols = project.molecules || [];
+            if (!mols.length) throw new Error('分子が 1 つもありません。');
+            // 登録時に Scan ID で判定済みのデータへ二度掛けすると、たまたま値が
+            // 同じだった実測画素まで消してしまう。掛けさせない。
+            if (mols.some(m => m.acqQc)) {
+                throw new Error('このデータは登録時に測定範囲を判定済みです。修復の必要はありません。');
+            }
+            const W = project.grid && project.grid.W, H = project.grid && project.grid.H;
+            if (!W || !H) throw new Error('グリッドの大きさが判りません。');
+
+            const rasters = [];
+            for (let i = 0; i < mols.length; i++) {
+                if (report) report(i / (mols.length * 2), `${mols[i].name} を読み込み中…`);
+                rasters.push(await ProjectStorage.getValueRaster(mols[i].blobId));
+            }
+
+            // 全分子の値をまとめて 1 つのキーにする。分子が多いほど、実測どうしが
+            // たまたま一致する確率は下がる。
+            const groups = new Map();
+            let nMeasured = 0;
+            for (let gi = 0; gi < W * H; gi++) {
+                let any = false;
+                for (let k = 0; k < rasters.length; k++) {
+                    if (Number.isFinite(rasters[k][gi])) { any = true; break; }
+                }
+                if (!any) continue;
+                nMeasured++;
+                let key = '';
+                for (let k = 0; k < rasters.length; k++) {
+                    const v = rasters[k][gi];
+                    key += (Number.isFinite(v) ? v : 'x') + ',';
+                }
+                const a = groups.get(key);
+                if (a) a.push(gi); else groups.set(key, [gi]);
+            }
+
+            // 値が一意な画素 = 確実な実測点
+            const isSeed = new Uint8Array(W * H);
+            groups.forEach((a) => { if (a.length === 1) isSeed[a[0]] = 1; });
+            function seedNeighbours(gi) {
+                const x = gi % W, y = (gi - (gi % W)) / W;
+                let c = 0;
+                for (let dy = -1; dy <= 1; dy++) {
+                    for (let dx = -1; dx <= 1; dx++) {
+                        if (!dx && !dy) continue;
+                        const nx = x + dx, ny = y + dy;
+                        if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+                        if (isSeed[ny * W + nx]) c++;
+                    }
+                }
+                return c;
+            }
+
+            // 実測点に最も多く接している 1 つを残す。同点なら格子順で必ず一意に決める。
+            const doomed = [];
+            let nGroups = 0;
+            groups.forEach((a) => {
+                if (a.length === 1) return;
+                nGroups++;
+                let pick = a[0], pickN = seedNeighbours(a[0]);
+                for (let z = 1; z < a.length; z++) {
+                    const nb = seedNeighbours(a[z]);
+                    if (nb > pickN) { pick = a[z]; pickN = nb; }
+                }
+                for (let z = 0; z < a.length; z++) if (a[z] !== pick) doomed.push(a[z]);
+            });
+
+            if (!doomed.length) throw new Error('複製された座標は見つかりませんでした。修復の必要はありません。');
+            // ★ 下限。実測どうしがたまたま同じ値になる画素 (ほぼ全チャネル 0 のもの) は
+            //   どんなデータにも数十個あり、それだけを見て消すと本物の実測を削ってしまう。
+            //   ImageQuest の filler は 20-25% と桁が違うので、1% 未満なら
+            //   「もう複製は入っていない」と判断して何もしない。
+            if (doomed.length < nMeasured * 0.01) {
+                throw new Error('複製された座標はほとんどありませんでした ('
+                    + doomed.length + ' 画素 / ' + nMeasured + ' 座標)。\n'
+                    + 'このデータには測定範囲外の複製は入っていないと判断し、何もしませんでした。');
+            }
+            // 万一の暴走よけ。実測 2 組では 20-26% だった。
+            if (doomed.length > nMeasured * 0.6) {
+                throw new Error(`測定座標の ${(100 * doomed.length / nMeasured).toFixed(0)}% が複製と判定されました。` +
+                    '多すぎるので中止します (このデータは別の形式の可能性があります)。');
+            }
+            for (const gi of doomed) {
+                for (let k = 0; k < rasters.length; k++) rasters[k][gi] = NaN;
+            }
+
+            const beforeBlobIds = new Set(ProjectStorage.collectBlobIds(project));
+            for (let k = 0; k < mols.length; k++) {
+                if (report) report(0.5 + k / (mols.length * 2), `${mols[k].name} を書き戻し中…`);
+                const stats = MSIRaster.deriveBakeStats(rasters[k]);
+                const prev = mols[k].stats || {};
+                const ld = project.layerDisplay && project.layerDisplay[mols[k].key];
+                // 表示レンジは、ユーザーが触っていない (登録時の自動値のままの) ときだけ直す
+                if (ld) {
+                    if (ld.vmin === prev.rawMin) ld.vmin = stats.rawMin;
+                    if (ld.vmax === prev.rawDispMax) ld.vmax = stats.rawDispMax;
+                }
+                mols[k].blobId = await ProjectStorage.putValueRaster(rasters[k]);
+                mols[k].stats = stats;
+            }
+            // 手動しきい値は生の TIC に対する絶対値。画素が減れば TIC も変わるので自動に戻す。
+            if (project.otsu) project.otsu.manualThreshold = null;
+            project.acquisitionRepair = {
+                nCoordinates: nMeasured, nKept: nMeasured - doomed.length,
+                nDropped: doomed.length, nGroups: nGroups, approximate: true,
+            };
+            return { beforeBlobIds: beforeBlobIds, qc: project.acquisitionRepair };
         }
 
         // =================================================================
@@ -1301,6 +1430,53 @@
                 }
             }
 
+            /** 測定範囲の状態を 1 行で出す。未判定のときだけ修復ボタンを添える。 */
+            function acqRow() {
+                const n = (x) => Number(x).toLocaleString('ja-JP');
+                const qc = (project.molecules || []).map(m => m.acqQc).find(Boolean);
+                if (qc) {
+                    return '<span class="text-sm text-gray-700">登録時に走査番号から判定済み: 実測 <b>' +
+                        n(qc.nUniqueScanIds) + '</b> 点 / 全 ' + n(qc.nCoordinates) + ' 座標' +
+                        (qc.nDropped ? '（複製 ' + n(qc.nDropped) + ' 画素を除外）' : '（複製なし）') + '</span>';
+                }
+                const rp = project.acquisitionRepair;
+                if (rp) {
+                    return '<span class="text-sm text-gray-700">修復済み（推定）: 実測 <b>' +
+                        n(rp.nKept) + '</b> 点 / 全 ' + n(rp.nCoordinates) + ' 座標（複製 ' +
+                        n(rp.nDropped) + ' 画素を除外）</span>';
+                }
+                return '<div class="flex items-center justify-between gap-2">' +
+                    '<span class="text-sm text-gray-800">未判定 ' +
+                      '<span class="text-xs text-gray-500">切片の外へ放射状の縞が出る場合はこれが原因です</span></span>' +
+                    '<button class="btn shrink-0" id="contents-acq-fix">測定範囲を修復</button></div>';
+            }
+
+            /** 保存済みラスタから複製座標を落とす。押したときだけ走らせる。 */
+            async function onRepairAcquisition() {
+                if (!confirm('測定していない座標（実測スペクトルの複製）を、保存済みのデータから取り除きます。\n\n' +
+                    '※ 値が完全に一致する画素を手掛かりにする推定です。元の imzML から登録し直した場合と\n' +
+                    '　 数十画素ずれることがあります（実測 2 組で一致度 99.3〜99.7%）。厳密にやるなら再登録が確実です。\n\n' +
+                    'ROI と位置合わせはそのまま残ります。取り消せません。\n\n' + EDIT_VIEWER_WARN)) return;
+                setBusy(true, '測定範囲を判定中…');
+                let res = null;
+                try {
+                    res = await repairAcquisitionInProject(project, (f, msg) => {
+                        setProgress(f); statusEl.textContent = msg || '測定範囲を判定中…';
+                    });
+                } catch (e) {
+                    console.error('[contents] 測定範囲の修復', e);
+                    setProgress(null);
+                    setBusy(false, '');
+                    showError(e.message);
+                    return;
+                }
+                setProgress(null);
+                setBusy(false, '');
+                await commitAndRedraw(res.beforeBlobIds, '保存中…');
+                setStatus(`測定範囲を修復しました: ${res.qc.nDropped.toLocaleString('ja-JP')} 画素を除外 ` +
+                    `(実測 ${res.qc.nKept.toLocaleString('ja-JP')} 点 / 全 ${res.qc.nCoordinates.toLocaleString('ja-JP')} 座標)`);
+            }
+
             function render() {
                 const g = project.grid || {};
                 const gridText = g.W ? `${g.W} × ${g.H} px` : 'グリッド未設定';
@@ -1332,10 +1508,14 @@
                     '<button class="btn mb-4" id="contents-add-mol">+ 分子を追加 (imzML + ibd)</button>' +
                     '<div class="text-xs text-gray-500 mb-1">画像</div>' +
                     '<div id="contents-images">' + imgRows + '</div>' +
+                    '<div class="text-xs text-gray-500 mt-4 mb-1">測定範囲</div>' +
+                    '<div id="contents-acq" class="border border-gray-200 rounded px-2 py-1">' + acqRow() + '</div>' +
                     '<div class="flex justify-end mt-3"><button class="btn" id="contents-close">閉じる</button></div>';
 
                 body.querySelector('#contents-close').addEventListener('click', close);
                 body.querySelector('#contents-add-mol').addEventListener('click', () => molInput.click());
+                const acqBtn = body.querySelector('#contents-acq-fix');
+                if (acqBtn) acqBtn.addEventListener('click', onRepairAcquisition);
 
                 body.querySelectorAll('[data-mol] [data-act="mol-del"]').forEach(btn => {
                     btn.addEventListener('click', async () => {
