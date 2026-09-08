@@ -100,6 +100,24 @@
                        rotate(calc(var(--vt-rot, 0deg) - 90deg))
                        scale(var(--vt-scale, 1));
         }
+        /* スケールバー。長さの元は imzML の pixel size (IMS:1000046)。
+           ★ #image-viewer-rot の「外」に置いてある。中に入れると --vt-rot と
+             CSS の −90° で一緒に回ってしまい、バーが斜めになって文字も逆さになる。
+           µm/px が判らないデータでは display:none のままにする (適当な長さを
+           描くと嘘になるため)。 */
+        #scale-bar {
+            position: absolute; left: 12px; bottom: 10px;
+            pointer-events: none; user-select: none; z-index: 5; display: none;
+        }
+        #scale-bar .sb-line {
+            height: 4px; background: #fff; border-radius: 1px;
+            box-shadow: 0 0 0 1px rgba(0, 0, 0, .85);
+        }
+        #scale-bar .sb-text {
+            margin-top: 3px; font-size: 12px; line-height: 1.1; color: #fff;
+            text-align: center; font-variant-numeric: tabular-nums;
+            text-shadow: 0 0 3px #000, 0 0 3px #000, 0 1px 2px #000;
+        }
         /* 回転の操作欄 (ヘッダ) */
         #rot-group select, #rot-group input { border: 1px solid #d1d5db; border-radius: 4px; padding: 1px 3px; }
         #rot-group input { width: 46px; text-align: right; }
@@ -204,6 +222,10 @@
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-.41-8.98 4.5 4.5 0 0 1 8.08-3.13 4.5 4.5 0 0 1 6.58 5.61A3.75 3.75 0 0 1 19.5 19.5H6.75Z"/></svg>
                     <span id="cloud-save-label">クラウドに保存</span>
                 </button>
+                <button id="save-png" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="表示中の画像をスケールバー付きの PNG で保存する (ズームは反映せず全体を書き出します)">
+                    <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M18 9h.008v.008H18V9Zm2.25 9.75V5.25A2.25 2.25 0 0 0 18 3H6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 6 21h12a2.25 2.25 0 0 0 2.25-2.25Z"/></svg>
+                    画像を保存
+                </button>
                 <button id="export-zip" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="作業状態ごと ZIP に書き出す">
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
                     Export
@@ -301,6 +323,7 @@
                                 <canvas id="display-canvas" class="absolute"></canvas>
                                 <canvas id="roi-canvas" class="absolute pointer-events-none"></canvas>
                             </div>
+                            <div id="scale-bar"><div class="sb-line"></div><div class="sb-text"></div></div>
                         </div>
                     </div>
                 </div>
@@ -445,6 +468,188 @@
             const net = (cssW / Math.max(1, displayCanvas.width)) * (viewTransform.scale || 1);
             const hasMsi = checkedLayerKeys().some(k => /^MSI/i.test(k));
             displayCanvas.classList.toggle('px-nearest', hasMsi && net >= 1);
+        }
+
+        // =================================================================
+        // スケールバー
+        // =================================================================
+        // 長さの根拠は imzML の pixel size (IMS:1000046/47)。登録時に
+        // grid.umPerPxX / umPerPxY へ入り、ZIP の往復でもクラウドでも保たれるので、
+        // 既に登録済みのデータでも追加の操作なしでそのまま出る。
+        const SCALE_NICE_STEPS = [1, 2, 5];
+
+        /** MSI 1 画素の実寸 (µm)。imzML 由来の grid を最優先し、無ければ world_coords。 */
+        function msiUmPerPx() {
+            const g = (currentProject && currentProject.grid) || {};
+            const fromGrid = Number(g.umPerPxX);
+            if (Number.isFinite(fromGrid) && fromGrid > 0) return fromGrid;
+            const m = (atlasData && atlasData.world_coords && atlasData.world_coords.msi_um_per_px) || null;
+            const fromWc = m && Number(m.x);
+            return Number.isFinite(fromWc) && fromWc > 0 ? fromWc : null;
+        }
+
+        /**
+         * 画面上で MSI 1 画素が何 CSS px を占めるか。
+         * キャンバス内部解像度は MSI を CCW90° した (H, W) の renderScale 倍なので、
+         * cssW / msiRef.h とすると renderScale が約分で消える (canvasToMsi と同じ対応)。
+         * 縦横でアスペクト比は保たれているので 1 つの値で足りる。
+         */
+        function screenPxPerMsiPx() {
+            if (!displayCanvas) return 0;
+            const msiRef = getMsiRefSize();
+            if (!msiRef || !(msiRef.h > 0)) return 0;
+            const cssW = parseFloat(displayCanvas.style.width) || displayCanvas.width;
+            if (!(cssW > 0)) return 0;
+            return (cssW / msiRef.h) * (viewTransform.scale || 1);
+        }
+
+        /** 1・2・5 × 10ⁿ のうち、目標の長さに最も近いものを µm で返す。 */
+        function niceScaleUm(umPerPx, targetPx) {
+            const rough = umPerPx * targetPx;
+            if (!(rough > 0) || !Number.isFinite(rough)) return 0;
+            const exp = Math.floor(Math.log10(rough));
+            let best = 0, bestErr = Infinity;
+            for (let e = exp - 1; e <= exp + 1; e++) {
+                for (const s of SCALE_NICE_STEPS) {
+                    const cand = s * Math.pow(10, e);
+                    const err = Math.abs(Math.log(cand / rough));
+                    if (err < bestErr) { bestErr = err; best = cand; }
+                }
+            }
+            return best;
+        }
+
+        /** 1000 µm 以上は mm で書く。 */
+        function formatScaleLabel(um) {
+            if (um >= 1000) {
+                const mm = um / 1000;
+                return (Number.isInteger(mm) ? mm : Number(mm.toFixed(2))) + ' mm';
+            }
+            return (Number.isInteger(um) ? um : Number(um.toFixed(2))) + ' µm';
+        }
+
+        /** いまの表示倍率に合わせてスケールバーを引き直す。 */
+        function refreshScaleBar() {
+            const el = document.getElementById('scale-bar');
+            if (!el) return;
+            const hide = () => { el.style.display = 'none'; };
+            const um = msiUmPerPx();
+            const pxPerMsi = screenPxPerMsiPx();
+            if (!um || !(pxPerMsi > 0)) return hide();
+            const umPerScreenPx = um / pxPerMsi;
+            const viewer = document.getElementById('image-viewer');
+            const vw = (viewer && viewer.clientWidth) || 400;
+            const barUm = niceScaleUm(umPerScreenPx, Math.max(40, Math.min(220, vw / 5)));
+            if (!(barUm > 0)) return hide();
+            const barPx = barUm / umPerScreenPx;
+            if (!(barPx > 0) || !Number.isFinite(barPx)) return hide();
+            el.style.display = 'block';
+            el.querySelector('.sb-line').style.width = barPx.toFixed(1) + 'px';
+            el.querySelector('.sb-text').textContent = formatScaleLabel(barUm);
+            el.dataset.um = String(barUm);
+            el.dataset.px = barPx.toFixed(2);
+        }
+
+        /**
+         * 表示中の合成画像を PNG に書き出す。
+         *
+         * ★ ズーム / パンは反映しない (画像は常に全体を書き出す)。
+         *   回転は反映する。画面では CSS が #image-viewer-rot を
+         *   rotate(--vt-rot − 90deg) しているので、同じ角度で焼き込む。
+         * スケールバーは overlay (HTML) なので canvas には載らない。ここで
+         *   同じ「µm → px」の計算を使って描き直す。
+         */
+        function buildExportCanvas() {
+            const src = displayCanvas;
+            if (!src || !(src.width > 0)) throw new Error('表示中の画像がありません');
+            const deg = (Number(rotationState.all) || 0) - 90;
+            const rad = deg * Math.PI / 180;
+            const ca = Math.abs(Math.cos(rad)), sa = Math.abs(Math.sin(rad));
+            const W = Math.max(1, Math.round(src.width * ca + src.height * sa));
+            const H = Math.max(1, Math.round(src.width * sa + src.height * ca));
+            const out = document.createElement('canvas');
+            out.width = W; out.height = H;
+            const ctx = out.getContext('2d');
+            ctx.fillStyle = '#000';
+            ctx.fillRect(0, 0, W, H);
+            ctx.imageSmoothingEnabled = false;
+            ctx.save();
+            ctx.translate(W / 2, H / 2);
+            ctx.rotate(rad);
+            ctx.drawImage(src, -src.width / 2, -src.height / 2);
+            // ROI の線も画面と同じように重ねる
+            if (roiCanvas && roiCanvas.width === src.width && roiCanvas.height === src.height) {
+                ctx.drawImage(roiCanvas, -src.width / 2, -src.height / 2);
+            }
+            ctx.restore();
+            drawScaleBarOnCanvas(ctx, W, H, src.width);
+            return out;
+        }
+
+        /** 書き出し用キャンバスの左下へスケールバーを描く。srcW は回転前の幅。 */
+        function drawScaleBarOnCanvas(ctx, W, H, srcW) {
+            const um = msiUmPerPx();
+            const msiRef = getMsiRefSize();
+            if (!um || !msiRef || !(msiRef.h > 0) || !(srcW > 0)) return null;
+            // 回転は剛体変換なので倍率は変わらない。1 MSI 画素 = srcW / msiRef.h キャンバス px
+            const umPerCanvasPx = um * msiRef.h / srcW;
+            const barUm = niceScaleUm(umPerCanvasPx, W / 5);
+            if (!(barUm > 0)) return null;
+            const barPx = barUm / umPerCanvasPx;
+            if (!(barPx > 0) || !Number.isFinite(barPx) || barPx > W) return null;
+
+            const pad = Math.max(10, Math.round(Math.min(W, H) / 40));
+            const fs = Math.max(12, Math.round(Math.min(W, H) / 28));
+            const bh = Math.max(3, Math.round(fs / 3));
+            const label = formatScaleLabel(barUm);
+            const x = pad, y = H - pad - bh;
+
+            ctx.save();
+            ctx.imageSmoothingEnabled = true;
+            // 縁取りしてから白で塗る。背景が明るくても暗くても読めるように。
+            ctx.lineJoin = 'round';
+            ctx.strokeStyle = 'rgba(0,0,0,.85)';
+            ctx.lineWidth = Math.max(2, Math.round(bh / 2));
+            ctx.strokeRect(x, y, barPx, bh);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(x, y, barPx, bh);
+
+            ctx.font = '600 ' + fs + 'px system-ui, -apple-system, "Segoe UI", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'bottom';
+            const tx = x + barPx / 2, ty = y - Math.round(bh / 2);
+            ctx.lineWidth = Math.max(3, Math.round(fs / 5));
+            ctx.strokeStyle = 'rgba(0,0,0,.9)';
+            ctx.strokeText(label, tx, ty);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(label, tx, ty);
+            ctx.restore();
+            return { um: barUm, px: barPx };
+        }
+
+        /** PNG として保存する。 */
+        function saveViewAsPng() {
+            const btn = document.getElementById('save-png');
+            const original = btn ? btn.textContent : '';
+            try {
+                if (btn) { btn.disabled = true; btn.textContent = '準備中…'; }
+                const out = buildExportCanvas();
+                const name = (currentProject && currentProject.displayName) || 'image';
+                const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+                out.toBlob((blob) => {
+                    if (!blob) { alert('画像を作成できませんでした'); return; }
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = (window.ZipIO ? ZipIO.safeName(name) : name) + '_' + ts + '.png';
+                    document.body.appendChild(a); a.click();
+                    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+                }, 'image/png');
+            } catch (e) {
+                console.error('[savePng]', e);
+                alert('画像の保存に失敗しました: ' + e.message);
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = original; }
+            }
         }
 
         /**
@@ -1051,6 +1256,7 @@ function loadAllImages() {
                         }
 
                         refreshPixelated();
+                        refreshScaleBar();
                         renderCompositeImage();
                         drawAllRois();
                         // ★ ここで常に firstKey を掴むと、ウィンドウリサイズや
@@ -1226,6 +1432,7 @@ function loadAllImages() {
             });
 
             refreshPixelated();
+            refreshScaleBar();
 
             displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
 
@@ -2616,6 +2823,8 @@ function loadAllImages() {
             const cs = document.getElementById('cloud-save');
             if (cs) cs.addEventListener('click', saveToCloud);
             refreshCloudSaveState();
+            const png = document.getElementById('save-png');
+            if (png) png.addEventListener('click', saveViewAsPng);
             const ex = document.getElementById('export-zip');
             if (ex) ex.addEventListener('click', exportZip);
             const imBtn = document.getElementById('import-zip');
@@ -2717,6 +2926,7 @@ function loadAllImages() {
             const out = document.getElementById('zoom-readout');
             if (out) out.textContent = Math.round(viewTransform.scale * 100) + '%';
             refreshPixelated();
+            refreshScaleBar();
         }
 
         function setupViewTransform() {
