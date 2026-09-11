@@ -174,10 +174,21 @@
                         <input type="file" id="zip-input" accept=".zip,application/zip" class="hidden">
                         <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
                         <button id="new-folder" class="btn">+ フォルダ</button>
+                        <button id="excel-export-all" class="btn btn-primary">全データをExcel一括出力</button>
                         <button id="bulk-merge" class="btn" disabled>選択を 1 つに統合</button>
                         <button id="bulk-move" class="btn" disabled>選択を移動</button>
                         <button id="bulk-export" class="btn" disabled>選択を Export</button>
                         <button id="bulk-delete" class="btn btn-danger" disabled>選択を削除</button>
+                    </div>
+                </div>
+                <div id="excel-export-panel" class="hidden mb-4 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+                    <div class="flex items-start justify-between gap-3">
+                        <p id="excel-export-status" class="text-xs text-blue-800 whitespace-pre-wrap" aria-live="polite"></p>
+                        <button id="excel-export-cancel" class="btn hidden shrink-0">キャンセル</button>
+                    </div>
+                    <div id="excel-export-progress" class="mt-2 w-full bg-blue-100 rounded h-1.5 overflow-hidden"
+                         role="progressbar" aria-label="Excel 一括出力の進捗" aria-valuemin="0" aria-valuemax="100">
+                        <div id="excel-export-bar" class="bg-blue-600 h-full transition-all" style="width:0%"></div>
                     </div>
                 </div>
                 <div class="flex gap-4 items-start">
@@ -215,6 +226,7 @@
     <script src="lib/ingest.js"></script>
     <script src="lib/imzml.js"></script>
     <script src="lib/zipio.js"></script>
+    <script src="lib/excelio.js"></script>
     <script src="lib/cloud-config.js"></script>
     <script src="lib/cloud.js"></script>
     <script>
@@ -939,7 +951,7 @@
         }
         function refreshBulkButtons() {
             const n = selectedIds().length;
-            document.getElementById('bulk-export').disabled = n === 0;
+            document.getElementById('bulk-export').disabled = excelBatchBusy || n === 0;
             document.getElementById('bulk-delete').disabled = n === 0;
             document.getElementById('bulk-move').disabled = n === 0;
             document.getElementById('bulk-merge').disabled = n < 2;
@@ -1016,6 +1028,7 @@
             renderBreadcrumb();
             renderContents();
             refreshBulkButtons();
+            if (excelBatchBusy) setExcelExportControlsDisabled(true);
         }
 
         // ---- 数え上げ -------------------------------------------------------
@@ -1828,6 +1841,347 @@
             a.click();
             setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
         }
+
+        // ---- 全登録データの Excel 一括出力 ---------------------------------
+        // 既存の Export は復元用 ZIP。この処理は解析用の XLSX を 1 件ずつ作り、
+        // 最後に 1 つの ZIP へ収める。大きな配列を同時に作らないよう直列に処理する。
+        let excelBatchBusy = false;
+        let excelBatchCancelRequested = false;
+
+        function setExcelExportControlsDisabled(disabled) {
+            // 一覧取得から ZIP 完成までは同じ対象集合を保つ。処理中の削除・移動・
+            // 登録・Import・クラウド送信が、取得済み/未取得の間へ割り込まないようにする。
+            const controls = document.querySelectorAll(
+                'main button:not(#excel-export-cancel), main input[type="file"], #project-list input.sel');
+            for (const control of controls) {
+                if (disabled) {
+                    if (!Object.prototype.hasOwnProperty.call(control.dataset, 'excelBatchWasDisabled')) {
+                        control.dataset.excelBatchWasDisabled = control.disabled ? '1' : '0';
+                    }
+                    control.disabled = true;
+                } else if (Object.prototype.hasOwnProperty.call(control.dataset, 'excelBatchWasDisabled')) {
+                    control.disabled = control.dataset.excelBatchWasDisabled === '1';
+                    delete control.dataset.excelBatchWasDisabled;
+                }
+            }
+            for (const item of document.querySelectorAll('[draggable]')) {
+                item.draggable = !disabled;
+            }
+            if (!disabled) refreshBulkButtons();
+        }
+
+        function setExcelBatchUi(message, fraction, options) {
+            const opts = options || {};
+            const panel = document.getElementById('excel-export-panel');
+            const status = document.getElementById('excel-export-status');
+            const progress = document.getElementById('excel-export-progress');
+            const bar = document.getElementById('excel-export-bar');
+            const cancel = document.getElementById('excel-export-cancel');
+            panel.classList.remove('hidden');
+            status.textContent = message || '';
+            status.className = 'text-xs whitespace-pre-wrap ' +
+                (opts.tone === 'error' ? 'text-red-700' :
+                 opts.tone === 'warning' ? 'text-amber-800' :
+                 opts.tone === 'success' ? 'text-green-700' : 'text-blue-800');
+            panel.className = 'mb-4 rounded-md border px-3 py-2 ' +
+                (opts.tone === 'error' ? 'border-red-200 bg-red-50' :
+                 opts.tone === 'warning' ? 'border-amber-200 bg-amber-50' :
+                 opts.tone === 'success' ? 'border-green-200 bg-green-50' :
+                 'border-blue-200 bg-blue-50');
+            if (opts.hideProgress || fraction == null) {
+                progress.classList.add('hidden');
+            } else {
+                progress.classList.remove('hidden');
+                const pct = Math.round(Math.max(0, Math.min(1, fraction)) * 100);
+                bar.style.width = pct + '%';
+                progress.setAttribute('aria-valuenow', String(pct));
+            }
+            cancel.classList.toggle('hidden', !opts.cancellable);
+            cancel.disabled = !!opts.cancelPending;
+        }
+
+        function projectFolderNames(p) {
+            if (p && p.__row && Array.isArray(p.__row.folder_path)) return p.__row.folder_path.slice();
+            if (!p || !cache.tree || !cache.tree.byId) return [];
+            return ProjectStorage.folderPathNames(p.folderId, cache.tree.byId);
+        }
+
+        function assertLatestCloudProject(listRow, project) {
+            const latest = listRow && listRow.__row;
+            if (!cloudOn() || !latest) return;
+            const timestampMatches = project.cloudUpdatedAt === latest.updated_at;
+            const bundleMatches = !latest.bundle_path || project.cloudBundlePath === latest.bundle_path;
+            if (!timestampMatches || !bundleMatches) {
+                throw new Error('クラウド最新版への置き換えが選択されなかったため未出力');
+            }
+        }
+
+        function assertNoPendingCloudConflict(listRow) {
+            const latest = listRow && listRow.__row;
+            if (!cloudOn() || !latest || listRow.__cloudOnly || !listRow.cloudPending) return;
+            if (latest.updated_at !== listRow.cloudUpdatedAt) {
+                // ensureLocal() を呼ぶと、状態ハッシュに含まれない未送信ラスタまで
+                // クラウド版で上書きされ得る。データを守るため、この 1 件だけ除外する。
+                throw new Error('未アップロードの変更とクラウド更新が競合しているため未出力です。' +
+                    '先に一覧の「アップロード」または「中身」で内容を確認し、競合を解決してください');
+            }
+        }
+
+        function compareProjectsForExcel(a, b) {
+            const pathA = projectFolderNames(a).join('\u0000');
+            const pathB = projectFolderNames(b).join('\u0000');
+            return pathA.localeCompare(pathB, 'ja', { numeric: true, sensitivity: 'base' }) ||
+                String(a.displayName || '').localeCompare(String(b.displayName || ''), 'ja',
+                    { numeric: true, sensitivity: 'base' }) ||
+                String(a.id || '').localeCompare(String(b.id || ''));
+        }
+
+        function excelBatchBaseRecord(p, sequence) {
+            const folder = projectFolderNames(p);
+            return {
+                sequence: sequence,
+                projectId: p && p.id || '',
+                projectName: p && p.displayName || '(名前なし)',
+                folderPath: folder.length ? folder.join(' / ') : '(ルート)',
+                workbookPath: '',
+                rowCount: 0,
+                moleculeCount: 0,
+                roiCount: 0,
+                dataSheetCount: 0,
+                warnings: [],
+                error: '',
+            };
+        }
+
+        function excelBatchIssueSummary(records) {
+            return records.filter(r => r.status === 'error').map(r =>
+                `${r.sequence}. ${r.projectName}: ${r.error || '出力できませんでした'}`).join('\n');
+        }
+
+        function fallbackExcelArchiveName(partial, date) {
+            const d = date || new Date();
+            const pad = n => String(n).padStart(2, '0');
+            const stamp = String(d.getFullYear()) + pad(d.getMonth() + 1) + pad(d.getDate()) + '_' +
+                pad(d.getHours()) + pad(d.getMinutes()) + pad(d.getSeconds());
+            return 'marmoset_atlas_excel_' + stamp + (partial ? '_PARTIAL' : '') + '.zip';
+        }
+
+        function excelArchiveName(partial, date) {
+            if (window.ExcelIO && typeof ExcelIO.makeArchiveFilename === 'function') {
+                const name = ExcelIO.makeArchiveFilename(partial, date);
+                if (typeof name === 'string' && name) return name;
+            }
+            return fallbackExcelArchiveName(partial, date);
+        }
+
+        document.getElementById('excel-export-cancel').addEventListener('click', () => {
+            if (!excelBatchBusy || excelBatchCancelRequested) return;
+            excelBatchCancelRequested = true;
+            const current = document.getElementById('excel-export-status').textContent;
+            setExcelBatchUi(current + '\nキャンセルを受け付けました。処理中の 1 件が終わり次第停止します。',
+                Number(document.getElementById('excel-export-progress').getAttribute('aria-valuenow') || 0) / 100,
+                { cancellable: true, cancelPending: true, tone: 'warning' });
+        });
+
+        document.getElementById('excel-export-all').addEventListener('click', async () => {
+            if (excelBatchBusy) return;
+            excelBatchBusy = true;
+            excelBatchCancelRequested = false;
+            setExcelExportControlsDisabled(true);
+            const archiveDate = new Date();
+
+            try {
+                if (!window.ExcelIO || typeof ExcelIO.buildProjectXlsx !== 'function' ||
+                    typeof ExcelIO.buildIndexXlsx !== 'function' ||
+                    typeof ExcelIO.makeUniqueWorkbookName !== 'function') {
+                    throw new Error('Excel 出力モジュールを読み込めませんでした。ページを再読み込みしてください。');
+                }
+
+                setExcelBatchUi('登録データの最新一覧を確認中…', 0,
+                    {});
+                if (cloudOn() && !Cloud.signedIn()) {
+                    showGate('全データを取得するにはログインしてください。');
+                    throw new Error('クラウドへログインしてから、もう一度実行してください。');
+                }
+                // refreshProjectList() はフォルダ位置をクラウドへ書き戻すことがあるため、
+                // 読み取り専用の reload() だけで権威ある一覧を取り直す。
+                await reload();
+                render();
+                setExcelExportControlsDisabled(true);
+                paintCloudChip();
+                if (cloudOn() && (cloudOffline || !Array.isArray(cloudRows))) {
+                    throw new Error('クラウドの最新一覧を取得できませんでした。接続を確認して再実行してください。');
+                }
+
+                const projects = cache.projects.slice().sort(compareProjectsForExcel);
+                if (!projects.length) {
+                    setExcelBatchUi('出力できる登録データがありません。', null,
+                        { hideProgress: true, tone: 'warning' });
+                    return;
+                }
+
+                const proceed = confirm(
+                    `すべてのフォルダにある ${projects.length} 件を一括出力します。\n\n` +
+                    '・1 件につき 1 つの Excel ファイルを作成します。\n' +
+                    '・各ファイルには、全分子の MSI 生強度データと ROI 所属情報が入ります。\n' +
+                    '・画像と復元用の状態は含みません。この ZIP は解析用で、アプリへは読み戻せません。\n\n' +
+                    '処理を開始しますか?');
+                if (!proceed) {
+                    setExcelBatchUi('Excel 一括出力を中止しました。', null,
+                        { hideProgress: true });
+                    return;
+                }
+
+                const zip = new JSZip();
+                const records = [];
+                const usedNames = new Set();
+                const exportedAt = archiveDate.toISOString();
+                let processedCount = 0;
+
+                for (let i = 0; i < projects.length; i++) {
+                    if (excelBatchCancelRequested) break;
+                    const row = projects[i];
+                    const base = excelBatchBaseRecord(row, i + 1);
+                    setExcelBatchUi(
+                        `${i + 1} / ${projects.length} 件目「${base.projectName}」を取得中…`,
+                        (i / projects.length) * 0.85,
+                        { cancellable: true });
+                    try {
+                        // reload() で得た最新クラウド行を渡すことで、必要なデータだけ
+                        // ensureLocal() が ZIP を取得し、ローカルキャッシュへ展開する。
+                        assertNoPendingCloudConflict(row);
+                        const project = await ensureLocal(row);
+                        if (cloudOn()) { setStatus(''); setProgress(null); }
+                        if (!project || !project.molecules) throw new Error('データ本体が見つかりません');
+                        // ensureLocal() の競合確認で「置き換えない」が選ばれた場合、戻り値は
+                        // 手元の古い版になる。全件が最新版であるかのような ZIP には混ぜない。
+                        assertLatestCloudProject(row, project);
+                        project.folderPath = ProjectStorage.folderPathNames(project.folderId, cache.tree.byId);
+                        base.folderPath = project.folderPath.length ? project.folderPath.join(' / ') : '(ルート)';
+
+                        setExcelBatchUi(
+                            `${i + 1} / ${projects.length} 件目「${base.projectName}」の Excel を作成中…` +
+                                (excelBatchCancelRequested ?
+                                    '\nキャンセル受け付け済み。この 1 件が終わり次第停止します。' : ''),
+                            ((i + 0.45) / projects.length) * 0.85,
+                            { cancellable: true, cancelPending: excelBatchCancelRequested,
+                              tone: excelBatchCancelRequested ? 'warning' : '' });
+                        const workbookName = ExcelIO.makeUniqueWorkbookName(project, i + 1, usedNames);
+                        const workbookPath = 'datasets/' + workbookName;
+                        const result = await ExcelIO.buildProjectXlsx(project, { storage: ProjectStorage }, {
+                            exportedAt: exportedAt,
+                            appVersion: window.APP_VERSION || '',
+                            folderPath: project.folderPath,
+                        });
+                        const warnings = Array.isArray(result.warnings) ? result.warnings.map(String) :
+                            (result.warnings ? [String(result.warnings)] : []);
+                        zip.file(workbookPath, result.bytes, { binary: true, compression: 'STORE' });
+                        records.push(Object.assign(base, {
+                            status: warnings.length ? 'warning' : 'success',
+                            workbookPath: workbookPath,
+                            rowCount: result.rowCount || 0,
+                            moleculeCount: result.moleculeCount || 0,
+                            roiCount: result.roiCount || 0,
+                            dataSheetCount: result.dataSheetCount || 0,
+                            warnings: warnings,
+                        }));
+                    } catch (e) {
+                        console.error('[excel export] プロジェクトの出力に失敗', row && row.id, e);
+                        records.push(Object.assign(base, {
+                            status: 'error',
+                            error: e && e.message ? e.message : String(e),
+                        }));
+                    }
+                    processedCount++;
+                    setExcelBatchUi(`${processedCount} / ${projects.length} 件を処理しました。` +
+                            (excelBatchCancelRequested ? '\nキャンセル受け付け済み。ここで停止します。' : ''),
+                        (processedCount / projects.length) * 0.85,
+                        { cancellable: true, cancelPending: excelBatchCancelRequested,
+                          tone: excelBatchCancelRequested ? 'warning' : '' });
+                    // 描画とキャンセル操作を受け付けてから、次のデータへ進む。
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+
+                const cancelled = excelBatchCancelRequested && processedCount < projects.length;
+                if (cancelled) {
+                    for (let i = processedCount; i < projects.length; i++) {
+                        records.push(Object.assign(excelBatchBaseRecord(projects[i], i + 1), {
+                            status: 'error',
+                            error: 'キャンセルにより未処理',
+                        }));
+                    }
+                }
+
+                const successCount = records.filter(r => r.status !== 'error').length;
+                const errorCount = records.length - successCount;
+                const warningCount = records.filter(r => r.status === 'warning').length;
+                const partial = errorCount > 0;
+                const plannedFilename = excelArchiveName(partial, archiveDate);
+                setExcelBatchUi('出力結果の索引を作成中…', 0.88, {});
+                const indexResult = await ExcelIO.buildIndexXlsx(records, {
+                    exportedAt: exportedAt,
+                    appVersion: window.APP_VERSION || '',
+                    requestedCount: projects.length,
+                    status: partial ? 'PARTIAL' : 'COMPLETE',
+                    archiveFilename: plannedFilename,
+                    note: cancelled ? 'ユーザーのキャンセルにより、一部のデータは未処理です。' : '',
+                });
+                zip.file('_Export_Index.xlsx', indexResult.bytes,
+                    { binary: true, compression: 'STORE' });
+
+                const issues = excelBatchIssueSummary(records);
+                if (successCount === 0) {
+                    setExcelBatchUi(
+                        `Excel を作成できたデータはありません (${errorCount} 件)。ZIP はダウンロードしませんでした。` +
+                        (issues ? '\n' + issues : ''), null,
+                        { hideProgress: true, tone: 'error' });
+                    return;
+                }
+
+                if (partial) {
+                    const reason = cancelled ? '処理はキャンセルされました。' : '一部のデータを出力できませんでした。';
+                    const acceptPartial = confirm(
+                        `${reason}\n成功 ${successCount} 件 / 未出力 ${errorCount} 件` +
+                        (warningCount ? ` / 警告あり ${warningCount} 件` : '') + '\n\n' +
+                        (issues || '') + '\n\n' +
+                        '成功したファイルだけを _PARTIAL.zip としてダウンロードしますか?');
+                    if (!acceptPartial) {
+                        setExcelBatchUi(
+                            `成功 ${successCount} 件 / 未出力 ${errorCount} 件。一部 ZIP はダウンロードしませんでした。` +
+                            (issues ? '\n' + issues : ''), null,
+                            { hideProgress: true, tone: 'warning' });
+                        return;
+                    }
+                }
+
+                setExcelBatchUi('1 つの ZIP にまとめています…', 0.9, {});
+                const blob = await zip.generateAsync({
+                    type: 'blob',
+                    compression: 'STORE',
+                    streamFiles: true,
+                }, meta => {
+                    setExcelBatchUi(`1 つの ZIP にまとめています… ${Math.round(meta.percent)}%`,
+                        0.9 + (meta.percent / 100) * 0.1, {});
+                });
+                const filename = plannedFilename;
+                downloadBlob(blob, filename);
+                setExcelBatchUi(
+                    `${successCount} 件の Excel を「${filename}」としてダウンロードしました。` +
+                    (errorCount ? ` 未出力 ${errorCount} 件。` : '') +
+                    (warningCount ? ` 警告あり ${warningCount} 件。` : ''),
+                    1, { hideProgress: true, tone: partial || warningCount ? 'warning' : 'success' });
+            } catch (e) {
+                console.error('[excel export] 一括出力に失敗', e);
+                setExcelBatchUi('Excel 一括出力に失敗しました: ' +
+                    (e && e.message ? e.message : String(e)), null,
+                    { hideProgress: true, tone: 'error' });
+            } finally {
+                excelBatchBusy = false;
+                excelBatchCancelRequested = false;
+                setExcelExportControlsDisabled(false);
+                document.getElementById('excel-export-cancel').classList.add('hidden');
+            }
+        });
 
         document.getElementById('bulk-export').addEventListener('click', async () => {
             for (const id of selectedIds()) {
