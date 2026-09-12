@@ -16,6 +16,7 @@
     <script src="../lib/otsu.js"></script>
     <script src="../lib/align.js"></script>
     <script src="../lib/msi.js"></script>
+    <script src="../lib/normalization.js"></script>
     <script src="../lib/ingest.js"></script>
     <script src="../lib/imzml.js"></script>
     <script src="../lib/zipio.js"></script>
@@ -213,9 +214,9 @@
                     <span class="text-gray-500">°</span>
                     <button type="button" id="rot-reset" class="text-gray-600" title="回転・移動・拡大をすべて戻す">↻</button>
                 </span>
-                <label class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 cursor-pointer" title="各ピクセルの総信号量(TIC)から背景スポットを自動判定し、全イオン像から一括で非表示にします。生データは変更しません。">
+                <label class="inline-flex items-center gap-1 px-2 py-1 text-xs font-medium rounded border border-gray-300 bg-white text-gray-700 cursor-pointer" title="固定した内因性分子の信号和から、表示のみをマスクします。全スペクトルの TIC ではありません。解析値は変更しません。">
                     <input type="checkbox" id="otsu-toggle" class="h-3.5 w-3.5 rounded border-gray-300">
-                    背景除去(大津法)
+                    表示マスク(Otsu)
                 </label>
                 <!-- クラウドを使う設定のときだけ出る。ROI や重ね合わせを他の PC にも反映する -->
                 <button id="cloud-save" class="hidden items-center gap-1 px-3 py-1 text-xs font-medium rounded border" title="ROI や重ね合わせをクラウドに保存して、他の PC でも同じ状態で開けるようにする">
@@ -296,11 +297,18 @@
                     <!-- レイヤ選択: チェックボックスを横に並べ、その下に「選択中の 1 レイヤ」の
                          強度レンジ / 透明度を 1 組だけ常時表示する (歯車の開閉をやめた) -->
                     <div id="image-selector-options" class="shrink-0 border border-gray-200 rounded-t p-1 text-xs bg-white"></div>
+                    <div class="shrink-0 flex flex-wrap items-center gap-2 p-1 text-xs" id="value-display-controls">
+                        <span>表示値:</span>
+                        <button type="button" id="value-normalized" class="px-2 py-1 rounded border" aria-pressed="false">補正・正規化</button>
+                        <button type="button" id="value-raw" class="px-2 py-1 rounded border" aria-pressed="true">生値</button>
+                        <label>色レンジ <select id="value-scale" class="border rounded"><option value="common">固定共通レンジ</option><option value="individual">個別レンジ</option></select></label>
+                    </div>
+                    <div id="value-display-status" class="shrink-0 text-xs px-2 py-1 bg-amber-50 max-h-24 overflow-y-auto" role="status" aria-live="polite"></div>
                     <div id="layer-settings-strip" class="hidden shrink-0 border border-t-0 border-gray-200 rounded-b mb-1 px-2 py-1 text-xs bg-gray-50"></div>
                     <!-- 大津法のヒストグラム (トグル ON のときだけ表示) -->
                     <div id="otsu-panel" class="hidden shrink-0 border border-gray-200 rounded mb-1 p-2 bg-white">
                         <div class="flex items-center justify-between text-xs text-gray-600 mb-1">
-                            <span>背景除去 — 赤線をドラッグして境目を調整</span>
+                            <span>表示のみ — 赤線をドラッグ、離した後に確認</span>
                             <span class="flex items-center gap-2">
                                 <span id="otsu-readout" class="text-gray-500"></span>
                                 <button type="button" id="otsu-reset" class="px-1.5 py-0.5 rounded border border-gray-300 hover:bg-gray-50" title="自動 Otsu (強度 0) に戻す">⟲</button>
@@ -344,7 +352,7 @@
                             <span class="text-gray-400">vs</span>
                             <select id="graph-select-3" class="text-xs border-gray-300 rounded py-0.5 px-1"></select>
                         </div>
-                        <div id="graph-container" class="flex-1 flex items-center justify-center border border-gray-300 rounded overflow-hidden min-h-0">
+                        <div id="graph-container" class="flex-1 border border-gray-300 rounded overflow-auto min-h-0">
                              <img id="graph-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='450'%3E%3Crect width='600' height='450' fill='%23f0f0f0'/%3E%3Ctext x='300' y='225' text-anchor='middle' fill='%23333' font-size='16'%3ESelect an ROI%3C/text%3E%3C/svg%3E" alt="Analysis Graph" class="w-full h-full object-contain">
                         </div>
                     </div>
@@ -408,8 +416,165 @@
         let valueRasters = {};
         // IndexedDB から開いたプロジェクト (静的データセットの場合は null)
         let currentProject = null;
+        let viewerStoredUpdatedAt = null;
+        let viewerSaveQueue = Promise.resolve();
+        let viewerSaveConflict = false;
         // 大津法の状態
         let otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
+        // Numerical data and presentation state must never share mutable rasters.
+        let normalizationEvaluation = null;
+        let valueDisplay = { mode: 'raw', scale: 'common' };
+        let savedOtsuRequested = false;
+        let otsuDraft = null;
+        let otsuPending = false;
+        let viewerContextRevision = 0;
+        let analysisRoiCache = new Map();
+        const otsuLockedControls = new Map();
+
+        function normalizationReasons(codes) {
+            return (codes || []).map(code => window.Normalization ? Normalization.reasonText(code) : code).join(' / ');
+        }
+        function channelResult(key) { return normalizationEvaluation?.channels?.[key] || null; }
+        function channelUnit(key) {
+            if (!valueRasters[key]) return '画像輝度（定量不可）';
+            if (valueDisplay.mode === 'raw') return '生信号 (a.u.)';
+            const channel = channelResult(key);
+            if (channel?.role === 'd4') return '生信号 (a.u.; D4 QC)';
+            if (!channel || !['ht', 'da', 'ne'].includes(channel.role)) return '生信号 (a.u.; 補正対象外)';
+            return channel.unit || (channel.role === 'ht' ? '5-HT / D4 比' : '正規化信号 (a.u.)');
+        }
+        function displayRaster(key) {
+            const raw = valueRasters[key];
+            if (!raw || valueDisplay.mode === 'raw') return raw;
+            const channel = channelResult(key);
+            if (channel && ['ht', 'da', 'ne'].includes(channel.role)) {
+                return { W: raw.W, H: raw.H, values: channel.values, derived: true, rawValues: raw.values };
+            }
+            // D4 is raw QC; unsupported molecules are explicitly labelled unprocessed.
+            return raw;
+        }
+        function paintDisplayRaster(key) {
+            const vr = displayRaster(key);
+            if (!vr) return null;
+            const settings = imageSettings[key] || {};
+            const keep = otsuKeepFor(key);
+            const values = vr.values || new Float64Array(vr.W * vr.H).fill(NaN);
+            const canvas = MSIRaster.paintRasterToCanvas(values, vr.W, vr.H, {
+                color: getMsiColor(key), win: { min: settings.vmin, max: settings.vmax }, keep,
+            });
+            // Measured, but not computable = gray. Unmeasured = transparent.
+            if (vr.derived) {
+                const ctx = canvas.getContext('2d');
+                const pixels = ctx.getImageData(0, 0, vr.W, vr.H);
+                for (let i = 0; i < values.length; i++) {
+                    if (Number.isFinite(values[i]) || !Number.isFinite(vr.rawValues[i]) || (keep && !keep[i])) continue;
+                    pixels.data.set([128, 128, 128, 255], i * 4);
+                }
+                ctx.putImageData(pixels, 0, 0);
+            }
+            return canvas;
+        }
+        function finiteRange(values, expand = true) {
+            let min = Infinity, max = -Infinity;
+            if (values) for (const value of values) if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
+            return Number.isFinite(min) ? [min, max > min || !expand ? max : min + Math.max(1, Math.abs(min) * 0.01)] : [0, 1];
+        }
+        function rememberModeRanges() {
+            for (const [key, settings] of Object.entries(imageSettings)) {
+                if (valueRasters[key]) settings[valueDisplay.mode + 'Range'] = [settings.vmin, settings.vmax];
+            }
+        }
+        function useModeRanges() {
+            for (const key of Object.keys(valueRasters)) {
+                const settings = imageSettings[key];
+                if (!settings) continue;
+                const vr = displayRaster(key), channel = channelResult(key);
+                const range = finiteRange(vr?.values), actual = finiteRange(vr?.values, false);
+                const role = channel?.role;
+                const commonRecord = valueDisplay.mode === 'normalized' && valueDisplay.scale === 'common'
+                    ? currentProject?.normalization?.commonRanges?.[role] : null;
+                const common = commonRecord && [commonRecord.min, commonRecord.max > commonRecord.min ? commonRecord.max : commonRecord.min + Math.max(1, Math.abs(commonRecord.min) * 0.01)];
+                const saved = settings[valueDisplay.mode + 'Range'];
+                const chosen = Array.isArray(common) && common.length === 2 && common.every(Number.isFinite) && common[1] > common[0]
+                    ? common : Array.isArray(saved) && saved.every(Number.isFinite) ? saved : range;
+                settings.vmin = chosen[0]; settings.vmax = chosen[1];
+                settings.actualMin = actual[0]; settings.actualMax = actual[1];
+            }
+            fillSettingsStrip();
+        }
+        function refreshValueDisplayUi() {
+            for (const mode of ['raw', 'normalized']) {
+                const button = document.getElementById('value-' + mode);
+                if (!button) continue;
+                button.setAttribute('aria-pressed', String(valueDisplay.mode === mode));
+                button.classList.toggle('bg-blue-100', valueDisplay.mode === mode);
+            }
+            const scale = document.getElementById('value-scale');
+            if (scale) scale.value = valueDisplay.scale;
+            const status = document.getElementById('value-display-status');
+            if (!status) return;
+            const lines = [valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではありません）' : '生値表示'];
+            if (viewerSaveConflict) lines.unshift('⚠ 保存を停止しました：別タブの更新または保存エラーを検出しました。現在の変更は保存されていません。Master／このページを再読み込みして新しい版を確認してください。');
+            const profile = currentProject?.normalization;
+            if (profile) lines.push(`Batch ${profile.batchId || '未設定'} / Profile ${profile.id} rev.${profile.revision} / ${profile.quality === 'validated' ? '検証済み設定' : '暫定設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
+            else lines.push('補正設定なし。Master で基準・分子対応を設定してください。');
+            if (valueDisplay.scale === 'individual') lines.push('⚠ 個別レンジ：色の明るさを切片間で直接比較できません。');
+            else if (valueDisplay.mode === 'raw') lines.push('生値は各分子の保存レンジ。切片間共通レンジは補正表示にのみ適用します。');
+            const keys = checkedLayerKeys().filter(k => valueRasters[k]);
+            for (const key of keys) {
+                const channel = channelResult(key), settings = imageSettings[key];
+                let label = `${formatDisplayName(key)}: ${channelUnit(key)} [${settings?.vmin ?? '—'}, ${settings?.vmax ?? '—'}]`;
+                if (valueDisplay.mode === 'normalized' && channel?.reasonCodes?.length) label += ' — ' + normalizationReasons(channel.reasonCodes);
+                if (valueDisplay.mode === 'normalized' && ['ht', 'da', 'ne'].includes(channel?.role) && valueDisplay.scale === 'common' && !profile?.commonRanges?.[channel.role]) label += '（共通レンジ未設定・個別表示）';
+                lines.push(label);
+            }
+            for (const key of checkedLayerKeys().filter(key => /^MSI_/i.test(key) && !valueRasters[key])) lines.push(formatDisplayName(key) + ': 生値ラスタなし。画像の輝度から補正・定量は算出できません。');
+            if (valueDisplay.mode === 'normalized') lines.push('灰色＝測定済み・算出不可／透明＝未測定（Otsu 非表示とは別）。');
+            if (otsuState.applied) {
+                const rec = otsuState.record;
+                const pct = rec?.nOriginal ? 100 * rec.nRemoved / rec.nOriginal : 0;
+                lines.push(`Otsu ON：判定可能画素の非表示 ${pct.toFixed(1)}%（解析値・ROI 集計には影響なし）`);
+                if (rec?.evaluable) {
+                    let unknown = 0;
+                    for (const flag of rec.evaluable) if (!flag) unknown++;
+                    if (unknown) lines.push('Otsu 判定不可 ' + unknown + ' 画素：非表示判定せず元の表示を維持。');
+                }
+            } else lines.push('Otsu OFF（解析値・ROI 集計には影響なし）');
+            status.textContent = lines.join('\n'); status.style.whiteSpace = 'pre-line';
+        }
+        function redrawValueViews() {
+            renderCompositeImage();
+            for (const [key, image] of msiThumbRefs) renderMsiThumbnail(key, image);
+            refreshValueDisplayUi();
+            const active = document.querySelector('.roi-item.active');
+            if (active) displayGraphForRoi(active.dataset.roiKey);
+        }
+        function saveValueDisplay() {
+            if (!currentProject) return;
+            currentProject.valueDisplay = { ...valueDisplay };
+            persistLayerDisplay();
+        }
+        async function changeValueMode(mode) {
+            if (mode === valueDisplay.mode || otsuPending || otsuDraft) return;
+            if (otsuState.applied && !(await confirmOtsuAction('表示値の切替'))) return;
+            const before = valueDisplay.mode;
+            const previousSettings = structuredClone(imageSettings);
+            try {
+                rememberModeRanges(); valueDisplay.mode = mode; useModeRanges(); redrawValueViews(); saveValueDisplay();
+            } catch (error) {
+                valueDisplay.mode = before; imageSettings = previousSettings; redrawValueViews();
+                alert('表示を切り替えられませんでした: ' + error.message);
+            }
+        }
+        function setupValueDisplay() {
+            document.getElementById('value-raw').addEventListener('click', () => changeValueMode('raw'));
+            document.getElementById('value-normalized').addEventListener('click', () => changeValueMode('normalized'));
+            document.getElementById('value-scale').addEventListener('change', event => {
+                if (otsuPending || otsuDraft) { event.target.value = valueDisplay.scale; return; }
+                rememberModeRanges(); valueDisplay.scale = event.target.value; useModeRanges(); redrawValueViews(); saveValueDisplay();
+            });
+            refreshValueDisplayUi();
+        }
         // パン / ズーム
         let viewTransform = { tx: 0, ty: 0, scale: 1 };
         /*
@@ -583,7 +748,36 @@
             }
             ctx.restore();
             drawScaleBarOnCanvas(ctx, W, H, src.width);
-            return out;
+            // Provenance is outside the image area, never covering a tissue pixel.
+            const annotated = document.createElement('canvas');
+            annotated.width = Math.max(W, 640);
+            const info = [
+                (valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではない）' : '生値表示') + ' / ' + (valueDisplay.scale === 'common' ? '固定レンジ（未設定分子は個別）' : '個別レンジ'),
+                ...checkedLayerKeys().filter(key => valueRasters[key]).map(key => {
+                    const settings = imageSettings[key];
+                    return formatDisplayName(key) + ': ' + channelUnit(key) + ' / range [' + settings?.vmin + ', ' + settings?.vmax + ']';
+                }),
+                otsuState.applied ? 'Otsu ON / 判定可能画素の非表示 ' + (otsuState.record?.nOriginal ? (100 * otsuState.record.nRemoved / otsuState.record.nOriginal).toFixed(1) : '0.0') + '% / 未判定は表示維持 / ROI・Excel の解析値への影響なし' : 'Otsu OFF / ROI・Excel の解析値への影響なし',
+                '灰色: 測定済み・算出不可 / 透明: 未測定 / Profile: ' + (currentProject?.normalization?.id || '未設定') + ' rev.' + (currentProject?.normalization?.revision || '—'),
+            ];
+            const measure = annotated.getContext('2d');
+            measure.font = '14px sans-serif';
+            const lines = [];
+            for (const line of info) {
+                let part = '';
+                for (const char of line) {
+                    if (measure.measureText(part + char).width > annotated.width - 24 && part) { lines.push(part); part = ''; }
+                    part += char;
+                }
+                lines.push(part);
+            }
+            annotated.height = H + lines.length * 22 + 24;
+            const finalCtx = annotated.getContext('2d');
+            finalCtx.fillStyle = '#fff'; finalCtx.fillRect(0, 0, annotated.width, annotated.height);
+            finalCtx.drawImage(out, Math.floor((annotated.width - W) / 2), 0);
+            finalCtx.fillStyle = '#111'; finalCtx.font = '14px sans-serif';
+            lines.forEach((line, i) => finalCtx.fillText(line, 12, H + 22 + i * 22));
+            return annotated;
         }
 
         /** 書き出し用キャンバスの左下へスケールバーを描く。srcW は回転前の幅。 */
@@ -629,6 +823,7 @@
 
         /** PNG として保存する。 */
         function saveViewAsPng() {
+            if (otsuPending || otsuDraft) return;
             const btn = document.getElementById('save-png');
             const original = btn ? btn.textContent : '';
             try {
@@ -659,20 +854,21 @@
         function renderMsiThumbnail(key, thumbEl) {
             if (!thumbEl) return;
             // 生値ラスタがあるならそちらから描く (生単位のウィンドウ + 大津法が効く)
-            const vr = valueRasters[key];
+            const vr = displayRaster(key);
             if (vr) {
-                const st = imageSettings[key] || {};
-                const canvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
-                    color: getMsiColor(key),
-                    win: { min: st.vmin, max: st.vmax },
-                    keep: otsuKeepFor(key),
-                });
+                const canvas = paintDisplayRaster(key);
                 thumbEl.src = canvas.toDataURL();
+                thumbEl.title = formatDisplayName(key) + ' — ' + channelUnit(key) + (channelResult(key)?.reasonCodes?.length ? '\n' + normalizationReasons(channelResult(key).reasonCodes) : '');
                 thumbEl.classList.add('msi-thumb');
                 return;
             }
             const source = imageSources[key];
             if (!source || !source.complete || source.naturalWidth === 0) return;
+            if (valueDisplay.mode === 'normalized' && /^MSI_/i.test(key)) {
+                const blank = document.createElement('canvas'); blank.width = 1; blank.height = 1;
+                thumbEl.src = blank.toDataURL(); thumbEl.title = formatDisplayName(key) + ': 生値ラスタなし・補正画像算出不可';
+                return;
+            }
             const iw = source.naturalWidth;
             const ih = source.naturalHeight;
             const tc = document.createElement('canvas');
@@ -721,6 +917,11 @@
         });
 
         async function initializeViewer() {
+            normalizationEvaluation = window.Normalization && currentProject ? Normalization.evaluate(currentProject, valueRasters) : null;
+            const savedMode = currentProject?.valueDisplay?.mode;
+            valueDisplay.mode = ['normalized', 'raw'].includes(savedMode) ? savedMode
+                : normalizationEvaluation && ['VALID', 'PROVISIONAL', 'PARTIAL'].includes(normalizationEvaluation.status) ? 'normalized' : 'raw';
+            valueDisplay.scale = currentProject?.valueDisplay?.scale === 'individual' ? 'individual' : 'common';
             populateRoiList();
             // ★ キャンバスの寸法を決める前に出す。あとから左半分が現れると
             //   #image-viewer の幅が縮み、フィット計算が古い幅のままずれる。
@@ -729,9 +930,9 @@
             // ★ 設定 (生単位のウィンドウ) を先に作る。サムネイルを先に描くと
             //   imageSettings がまだ無く、既定ウィンドウ [0,1] で真っ白に焼ける。
             await analyzeAndInitializeSettings();
-            // ★ 保存された背景除去の状態は最初の描画前に反映しておく。
-            //   setupOtsuUi まで待つと、初回のサムネイルと合成に効かない。
-            if (otsuState.applied) recomputeOtsu();
+            useModeRanges();
+            // Saved ON is a request, never consent. No masked frame is painted before Yes.
+            otsuState.applied = false;
             populateThumbnails();
             setupCheckboxDropdown();
             setupGraphSelector();
@@ -741,7 +942,12 @@
             setupRotationControls();
             setupViewTransform();
             setupOtsuUi();
+            setupValueDisplay();
             setupAlignButton();
+            if (savedOtsuRequested) {
+                const applied = await requestOtsuCommit({ ...otsuState, applied: true }, '保存された Otsu 設定の再適用');
+                if (!applied && currentProject) { currentProject.otsu = committedOtsuSettings(); queueSaveProject(); }
+            }
             const firstRoiKey = (atlasData.roi && atlasData.roi.roi_items) ? Object.keys(atlasData.roi.roi_items)[0] : null;
             if (firstRoiKey) {
                 setTimeout(() => {
@@ -794,6 +1000,8 @@ function loadAllImages() {
                         actualMin: st.rawMin,
                         actualMax: st.rawTrueMax,
                         raw: true,
+                        rawRange: saved?.rawRange || [saved?.vmin ?? st.rawMin, saved?.vmax ?? st.rawDispMax],
+                        normalizedRange: saved?.normalizedRange || null,
                     };
                     continue;
                 }
@@ -943,6 +1151,7 @@ function loadAllImages() {
             };
 
             const applyRange = () => {
+                if (otsuPending || otsuDraft) return;
                 const key = activeSettingsKey;
                 const settings = key && imageSettings[key];
                 if (!settings) return;
@@ -958,6 +1167,10 @@ function loadAllImages() {
                 }
                 settings.vmin = vmin;
                 settings.vmax = vmax;
+                if (valueRasters[key]) {
+                    valueDisplay.scale = 'individual';
+                    if (currentProject) currentProject.valueDisplay = { ...valueDisplay };
+                }
                 vminInput.value = fmt(vmin);
                 vmaxInput.value = fmt(vmax);
                 repaint(key);
@@ -966,13 +1179,16 @@ function loadAllImages() {
             vmaxInput.addEventListener('change', applyRange);
 
             strip.querySelector('.range-reset').addEventListener('click', () => {
+                if (otsuPending || otsuDraft) return;
                 const key = activeSettingsKey;
                 const settings = key && imageSettings[key];
                 if (!settings) return;
-                const vr2 = valueRasters[key];
+                const vr2 = displayRaster(key);
                 if (vr2) {
-                    const st2 = vr2.stats || (vr2.stats = MSIRaster.deriveBakeStats(vr2.values));
-                    settings.vmin = st2.rawMin; settings.vmax = st2.rawDispMax;
+                    const range = finiteRange(vr2.values);
+                    settings.vmin = range[0]; settings.vmax = range[1];
+                    valueDisplay.scale = 'individual';
+                    if (currentProject) currentProject.valueDisplay = { ...valueDisplay };
                 } else {
                     settings.vmin = settings.actualMin; settings.vmax = settings.actualMax;
                 }
@@ -1044,7 +1260,7 @@ function loadAllImages() {
             const isHeLike = /HE_STAIN|IF_STAIN/i.test(key);
             strip.querySelector('#strip-layer-name').textContent = formatDisplayName(key);
             strip.querySelector('#strip-range-label').textContent =
-                '強度レンジ ' + (isRaw ? '(生単位)' : '(輝度 0-255)');
+                '強度レンジ ' + (isRaw ? '(' + channelUnit(key) + ')' : '(輝度 0-255)');
             strip.querySelector('#strip-actual').textContent =
                 '実測 ' + fmt(settings.actualMin) + ' 〜 ' + fmt(settings.actualMax);
 
@@ -1166,6 +1382,7 @@ function loadAllImages() {
                 // チェックで Image Viewer 合成 + サムネイル連動
                 checkbox.addEventListener('change', () => {
                     renderCompositeImage();
+                    refreshValueDisplayUi();
                     persistVisibleLayers();
                     if (checkbox.checked) {
                         setActiveSettingsKey(key);
@@ -1297,14 +1514,18 @@ function loadAllImages() {
         }
         function persistLayerDisplay() {
             if (!currentProject) return;
+            rememberModeRanges();
             currentProject.layerDisplay = currentProject.layerDisplay || {};
             for (const key of Object.keys(imageSettings)) {
                 const s = imageSettings[key];
                 currentProject.layerDisplay[key] = {
+                    ...(currentProject.layerDisplay[key] || {}),
                     vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
                     grayscale: !!s.grayscale,
+                    rawRange: s.rawRange, normalizedRange: s.normalizedRange,
                 };
             }
+            refreshValueDisplayUi();
             queueSaveProject();
         }
         // ROI はビューア側で atlasData.roi を直接いじるので、変更のたびに
@@ -1392,16 +1613,51 @@ function loadAllImages() {
         function persistRoi() {
             if (!currentProject) return;
             currentProject.roi = atlasData.roi;
+            analysisRoiCache.clear();
+            if (window.Normalization) {
+                normalizationEvaluation = Normalization.evaluate(currentProject, valueRasters);
+                useModeRanges();
+                refreshValueDisplayUi();
+                renderCompositeImage();
+            }
             queueSaveProject();
         }
 
         let saveTimer = 0;
+        // Serialize this Viewer's writes and CAS the exact version it last read/saved.
+        // A stale Viewer must never erase a newer Master normalization profile.
+        function saveViewerProject() {
+            const projectId = currentProject?.id, contextRevision = viewerContextRevision;
+            const operation = viewerSaveQueue.catch(() => {}).then(async () => {
+                if (!currentProject || currentProject.id !== projectId || viewerContextRevision !== contextRevision) throw new Error('保存対象が切り替わりました。再読み込みしてください。');
+                if (viewerSaveConflict) throw new Error('保存停止中です。新しい版を再読み込みしてください。');
+                const snapshot = structuredClone(currentProject);
+                await ProjectStorage.putProjectsIfUnchanged([{ project: snapshot, expectedUpdatedAt: viewerStoredUpdatedAt }]);
+                if (currentProject.id === projectId && viewerContextRevision === contextRevision) {
+                    viewerStoredUpdatedAt = snapshot.updatedAt;
+                    currentProject.updatedAt = snapshot.updatedAt;
+                }
+                return snapshot;
+            });
+            viewerSaveQueue = operation.catch(error => {
+                if (currentProject?.id === projectId && viewerContextRevision === contextRevision && !viewerSaveConflict) {
+                    viewerSaveConflict = true;
+                    if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+                    refreshValueDisplayUi();
+                    const cloudButton = document.getElementById('cloud-save');
+                    if (cloudButton) cloudButton.disabled = true;
+                    alert('保存を停止しました。新しいデータは上書きしていません。\n' + error.message + '\nページを再読み込みして新しい版を確認してください。');
+                }
+                throw error;
+            });
+            return viewerSaveQueue;
+        }
         function queueSaveProject() {
-            if (!currentProject) return;
+            if (!currentProject || viewerSaveConflict) return;
             if (saveTimer) clearTimeout(saveTimer);
             saveTimer = setTimeout(() => {
                 saveTimer = 0;
-                ProjectStorage.putProject(currentProject).catch(e => console.warn('[save] 失敗', e));
+                saveViewerProject().catch(e => console.warn('[save] 失敗', e));
                 // 作業中の保存はこの PC の中だけ。クラウドへ送るかどうかはボタンで決める
                 if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
             }, 400);
@@ -1414,7 +1670,12 @@ function loadAllImages() {
             if (!vr) return null;
             const rec = otsuState.record;
             if (rec.W !== vr.W || rec.H !== vr.H) return null;
-            return rec.keep;
+            if (!rec.displayKeep) {
+                rec.displayKeep = rec.keep.slice();
+                // An unevaluable mask is no decision, not an instruction to hide a measured pixel.
+                if (rec.evaluable) for (let i = 0; i < rec.displayKeep.length; i++) if (!rec.evaluable[i]) rec.displayKeep[i] = 1;
+            }
+            return rec.displayKeep;
         }
 
         function renderCompositeImage() {
@@ -1439,21 +1700,18 @@ function loadAllImages() {
             for (const key of keysToRender) {
                 const settings = imageSettings[key];
                 const sourceImg = imageSources[key];
-                const vr = valueRasters[key];
+                const vr = displayRaster(key);
                 if (!vr && (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0)) continue;
 
                 const isMsiLayer = /^MSI/i.test(key);
                 const isHeLike   = /HE_STAIN|IF_STAIN/i.test(key);
+                if (isMsiLayer && valueDisplay.mode === 'normalized' && !valueRasters[key]) continue;
 
                 let tempCanvas;
                 if (vr) {
                     // 生値ラスタから直接着色する。8bit を経由しないので、生単位の
                     // 強度ウィンドウがそのまま効き、大津法のマスクも適用できる。
-                    tempCanvas = MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
-                        color: getMsiColor(key),
-                        win: { min: settings.vmin, max: settings.vmax },
-                        keep: otsuKeepFor(key),
-                    });
+                    tempCanvas = paintDisplayRaster(key);
                 } else {
                 tempCanvas = document.createElement('canvas');
                 tempCanvas.width = sourceImg.naturalWidth;
@@ -2045,21 +2303,22 @@ function loadAllImages() {
 
             // 生値ラスタがあるなら 8bit の輝度ではなく生の強度を返す。
             // ROI 統計は定量値なので、表示用の量子化を通してはいけない。
-            const vr = valueRasters[imageKey];
+            const vr = displayRaster(imageKey);
             if (vr) {
                 const mask = new Uint8Array(vr.W * vr.H);
                 for (const ring of rings) MSIRaster.markRoiMask(mask, vr.W, vr.H, ring);
-                const keep = otsuKeepFor(imageKey);
                 const out = [];
+                if (!vr.values) return out;
                 for (let i = 0; i < mask.length; i++) {
                     if (!mask[i]) continue;
-                    if (keep && !keep[i]) continue;      // 背景除去で外した画素は統計にも入れない
                     const v = vr.values[i];
                     if (Number.isFinite(v)) out.push(v); // 未測定 (NaN) は除外
                 }
                 return out;
             }
 
+            // Image-only MSI is not an analytical raster. Never report 8-bit luminance as MSI quantification.
+            if (/^MSI_/i.test(imageKey)) return [];
             const sourceImg = imageSources[imageKey];
             if (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0) return [];
             const iw = sourceImg.naturalWidth;
@@ -2103,7 +2362,7 @@ function loadAllImages() {
 
         /** 平均と標準偏差を計算 */
         function calcStats(arr) {
-            if (arr.length === 0) return { mean: 0, sd: 0, n: 0 };
+            if (arr.length === 0) return { mean: null, sd: null, n: 0 };
             const n = arr.length;
             const mean = arr.reduce((s, v) => s + v, 0) / n;
             const variance = arr.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
@@ -2115,60 +2374,77 @@ function loadAllImages() {
             const select1Val = document.getElementById('graph-select-1').value;
             const select2Val = document.getElementById('graph-select-2').value;
             const select3Val = document.getElementById('graph-select-3').value;
-
-            // Canvasを用意
-            let graphCanvas = document.getElementById('graph-canvas');
-            const graphImage = document.getElementById('graph-image');
-            if (!graphCanvas) {
-                graphCanvas = document.createElement('canvas');
-                graphCanvas.id = 'graph-canvas';
-                graphCanvas.className = 'w-full h-auto';
-                graphCanvas.style.maxHeight = '450px';
-                graphContainer.innerHTML = '';
-                graphContainer.appendChild(graphCanvas);
-            }
-            if (graphImage) graphImage.style.display = 'none';
-
-            // 全ROIのキーとパレットを取得(表示 OFF の ROI はグラフから除外)
+            graphContainer.replaceChildren();
             const roiItems = atlasData.roi?.roi_items || {};
             const roiNames = atlasData.roi?.roi_names || {};
             const palette = atlasData.roi?.palette || {};
             const showFlags = atlasData.roi?.roi_show_flags || {};
             const roiKeys = Object.keys(roiItems).filter(k => showFlags[k] !== false);
-
             if (roiKeys.length === 0) {
-                // 表示中 ROI が無いときはグラフを空にリセット
-                const ctx = graphCanvas.getContext('2d');
-                graphCanvas.width = graphCanvas.clientWidth || 400;
-                graphCanvas.height = graphCanvas.clientHeight || 200;
-                ctx.clearRect(0, 0, graphCanvas.width, graphCanvas.height);
-                ctx.fillStyle = '#fafafa';
-                ctx.fillRect(0, 0, graphCanvas.width, graphCanvas.height);
-                ctx.fillStyle = '#888';
-                ctx.font = '13px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('表示中の ROI がありません', graphCanvas.width / 2, graphCanvas.height / 2);
+                graphContainer.textContent = '表示中の ROI がありません';
                 return;
             }
-
-            // 選択されたチャネルを収集（重複除外）
-            const channels = [select1Val];
-            if (select2Val !== 'none' && !channels.includes(select2Val)) channels.push(select2Val);
-            if (select3Val !== 'none' && !channels.includes(select3Val)) channels.push(select3Val);
-
-            // 各チャネル×全ROIの統計を計算
-            const allStats = {};
-            for (const ch of channels) {
-                allStats[ch] = {};
-                for (const rk of roiKeys) {
-                    allStats[ch][rk] = calcStats(extractRoiPixels(ch, rk));
+            const channels = [...new Set([select1Val, select2Val, select3Val])].filter(key => key && key !== 'none');
+            const roiResults = {};
+            const ref = Object.values(valueRasters)[0];
+            if (ref && normalizationEvaluation) for (const roiKey of roiKeys) {
+                const cacheKey = roiKey + ':' + JSON.stringify(roiItems[roiKey]);
+                if (!analysisRoiCache.has(cacheKey)) {
+                    const mask = new Uint8Array(ref.W * ref.H);
+                    for (const poly of roiItems[roiKey] || []) if (poly?.poly_msi?.length >= 3) MSIRaster.markRoiMask(mask, ref.W, ref.H, poly.poly_msi);
+                    const project = { ...currentProject, roi: atlasData.roi };
+                    analysisRoiCache.set(cacheKey, { mask, values: Normalization.quantifyRoi(project, valueRasters, normalizationEvaluation, mask) });
                 }
+                roiResults[roiKey] = analysisRoiCache.get(cacheKey);
             }
-
-            if (channels.length === 1) {
-                drawBarChart(graphCanvas, roiKeys, roiNames, palette, allStats[channels[0]], channels[0], highlightRoiKey);
-            } else {
-                drawMultiBarChart(graphCanvas, roiKeys, roiNames, palette, allStats, channels, highlightRoiKey);
+            const note = document.createElement('p');
+            note.className = 'text-xs p-2 text-gray-600';
+            note.textContent = '分子ごとに独立した軸。平均・SD は元の MSI 座標の ROI 全体（Otsu の非表示画素を含む）。SD は画素間分布で、切片間の誤差ではありません。';
+            graphContainer.appendChild(note);
+            const fmt = value => Number.isFinite(value) ? String(Number(value.toPrecision(6))) : '—';
+            for (const key of channels) {
+                const stats = {};
+                for (const roiKey of roiKeys) {
+                    const result = roiResults[roiKey]?.values.find(row => row.key === key);
+                    const corrected = valueDisplay.mode === 'normalized' && ['ht', 'da', 'ne'].includes(result?.role);
+                    stats[roiKey] = result ? (corrected ? result.normalized : result.raw) : calcStats(extractRoiPixels(key, roiKey));
+                }
+                const canvas = document.createElement('canvas');
+                canvas.className = 'w-full h-auto';
+                if (!graphContainer.querySelector('canvas')) canvas.id = 'graph-canvas';
+                graphContainer.appendChild(canvas);
+                drawBarChart(canvas, roiKeys, roiNames, palette, stats, key, highlightRoiKey);
+                const table = document.createElement('table');
+                table.className = 'text-xs w-full border-collapse mb-3';
+                const header = document.createElement('tr');
+                for (const title of ['ROI', '平均 ± SD', '表示値有効 / 測定 / ROI', '状態・絶対定量']) {
+                    const th = document.createElement('th'); th.textContent = title; th.className = 'border p-1 text-left'; header.appendChild(th);
+                }
+                table.appendChild(header);
+                for (const roiKey of roiKeys) {
+                    const result = roiResults[roiKey]?.values.find(row => row.key === key);
+                    const stat = stats[roiKey];
+                    let reason = result ? normalizationReasons(result.reasonCodes) : '生値ラスタなし：MSI 定量は算出不可';
+                    const abs = result?.absolute;
+                    if (result?.role === 'ht') reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
+                    if (result?.reasonCounts) reason += '\n' + Object.entries(result.reasonCounts).filter(([, n]) => n > 0).map(([code, n]) => normalizationReasons([code]) + ': ' + n).join(' / ');
+                    const mask = roiResults[roiKey]?.mask;
+                    if (otsuState.applied && mask) {
+                        let visible = 0, unknown = 0;
+                        const keep = otsuKeepFor(key);
+                        for (let i = 0; i < mask.length; i++) if (mask[i] && Number.isFinite(valueRasters[key]?.values?.[i])) {
+                            if (keep?.[i]) visible++;
+                            if (!otsuState.record?.evaluable?.[i]) unknown++;
+                        }
+                        reason += '\nOtsu 表示画素 ' + visible + '（うち判定不可 ' + unknown + '、解析有効数とは別）';
+                    }
+                    const row = document.createElement('tr');
+                    const coverage = ['d4', 'other'].includes(result?.role) ? '対象外' : result?.coverage == null ? '—' : fmt(result.coverage * 100) + '%';
+                    const cells = [roiNames[roiKey] || roiKey, stat.n && Number.isFinite(stat.mean) ? fmt(stat.mean) + ' ± ' + fmt(stat.sd) : '算出不可', result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry} (補正 coverage ${coverage})` : String(stat.n), (result?.status || 'UNAVAILABLE') + (reason ? '\n' + reason : '')];
+                    for (const text of cells) { const td = document.createElement('td'); td.textContent = text; td.className = 'border p-1 align-top'; td.style.whiteSpace = 'pre-line'; row.appendChild(td); }
+                    table.appendChild(row);
+                }
+                graphContainer.appendChild(table);
             }
         }
 
@@ -2176,8 +2452,7 @@ function loadAllImages() {
             const nBars = roiKeys.length;
             const container = document.getElementById('graph-container');
             const cw = container ? container.clientWidth : 500;
-            const ch = container ? container.clientHeight : 400;
-            const W = Math.max(cw, nBars * 40 + 80), H = Math.max(ch, 200);
+            const W = Math.max(cw, nBars * 40 + 80), H = 280;
             canvas.width = W; canvas.height = H;
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
@@ -2236,7 +2511,7 @@ function loadAllImages() {
                     strokeColor = `rgb(${Math.max(0,rgba[0]-40)},${Math.max(0,rgba[1]-40)},${Math.max(0,rgba[2]-40)})`;
                 }
 
-                const barH = (s.mean / yMax) * ph;
+                const barH = s.n && Number.isFinite(s.mean) ? (s.mean / yMax) * ph : 0;
                 const x = margin.left + i * barW + barPad;
                 const bw = barW - barPad * 2;
                 const y = H - margin.bottom - barH;
@@ -2246,6 +2521,10 @@ function loadAllImages() {
                 ctx.strokeStyle = strokeColor;
                 ctx.lineWidth = isHighlight ? 2.5 : 1;
                 ctx.strokeRect(x, y, bw, barH);
+                if (!s.n || !Number.isFinite(s.mean)) {
+                    ctx.fillStyle = '#777'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
+                    ctx.fillText('N/A', x + bw / 2, y - 4);
+                }
 
                 // X軸ラベル（ROI名） - 45°回転で長名でも隣と重ならないように描画
                 const cx = x + bw / 2;
@@ -2270,11 +2549,11 @@ function loadAllImages() {
             }
             ctx.save(); ctx.translate(18, H / 2); ctx.rotate(-Math.PI / 2);
             ctx.textAlign = 'center'; ctx.font = '12px sans-serif';
-            ctx.fillText('Mean Intensity', 0, 0); ctx.restore();
+            ctx.fillText(channelUnit(imageKey), 0, 0); ctx.restore();
 
             // タイトル
             ctx.fillStyle = '#222'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
-            ctx.fillText(`${formatDisplayName(imageKey)} — ROI Mean Intensity`, W / 2, 26);
+            ctx.fillText(`${formatDisplayName(imageKey)} — ROI 平均 (${valueDisplay.mode === 'normalized' ? '補正・正規化' : '生値'})`, W / 2, 26);
         }
 
         function drawMultiBarChart(canvas, roiKeys, roiNames, palette, allStats, channels, highlightRoiKey) {
@@ -2689,34 +2968,36 @@ function loadAllImages() {
         // ビューア側の現在値をプロジェクトに書き戻す
         function syncProjectFromViewer() {
             if (!currentProject) return;
+            rememberModeRanges();
+            currentProject.valueDisplay = { ...valueDisplay };
             currentProject.visibleLayers = checkedLayerKeys();
             currentProject.viewerTransform = Object.assign({}, viewTransform);
             currentProject.rotation = {
                 all: rotationState.all, he: rotationState.he, msi: rotationState.msi,
             };
-            currentProject.otsu = {
-                applied: otsuState.applied,
-                strength: otsuState.strength,
-                manualThreshold: otsuState.manualThreshold,
-            };
+            currentProject.otsu = committedOtsuSettings();
             currentProject.roi = atlasData.roi || currentProject.roi;
             currentProject.world_coords = atlasData.world_coords || currentProject.world_coords;
             currentProject.layerDisplay = currentProject.layerDisplay || {};
             for (const key of Object.keys(imageSettings)) {
                 const s = imageSettings[key];
                 currentProject.layerDisplay[key] = {
+                    ...(currentProject.layerDisplay[key] || {}),
                     vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
                     grayscale: !!s.grayscale,
+                    rawRange: s.rawRange, normalizedRange: s.normalizedRange,
                 };
             }
         }
 
         async function exportZip() {
+            if (otsuPending || otsuDraft || viewerSaveConflict) return;
             const btn = document.getElementById('export-zip');
             const original = btn ? btn.textContent : '';
             try {
                 if (btn) { btn.disabled = true; btn.textContent = '準備中…'; }
-                const proj = buildExportableProject();
+                buildExportableProject();
+                const proj = await saveViewerProject();
                 const blob = await ZipIO.exportProject(proj);
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
                 const a = document.createElement('a');
@@ -2724,7 +3005,6 @@ function loadAllImages() {
                 a.download = ZipIO.safeName(proj.displayName) + '_' + ts + '.zip';
                 document.body.appendChild(a); a.click();
                 setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-                await ProjectStorage.putProject(currentProject);
             } catch (e) {
                 console.error('[exportZip]', e);
                 alert('Export に失敗しました: ' + e.message);
@@ -2734,6 +3014,7 @@ function loadAllImages() {
         }
 
         async function importZip(file) {
+            if (otsuPending || otsuDraft) return;
             const btn = document.getElementById('import-zip');
             const original = btn ? btn.textContent : '';
             try {
@@ -2779,24 +3060,25 @@ function loadAllImages() {
                        : 'border-gray-300 bg-white hover:bg-gray-50 text-gray-500');
             const label = document.getElementById('cloud-save-label');
             if (label) label.textContent = dirty ? 'クラウドに保存 (未保存)' : 'クラウドに保存済み';
+            if (viewerSaveConflict) { btn.disabled = true; if (label) label.textContent = '保存停止・要再読み込み'; }
         }
 
         async function saveToCloud() {
+            if (otsuPending || otsuDraft || viewerSaveConflict) return;
             const btn = document.getElementById('cloud-save');
             const label = document.getElementById('cloud-save-label');
             if (!cloudOn() || !currentProject) return;
-            syncProjectFromViewer();
-            await ProjectStorage.putProject(currentProject);
-            const state = Cloud.stateOf(currentProject);
             if (btn) btn.disabled = true;
             if (label) label.textContent = '保存中…';
             try {
+                syncProjectFromViewer();
+                const saved = await saveViewerProject();
+                const state = Cloud.stateOf(saved);
                 // ★ 見ていた版と一致するときだけ書き換える。一致しなければ 0 行返る。
                 //   これが無いと、2 台で開いていたとき後に押したほうが黙って全部を上書きする。
-                let row = await Cloud.patchRowIfUnchanged(currentProject.id, { state: state },
-                    currentProject.cloudUpdatedAt);
+                let row = await Cloud.patchRowIfUnchanged(saved.id, { state: state }, saved.cloudUpdatedAt);
                 if (!row) {
-                    const cur = await Cloud.getProject(currentProject.id);
+                    const cur = await Cloud.getProject(saved.id);
                     if (!cur) throw new Error('このデータはクラウド側で削除されています。');
                     const whoTxt = cur.updated_by ? `${cur.updated_by} さんが` : '別の PC で';
                     const when = String(cur.updated_at || '').slice(0, 19).replace('T', ' ');
@@ -2805,16 +3087,19 @@ function loadAllImages() {
                         if (label) label.textContent = 'クラウドに保存';
                         return;
                     }
-                    row = await Cloud.patchRow(currentProject.id, { state: state });
+                    // Recheck local CAS before an explicitly confirmed remote overwrite.
+                    await saveViewerProject();
+                    row = await Cloud.patchRow(saved.id, { state: state });
                 }
+                if (currentProject?.id !== saved.id) throw new Error('保存中に表示対象が変わりました。再読み込みしてください。');
                 currentProject.cloudUpdatedAt = row.updated_at;
                 currentProject.cloudStateHash = Cloud.hashState(state);
-                await ProjectStorage.putProject(currentProject);
+                await saveViewerProject();
             } catch (e) {
                 console.error('[cloud-save]', e);
                 alert('クラウドへの保存に失敗しました: ' + e.message);
             } finally {
-                if (btn) btn.disabled = false;
+                if (btn) btn.disabled = viewerSaveConflict;
                 refreshCloudSaveState();
             }
         }
@@ -3039,34 +3324,115 @@ function loadAllImages() {
         // 大津法 (背景除去)
         // =======================================================================
         function recomputeOtsu() {
-            const keys = Object.keys(valueRasters);
-            if (!keys.length) { otsuState.record = null; return; }
-            const tic = Otsu.buildTic(keys.map(k => valueRasters[k]));
-            const ref = valueRasters[keys[0]];
-            otsuState.record = Otsu.buildOtsuRecord(tic, ref.W, ref.H, {
-                strength: otsuState.strength,
-                manualThreshold: otsuState.manualThreshold,
-            });
+            return Otsu.buildProjectRecord(currentProject, valueRasters, committedOtsuSettings());
+        }
+
+        function committedOtsuSettings(state = otsuState) {
+            return {
+                applied: state.applied, strength: state.strength, manualThreshold: state.manualThreshold,
+                sourceKeys: [...(state.sourceKeys || currentProject?.normalization?.otsuSourceKeys || [])],
+                sourceLabel: 'registered-channel-sum', schemaVersion: 1,
+                dataFingerprint: normalizationEvaluation?.fingerprint || null,
+                profileId: currentProject?.normalization?.id || null,
+                profileRevision: currentProject?.normalization?.revision || null,
+            };
+        }
+        function otsuContextToken() {
+            return JSON.stringify([viewerContextRevision, currentProject?.id, currentProject?.normalization,
+                currentProject?.grid, currentProject?.molecules?.map(m => [m.key, m.blobId]), normalizationEvaluation?.fingerprint]);
+        }
+        function lockOtsuControls(locked) {
+            const controls = document.querySelectorAll('#save-png, #export-zip, #import-zip, #cloud-save, #otsu-toggle, #otsu-reset, #value-display-controls button, #value-display-controls select, #layer-settings-strip input, #layer-settings-strip button, #align-btn, #rot-group input, #rot-group select, #rot-group button');
+            if (locked) for (const element of controls) {
+                if (!otsuLockedControls.has(element)) otsuLockedControls.set(element, element.disabled);
+                element.disabled = true;
+            }
+            else {
+                for (const [element, disabled] of otsuLockedControls) element.disabled = disabled;
+                otsuLockedControls.clear();
+            }
+        }
+        async function confirmOtsuAction(action) {
+            if (otsuPending) return false;
+            otsuPending = true;
+            lockOtsuControls(true);
+            const token = otsuContextToken();
+            const dialog = document.createElement('dialog');
+            dialog.id = 'otsu-confirmation';
+            dialog.setAttribute('aria-labelledby', 'otsu-confirm-title');
+            dialog.setAttribute('aria-describedby', 'otsu-confirm-description');
+            dialog.style.cssText = 'padding:24px;border:1px solid #94a3b8;border-radius:12px;max-width:560px;width:calc(100% - 40px);box-shadow:0 20px 60px #0007';
+            const title = document.createElement('h2'); title.id = 'otsu-confirm-title'; title.textContent = 'Otsu法の適用について'; title.style.cssText = 'font-size:18px;font-weight:700;margin-bottom:12px';
+            const message = document.createElement('p'); message.id = 'otsu-confirm-description'; message.style.whiteSpace = 'pre-line';
+            message.textContent = '実際の組織内の弱い信号も非表示になることがあり、補正画像の分布や強弱が歪んで見える可能性があります。\n\nOtsuは画像表示のみに適用します。生値・補正値・ROI集計値・Excelの解析値は変更しません。\n\nこの影響を理解したうえで適用しますか？\n対象: ' + action;
+            const buttons = document.createElement('div'); buttons.style.cssText = 'display:flex;justify-content:flex-end;gap:12px;margin-top:20px';
+            const no = document.createElement('button'); no.id = 'otsu-confirm-no'; no.textContent = 'いいえ'; no.autofocus = true;
+            const yes = document.createElement('button'); yes.id = 'otsu-confirm-yes'; yes.textContent = 'はい';
+            for (const button of [no, yes]) { button.type = 'button'; button.style.cssText = 'padding:8px 20px;border:1px solid #64748b;border-radius:6px;background:#f8fafc'; buttons.appendChild(button); }
+            dialog.append(title, message, buttons); document.body.appendChild(dialog);
+            try {
+                const accepted = await new Promise(resolve => {
+                    let done = false;
+                    const finish = answer => { if (done) return; done = true; if (dialog.open) dialog.close(); resolve(answer); };
+                    no.addEventListener('click', () => finish(false));
+                    yes.addEventListener('click', () => finish(true));
+                    dialog.addEventListener('cancel', event => { event.preventDefault(); finish(false); });
+                    dialog.addEventListener('close', () => finish(false));
+                    dialog.addEventListener('click', event => {
+                        const bounds = dialog.getBoundingClientRect();
+                        if (event.target === dialog && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom)) finish(false);
+                    });
+                    if (typeof dialog.showModal !== 'function') { finish(false); return; }
+                    dialog.showModal(); no.focus();
+                });
+                return accepted && token === otsuContextToken();
+            } finally {
+                dialog.remove(); otsuPending = false; lockOtsuControls(false);
+            }
+        }
+        async function requestOtsuCommit(candidate, action) {
+            if (otsuPending || otsuDraft) return false;
+            const previous = { ...otsuState };
+            const isChange = candidate.applied !== previous.applied || candidate.strength !== previous.strength || candidate.manualThreshold !== previous.manualThreshold;
+            if (!isChange) { refreshOtsuUi(); return true; }
+            try {
+                let record = null;
+                if (candidate.applied) {
+                    if (!(await confirmOtsuAction(action))) { refreshOtsuUi(); return false; }
+                    record = Otsu.buildProjectRecord(currentProject, valueRasters, committedOtsuSettings(candidate));
+                    if (!record?.usable) throw new Error(record?.reasonText || normalizationReasons(record?.reasonCodes) || 'Otsu の固定入力を評価できません。Master で入力分子を確認してください。');
+                }
+                otsuState = { ...candidate, record };
+                refreshOtsuUi(); redrawValueViews();
+                if (currentProject) { currentProject.otsu = committedOtsuSettings(); queueSaveProject(); }
+                return true;
+            } catch (error) {
+                otsuState = previous; refreshOtsuUi(); redrawValueViews();
+                alert('Otsu を適用できません。直前の状態を保持しました。\n' + error.message);
+                return false;
+            }
         }
 
         function refreshOtsuUi() {
             const panel = document.getElementById('otsu-panel');
             const readout = document.getElementById('otsu-readout');
+            const toggle = document.getElementById('otsu-toggle');
+            if (toggle) toggle.checked = otsuState.applied;
             if (!panel) return;
             panel.classList.toggle('hidden', !otsuState.applied);
             if (!otsuState.applied || !otsuState.record) return;
-            const rec = otsuState.record;
+            const rec = otsuDraft?.record || otsuState.record;
             const pct = rec.nOriginal ? (100 * rec.nRemoved / rec.nOriginal) : 0;
             if (readout) {
-                readout.textContent = `閾値 ${Number(rec.thresholdOriginal.toPrecision(4))} / 除去 ${pct.toFixed(1)}%`;
+                readout.textContent = `${otsuDraft ? '未適用プレビュー: ' : ''}閾値 ${Number(rec.thresholdOriginal.toPrecision(4))} / 非表示 ${pct.toFixed(1)}%`;
             }
             drawOtsuHistogram();
         }
 
         function drawOtsuHistogram() {
             const canvas = document.getElementById('otsu-hist');
-            const rec = otsuState.record;
-            if (!canvas || !rec) return;
+            const rec = otsuDraft?.record || otsuState.record;
+            if (!canvas || !rec?.usable || !rec.histCounts?.length) return;
             const cssW = canvas.clientWidth || 600;
             canvas.width = cssW; canvas.height = 90;
             const ctx = canvas.getContext('2d');
@@ -3095,24 +3461,13 @@ function loadAllImages() {
             ctx.beginPath(); ctx.moveTo(xOf(rec.effLog), 0); ctx.lineTo(xOf(rec.effLog), H); ctx.stroke();
 
             ctx.fillStyle = '#94a3b8'; ctx.font = '9px sans-serif';
-            ctx.fillText('除去', 4, 10);
-            ctx.fillText('組織', W - 24, 10);
+            ctx.fillText('非表示', 4, 10);
+            ctx.fillText('表示', W - 24, 10);
         }
 
         function applyOtsuAndRedraw() {
-            recomputeOtsu();
             refreshOtsuUi();
-            renderCompositeImage();
-            for (const [key, el] of msiThumbRefs) renderMsiThumbnail(key, el);
-            const activeRoi = document.querySelector('.roi-item.active');
-            if (activeRoi) displayGraphForRoi(activeRoi.dataset.roiKey);
-            if (currentProject) {
-                currentProject.otsu = {
-                    applied: otsuState.applied, strength: otsuState.strength,
-                    manualThreshold: otsuState.manualThreshold,
-                };
-                queueSaveProject();
-            }
+            redrawValueViews();
         }
 
         function setupOtsuUi() {
@@ -3121,31 +3476,19 @@ function loadAllImages() {
             const resetBtn = document.getElementById('otsu-reset');
             if (!toggle) return;
 
-            // 生値ラスタが無い (= 8bit 画像しかない) 場合は使えない
-            const usable = Object.keys(valueRasters).length > 0;
-            toggle.disabled = !usable;
-            if (!usable) {
-                toggle.parentElement.title = 'このデータセットには生値ラスタが無いため背景除去は使えません';
-                return;
-            }
-
-            toggle.checked = otsuState.applied;
-            if (otsuState.applied) recomputeOtsu();
             refreshOtsuUi();
-
             toggle.addEventListener('change', () => {
-                otsuState.applied = toggle.checked;
-                applyOtsuAndRedraw();
+                const requested = toggle.checked;
+                toggle.checked = otsuState.applied;
+                requestOtsuCommit({ ...otsuState, applied: requested }, 'Otsu を ON');
             });
 
             if (resetBtn) resetBtn.addEventListener('click', () => {
-                otsuState.strength = 0;
-                otsuState.manualThreshold = null;
-                applyOtsuAndRedraw();
+                requestOtsuCommit({ ...otsuState, strength: 0, manualThreshold: null }, '自動閾値へ戻す');
             });
 
             if (canvas) {
-                let dragging = false;
+                let dragging = false, pointer = null;
                 const toLog = (ev) => {
                     const rec = otsuState.record;
                     if (!rec) return null;
@@ -3158,26 +3501,33 @@ function loadAllImages() {
                     const lv = toLog(ev);
                     if (!rec || lv == null) return;
                     // 強度 = 自動 Otsu からの log10 オフセット。[-3, +3] に丸める。
-                    otsuState.strength = Math.max(-3, Math.min(3, lv - rec.autoThresholdLog));
-                    otsuState.manualThreshold = null;
+                    const candidate = { ...otsuState, strength: Math.max(-3, Math.min(3, lv - rec.autoThresholdLog)), manualThreshold: null };
+                    const record = Otsu.buildProjectRecord(currentProject, valueRasters, committedOtsuSettings(candidate));
+                    if (record.usable) otsuDraft = { ...candidate, record };
                 };
                 canvas.addEventListener('pointerdown', (ev) => {
-                    dragging = true;
+                    if (otsuPending || !otsuState.applied || !otsuState.record?.usable) return;
+                    dragging = true; pointer = ev.pointerId; lockOtsuControls(true);
                     try { canvas.setPointerCapture(ev.pointerId); } catch (e) {}
-                    setFrom(ev); recomputeOtsu(); refreshOtsuUi();
+                    setFrom(ev); refreshOtsuUi();
                 });
                 canvas.addEventListener('pointermove', (ev) => {
                     if (!dragging) return;
-                    setFrom(ev); recomputeOtsu(); refreshOtsuUi();
+                    setFrom(ev); refreshOtsuUi();
                 });
-                const end = (ev) => {
+                const end = (ev, commit) => {
                     if (!dragging) return;
                     dragging = false;
-                    try { canvas.releasePointerCapture(ev.pointerId); } catch (e) {}
-                    applyOtsuAndRedraw();
+                    const candidate = otsuDraft;
+                    otsuDraft = null; lockOtsuControls(false);
+                    try { canvas.releasePointerCapture(pointer); } catch (e) {}
+                    pointer = null; refreshOtsuUi();
+                    if (commit && candidate) requestOtsuCommit(candidate, 'ドラッグした閾値を適用');
                 };
-                canvas.addEventListener('pointerup', end);
-                canvas.addEventListener('pointercancel', end);
+                canvas.addEventListener('pointerup', ev => end(ev, true));
+                canvas.addEventListener('pointercancel', ev => end(ev, false));
+                canvas.addEventListener('lostpointercapture', ev => end(ev, false));
+                window.addEventListener('keydown', ev => { if (ev.key === 'Escape' && dragging) { ev.preventDefault(); end(ev, false); } });
             }
 
             window.addEventListener('resize', () => { if (otsuState.applied) drawOtsuHistogram(); });
@@ -3644,7 +3994,7 @@ function loadAllImages() {
           currentProject.world_coords = atlasData.world_coords;
           currentProject.alignment = atlasData.alignment;
           try {
-            await ProjectStorage.putProject(currentProject);
+            await saveViewerProject();
           } catch (err) {
             // ★ ここで握りつぶすとモーダルが閉じないまま固まり、
             //   ユーザーは保存できたと思い込んでしまう。
@@ -3700,12 +4050,18 @@ function loadAllImages() {
 
     /** 登録済みプロジェクト (?project=) を IndexedDB から読む。 */
     async function loadProject(projectId) {
+      viewerContextRevision++;
+      valueRasters = {}; imageSettings = {}; analysisRoiCache.clear();
+      otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
+      savedOtsuRequested = false;
       let p = await ProjectStorage.getProject(projectId);
       // ★ この PC にまだ落としていないだけ、ということがある。ビューアの URL を
       //   そのまま別の PC で開けるように、無ければクラウドから取ってくる。
       if (!p) p = await fetchProjectFromCloud(projectId);
       if (!p) throw new Error('登録データが見つかりません (id=' + projectId + ')');
       currentProject = p;
+      viewerStoredUpdatedAt = p.updatedAt;
+      viewerSaveConflict = false;
 
       // TIC は分子の像ではないので表示しない。登録済みのデータに入っていても外す
       // (背景除去が使う TIC は、残りの分子から毎回計算している)。
@@ -3752,9 +4108,11 @@ function loadAllImages() {
       }
 
       if (p.otsu) {
-        otsuState.applied = !!p.otsu.applied;
+        savedOtsuRequested = !!p.otsu.applied;
+        otsuState.applied = false;
         otsuState.strength = Number(p.otsu.strength) || 0;
         otsuState.manualThreshold = p.otsu.manualThreshold != null ? Number(p.otsu.manualThreshold) : null;
+        otsuState.sourceKeys = Array.isArray(p.otsu.sourceKeys) ? [...p.otsu.sourceKeys] : p.normalization?.otsuSourceKeys;
       }
       if (p.viewerTransform) {
         viewTransform.tx = Number(p.viewerTransform.tx) || 0;

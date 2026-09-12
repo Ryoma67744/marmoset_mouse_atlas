@@ -1,0 +1,15 @@
+{
+  "name": "marmoset-mouse-atlas-verification",
+  "version": "2.9.0",
+  "private": true,
+  "description": "Development-only verification for the static Atlas app",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:browser": "node --test tests/*.test.cjs"
+  },
+  "devDependencies": {
+    "jszip": "3.10.1",
+    "playwright": "1.62.1",
+    "xlsx": "0.18.5"
+  }
+}
