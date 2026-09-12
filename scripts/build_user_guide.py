@@ -91,6 +91,9 @@ def clean_symbols(text: str) -> str:
         .replace("☑", "[x]")
         .replace("☐", "[ ]")
         .replace("✅", "[OK]")
+        .replace("⟲（リセット）", "[リセット]")
+        .replace("⟲", "[リセット]")
+        .replace("↻", "[リセット]")
     )
 
 
