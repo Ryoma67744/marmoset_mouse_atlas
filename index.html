@@ -1938,6 +1938,9 @@
 
         function excelBatchBaseRecord(p, sequence) {
             const folder = projectFolderNames(p);
+            const moleculeNames = (p && Array.isArray(p.molecules) ? p.molecules : [])
+                .map(m => m && m.name != null ? String(m.name) : '')
+                .filter(Boolean);
             return {
                 sequence: sequence,
                 projectId: p && p.id || '',
@@ -1945,7 +1948,8 @@
                 folderPath: folder.length ? folder.join(' / ') : '(ルート)',
                 workbookPath: '',
                 rowCount: 0,
-                moleculeCount: 0,
+                moleculeCount: moleculeNames.length,
+                moleculeNames: moleculeNames,
                 roiCount: 0,
                 dataSheetCount: 0,
                 warnings: [],
@@ -2058,6 +2062,10 @@
                         assertLatestCloudProject(row, project);
                         project.folderPath = ProjectStorage.folderPathNames(project.folderId, cache.tree.byId);
                         base.folderPath = project.folderPath.length ? project.folderPath.join(' / ') : '(ルート)';
+                        base.moleculeNames = project.molecules
+                            .map(m => m && m.name != null ? String(m.name) : '')
+                            .filter(Boolean);
+                        base.moleculeCount = base.moleculeNames.length;
 
                         setExcelBatchUi(
                             `${i + 1} / ${projects.length} 件目「${base.projectName}」の Excel を作成中…` +
