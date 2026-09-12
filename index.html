@@ -170,11 +170,12 @@
             <section class="bg-white rounded-lg border border-gray-200 p-5">
                 <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
                     <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">登録済みデータ</h2>
-                    <div class="flex items-center gap-2">
+                    <div class="flex items-center gap-2 flex-wrap">
                         <input type="file" id="zip-input" accept=".zip,application/zip" class="hidden">
                         <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
                         <button id="new-folder" class="btn">+ フォルダ</button>
                         <button id="excel-export-all" class="btn btn-primary">全データをExcel一括出力</button>
+                        <button id="normalization-settings" class="btn">補正・正規化の設定</button>
                         <button id="bulk-merge" class="btn" disabled>選択を 1 つに統合</button>
                         <button id="bulk-move" class="btn" disabled>選択を移動</button>
                         <button id="bulk-export" class="btn" disabled>選択を Export</button>
@@ -223,6 +224,8 @@
     <script src="lib/otsu.js"></script>
     <script src="lib/align.js"></script>
     <script src="lib/msi.js"></script>
+    <script src="lib/normalization.js"></script>
+    <script src="lib/normalization-ui.js"></script>
     <script src="lib/ingest.js"></script>
     <script src="lib/imzml.js"></script>
     <script src="lib/zipio.js"></script>
@@ -714,6 +717,8 @@
                     }
 
                     try {
+                        if (project.normalization) Normalization.invalidate(project, 'NORMALIZATION_PROFILE_STALE');
+                        if (project.otsu) project.otsu.applied = false;
                         await ProjectStorage.putProject(project);
                     } catch (e) {
                         // 保存できなかったぶんはメモリ上からも戻す (次の分子に持ち越さない)
@@ -755,6 +760,8 @@
                     '別の分子を先に追加するか、データごと消す場合は一覧の「削除」を使ってください。');
             }
             project.molecules = (project.molecules || []).filter(m => m.key !== key);
+            if (project.normalization) Normalization.invalidate(project, 'NORMALIZATION_PROFILE_STALE');
+            if (project.otsu) project.otsu.applied = false;
             if (project.layerDisplay) delete project.layerDisplay[key];
             if (Array.isArray(project.visibleLayers)) {
                 project.visibleLayers = project.visibleLayers.filter(k => k !== key);
@@ -916,6 +923,8 @@
                 nCoordinates: nMeasured, nKept: nMeasured - doomed.length,
                 nDropped: doomed.length, nGroups: nGroups, approximate: true,
             };
+            if (project.normalization) Normalization.invalidate(project, 'NORMALIZATION_PROFILE_STALE');
+            if (project.otsu) project.otsu.applied = false;
             return { beforeBlobIds: beforeBlobIds, qc: project.acquisitionRepair };
         }
 
@@ -951,10 +960,10 @@
         }
         function refreshBulkButtons() {
             const n = selectedIds().length;
-            document.getElementById('bulk-export').disabled = excelBatchBusy || n === 0;
-            document.getElementById('bulk-delete').disabled = n === 0;
-            document.getElementById('bulk-move').disabled = n === 0;
-            document.getElementById('bulk-merge').disabled = n < 2;
+            document.getElementById('bulk-export').disabled = excelBatchBusy || normalizationBusy || n === 0;
+            document.getElementById('bulk-delete').disabled = excelBatchBusy || normalizationBusy || n === 0;
+            document.getElementById('bulk-move').disabled = excelBatchBusy || normalizationBusy || n === 0;
+            document.getElementById('bulk-merge').disabled = excelBatchBusy || normalizationBusy || n < 2;
         }
 
         /** 保存層から読み直してツリーを組み直す */
@@ -1028,7 +1037,7 @@
             renderBreadcrumb();
             renderContents();
             refreshBulkButtons();
-            if (excelBatchBusy) setExcelExportControlsDisabled(true);
+            if (excelBatchBusy || normalizationBusy) setExcelExportControlsDisabled(true);
         }
 
         // ---- 数え上げ -------------------------------------------------------
@@ -1280,6 +1289,11 @@
             const hasImmuno = !!(p.images && p.images[IMMUNO_KEY]);
             const aligned = p.world_coords && p.world_coords.T_he_to_msi
                 ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
+            const norm = p.normalization || p.__row && p.__row.state && p.__row.state.normalization;
+            const cloudNorm = p.__row && p.__row.state && p.__row.state.normalization;
+            const profileNote = norm ? ('補正: ' + norm.id + ' rev.' + norm.revision + ' / ' + norm.batchId +
+                (norm.invalidated ? ' — 再設定が必要' : norm.quality === 'validated' ? ' — 検証設定' : ' — 暫定') +
+                (cloudOn() && (!cloudNorm || norm.id !== cloudNorm.id || norm.revision !== cloudNorm.revision) ? ' / この設定はクラウド未同期' : '')) : '補正: 未設定';
             row.innerHTML =
                 '<input type="checkbox" class="sel h-4 w-4 rounded border-gray-300" value="' + esc(p.id) + '">' +
                 '<div class="flex-1 min-w-0">' +
@@ -1291,6 +1305,7 @@
                     (hasImmuno ? ' &nbsp;·&nbsp; 免染: あり' : '') +
                     ' &nbsp;·&nbsp; ' + aligned +
                   '</div>' +
+                  '<div class="text-xs text-gray-500 mt-0.5">' + esc(profileNote) + '</div>' +
                   '<div class="text-xs text-gray-400 mt-0.5">更新 ' + esc((p.updatedAt || '').slice(0, 19).replace('T', ' ')) + '</div>' +
                 '</div>' +
                 '<div class="flex items-center gap-1 shrink-0">' +
@@ -1725,6 +1740,12 @@
             const target = list[0];
             const rest = list.slice(1);
 
+            // Equal dimensions are not evidence of a shared acquisition/coordinate system.
+            if (!confirm('これらの分子データは同じ切片・同じ測定座標に対応していますか？\n' +
+                'W×H が同じだけでは対応を保証できません。統合後の補正プロファイルは無効化し、分子対応を再設定します。')) return;
+            if (target.normalization) Normalization.invalidate(target, 'NORMALIZATION_PROFILE_STALE');
+            if (target.otsu) target.otsu.applied = false;
+
             const usedKeys = new Set((target.molecules || []).map(m => m.key));
             const usedNames = new Set((target.molecules || []).map(m => m.name));
             for (const src of rest) {
@@ -1847,6 +1868,56 @@
         // 最後に 1 つの ZIP へ収める。大きな配列を同時に作らないよう直列に処理する。
         let excelBatchBusy = false;
         let excelBatchCancelRequested = false;
+        let normalizationBusy = false;
+
+        document.getElementById('normalization-settings').addEventListener('click', () => {
+            if (excelBatchBusy || normalizationBusy) return;
+            if (!window.Normalization || !window.NormalizationUI) {
+                showError('補正モジュールを読み込めません。ページを再読み込みしてください。');
+                return;
+            }
+            const chosen = selectedIds();
+            normalizationBusy = true;
+            setExcelExportControlsDisabled(true);
+            NormalizationUI.open({
+                projects:cache.projects.slice(), selectedIds:chosen, storage:ProjectStorage,
+                folderName:p=>projectFolderNames(p).join(' / '),
+                loadProject:async row => {
+                    assertNoPendingCloudConflict(row);
+                    const project = await ensureLocal(row);
+                    assertLatestCloudProject(row, project);
+                    return project;
+                },
+                saveCloud:cloudOn() ? async saved => {
+                    if (!Cloud.signedIn()) throw new Error('クラウドにログインしてください。');
+                    const current = await ProjectStorage.getProject(saved.id);
+                    if (!current || !current.normalization ||
+                        current.normalization.id !== saved.normalization.id ||
+                        current.normalization.revision !== saved.normalization.revision ||
+                        current.updatedAt !== saved.updatedAt) {
+                        throw new Error('保存後に変更されています。設定を再読み込みしてください。');
+                    }
+                    if (current.cloudPending || !current.cloudUpdatedAt || !current.cloudBundlePath) {
+                        throw new Error('本体が未アップロードです。一覧の「アップロード」で本体と設定を保存してください。');
+                    }
+                    const state = Cloud.stateOf(current);
+                    const row = await Cloud.patchRowIfUnchanged(current.id,
+                        {state:state,meta:Cloud.metaOf(current)},current.cloudUpdatedAt);
+                    if (!row) throw new Error('クラウド更新が競合しています。別 PC の内容を確認してください。');
+                    // Keep subsequent local changes; only acknowledge the exact version sent.
+                    const latest = await ProjectStorage.getProject(current.id);
+                    if (!latest || latest.updatedAt !== current.updatedAt) {
+                        throw new Error('クラウドへ送信しましたが、その間にこの PC のデータが変わりました。再確認してください。');
+                    }
+                    latest.cloudUpdatedAt = row.updated_at;
+                    latest.cloudStateHash = Cloud.hashState(state);
+                    await ProjectStorage.putProjectsIfUnchanged([{project:latest,expectedUpdatedAt:current.updatedAt}]);
+                    Object.assign(saved, latest);
+                } : null,
+                onSaved:async () => { await reload(); render(); setExcelExportControlsDisabled(true); },
+                onClose:() => { normalizationBusy = false; setExcelExportControlsDisabled(false); refreshBulkButtons(); }
+            });
+        });
 
         function setExcelExportControlsDisabled(disabled) {
             // 一覧取得から ZIP 完成までは同じ対象集合を保つ。処理中の削除・移動・
@@ -1988,7 +2059,7 @@
         });
 
         document.getElementById('excel-export-all').addEventListener('click', async () => {
-            if (excelBatchBusy) return;
+            if (excelBatchBusy || normalizationBusy) return;
             excelBatchBusy = true;
             excelBatchCancelRequested = false;
             setExcelExportControlsDisabled(true);
@@ -2028,6 +2099,7 @@
                     `すべてのフォルダにある ${projects.length} 件を一括出力します。\n\n` +
                     '・1 件につき 1 つの Excel ファイルを作成します。\n' +
                     '・各ファイルには、全分子の MSI 生強度データと ROI 所属情報が入ります。\n' +
+                    '・別タブに補正値、ROI 定量値、設定と算出不可の理由も収録します。\n' +
                     '・画像と復元用の状態は含みません。この ZIP は解析用で、アプリへは読み戻せません。\n\n' +
                     '処理を開始しますか?');
                 if (!proceed) {
@@ -2092,6 +2164,8 @@
                             roiCount: result.roiCount || 0,
                             dataSheetCount: result.dataSheetCount || 0,
                             warnings: warnings,
+                            normalization: result.normalization || null,
+                            normalizedDataSheetCount: result.normalizedDataSheetCount || 0,
                         }));
                     } catch (e) {
                         console.error('[excel export] プロジェクトの出力に失敗', row && row.id, e);
