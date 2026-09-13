@@ -162,6 +162,59 @@ test('index appends normalization metadata without conflating file success and u
   assert.equal(result.successCount, 1);
 });
 
+test('folder provenance is traceable from each ROI, normalization metadata, and batch index', async () => {
+  const c = context(), f = fixture(c);
+  f.project.normalization = { ...f.project.normalization, schemaVersion: 2, methodVersion: 'fixed-method',
+    scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'group-1',
+      folderPath: ['Marmoset', 'Coronal'], memberIds: ['original', 'reference'] } };
+  f.project.normalizationBinding = { groupId: 'group-1', folderPath: ['Marmoset', 'Coronal renamed'], memberId: 'original' };
+  const before = JSON.stringify(f.project);
+  const result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  const workbook = c.lastWorkbook;
+  assert.equal(result.normalization.groupId, 'group-1');
+  assert.equal(result.normalization.scopePath, 'Marmoset / Coronal');
+  assert.equal(result.normalization.currentPath, 'Marmoset / Coronal renamed');
+  assert.equal(result.normalization.groupStatus, 'SAVED_GROUP');
+  const rows = workbook.Sheets.ROI_Quantification.rows, header = rows[0];
+  for (const row of rows.slice(1)) {
+    assert.equal(row[header.indexOf('Normalization group ID')], 'group-1');
+    assert.equal(row[header.indexOf('Normalization folder at calculation')], 'Marmoset / Coronal');
+    assert.equal(row[header.indexOf('Current normalization folder')], 'Marmoset / Coronal renamed');
+    assert.equal(row[header.indexOf('Normalization profile ID')], 'profile');
+    assert.equal(row[header.indexOf('Profile revision')], 2);
+    assert.equal(row[header.indexOf('Profile schema version')], 2);
+    assert.equal(row[header.indexOf('Group reference D4 (Dref)')], 2);
+    assert.equal(row[header.indexOf('Section factor')], 2);
+  }
+  const metadata = new Map(workbook.Sheets.Normalization_Metadata.rows.map(row => [row[0], row[1]]));
+  assert.equal(metadata.get('Normalization group ID'), 'group-1');
+  assert.equal(metadata.get('normalizationBinding.memberId'), 'original');
+  assert.match(metadata.get('Group comparison'), /Separate groups/);
+  c.ExcelIO.buildIndexXlsx([{ status: 'success', projectId: f.project.id, normalization: result.normalization }]);
+  const index = c.lastWorkbook.Sheets.Index.rows;
+  const offset = index.findIndex(row => row[0] === 'No.');
+  const indexHeader = index[offset], row = index[offset + 1];
+  assert.equal(row[indexHeader.indexOf('Normalization group ID')], 'group-1');
+  assert.equal(row[indexHeader.indexOf('Group reference D4 (Dref)')], 2);
+  assert.equal(row[indexHeader.indexOf('Current normalization folder')], 'Marmoset / Coronal renamed');
+  assert.equal(JSON.stringify(f.project), before);
+});
+
+test('legacy exports do not invent a folder group and restored snapshots do not claim current group verification', async () => {
+  const c = context(), f = fixture(c);
+  let result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  assert.equal(result.normalization.groupId, '');
+  assert.equal(result.normalization.groupStatus, 'LEGACY');
+  f.project.normalization.scope = { groupId: 'restored-group', folderPath: ['Mouse', 'Sagittal'] };
+  result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  assert.equal(result.normalization.groupStatus, 'SAVED_SNAPSHOT');
+  assert.equal(result.normalization.currentPath, '');
+  f.project.normalizationBinding = { groupId: null, folderPath: null, memberId: 'original' };
+  result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  assert.equal(result.normalization.groupStatus, 'MOVED');
+  assert.equal(result.normalization.scopePath, 'Mouse / Sagittal');
+});
+
 test('cloud state and ZIP round-trip preserve fixed profile/display settings and raw Float32 values', async () => {
   const c = context(), f = fixture(c);
   f.data.h[1] = Math.fround(1.234567891);

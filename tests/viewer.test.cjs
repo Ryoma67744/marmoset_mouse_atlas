@@ -179,3 +179,76 @@ test('Stale Viewer saves cannot overwrite a newer Master profile in the same bro
     await master.close();
   } finally { await harness.close(); }
 });
+
+test('Viewer reports saved/current folder paths, mixed settings and moved-group unavailability without rewriting the snapshot', { timeout: 90000 }, async () => {
+  const harness = await startBrowserHarness();
+  const { page, baseURL, errors } = harness;
+  page.on('dialog', dialog => dialog.dismiss());
+  try {
+    const id = await seedViewerProject(page, baseURL, { id: 'viewer-folder-scope' });
+    const setup = await page.evaluate(async id => {
+      const folderId = await ProjectStorage.ensureFolderPath(['Marmoset', 'Coronal']);
+      const folder = await ProjectStorage.getFolder(folderId);
+      folder.normalizationGroupId = 'viewer-group';
+      await ProjectStorage.putFolder(folder);
+      const p = await ProjectStorage.getProject(id), rasters = await Normalization.loadRasters(p, { storage: ProjectStorage });
+      p.folderId = folderId;
+      p.normalizationBinding = { groupId: 'viewer-group', folderPath: ['Marmoset', 'Coronal'], memberId: p.id };
+      const result = Normalization.createProfiles([{ project: p, rasters }], { ...p.normalization, revision: 2,
+        scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'viewer-group',
+          folderPath: ['Marmoset', 'Coronal'], memberIds: [p.id] } });
+      p.normalization = result.profiles[0].normalization;
+      await ProjectStorage.putProject(p);
+      return { folderId, normalization: JSON.stringify(p.normalization) };
+    }, id);
+    await page.goto(baseURL + '/viewer/index.html?project=' + id);
+    await page.waitForFunction(() => normalizationEvaluation && Object.keys(imageSettings).length > 0);
+    assert.match(await page.locator('#value-display-status').innerText(), /補正グループ（計算時）：Marmoset \/ Coronal/);
+    assert.match(await page.locator('#value-display-status').innerText(), /この補正グループ内の比較用/);
+    assert.equal(await page.evaluate(() => viewerScopeAssessment.status), 'CURRENT');
+    const ratioBefore = await page.evaluate(() => Array.from(channelResult('MSI_5-HT').values));
+    await page.evaluate(async ({ id, folderId }) => {
+      const folder = await ProjectStorage.getFolder(folderId);
+      folder.name = 'Coronal renamed';
+      await ProjectStorage.putFolder(folder);
+      const p = await ProjectStorage.getProject(id);
+      p.normalizationBinding.folderPath = ['Marmoset', 'Coronal renamed'];
+      await ProjectStorage.putProject(p);
+    }, { id, folderId: setup.folderId });
+    await page.reload();
+    await page.waitForFunction(() => normalizationEvaluation && Object.keys(imageSettings).length > 0);
+    const status = await page.locator('#value-display-status').innerText();
+    assert.match(status, /補正グループ（計算時）：Marmoset \/ Coronal\n/);
+    assert.match(status, /現在の補正フォルダー：Marmoset \/ Coronal renamed/);
+    assert.deepEqual(await page.evaluate(() => Array.from(channelResult('MSI_5-HT').values)), ratioBefore);
+    await page.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id), other = structuredClone(p);
+      other.id = 'mixed-folder-member';
+      other.normalizationBinding.memberId = other.id;
+      other.normalization.revision++;
+      await ProjectStorage.putProject(other);
+    }, id);
+    await page.reload();
+    await page.waitForFunction(() => viewerScopeAssessment?.status === 'MIXED' && Object.keys(imageSettings).length > 0);
+    assert.match(await page.locator('#value-display-status').innerText(), /設定混在／同期未完了/);
+    await page.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id);
+      p.folderId = await ProjectStorage.ensureFolderPath(['Marmoset', 'Sagittal']);
+      const folder = await ProjectStorage.getFolder(p.folderId);
+      folder.normalizationGroupId = 'different-group';
+      await ProjectStorage.putFolder(folder);
+      // Simulate an old tab moving the project without updating its binding.
+      // The Viewer must use current folder records to stop derived display.
+      await ProjectStorage.putProject(p);
+    }, id);
+    await page.reload();
+    await page.waitForFunction(() => normalizationEvaluation && viewerScopeAssessment?.status === 'MOVED' && Object.keys(imageSettings).length > 0);
+    assert.match(await page.locator('#value-display-status').innerText(), /所属変更・現在のグループには未適用/);
+    assert.equal(await page.evaluate(() => normalizationEvaluation.reasonCodes.includes('GROUP_MEMBERSHIP_CHANGED')), true);
+    assert.equal(await page.evaluate(() => Array.from(channelResult('MSI_5-HT').values || []).some(Number.isFinite)), false);
+    const persisted = await page.evaluate(id => ProjectStorage.getProject(id), id);
+    assert.equal(JSON.stringify(persisted.normalization), setup.normalization);
+    assert.equal(persisted.normalizationBinding.groupId, 'viewer-group', 'Viewer membership assessment is read only');
+    assert.deepEqual(errors, []);
+  } finally { await harness.close(); }
+});
