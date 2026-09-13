@@ -25,8 +25,8 @@ For an already-installed compatible Chromium, set
 array of launch arguments. CI installs Chromium through Playwright normally.
 
 Key invariants: source Float32 arrays are immutable; derived tables preserve the
-raw row universe; Otsu never enters analytical ROI calculations; DA/NE do not use
-local D4 denominators; reference snapshots and ranges are fixed; absolute values
+raw row universe; Otsu never enters analytical ROI calculations; section-scaled
+analytes do not use local D4 denominators; reference snapshots and ranges are fixed; absolute values
 require a compatible ROI calibration; unavailable values are not zero-filled;
 stale Viewer saves cannot erase newer Master settings.
 
@@ -34,7 +34,7 @@ Folder normalization in v2.10 adds a second-level group boundary: the selected
 folder and every descendant form one target set, while root/first-level datasets
 remain outside the automatic groups. Reference datasets and common ranges must
 stay inside that group. Each section retains its own `k = D_ref / D_s`, shared
-only between DA and NE within that section; 5-HT pixel ratios keep the same formula.
+between DA and NE in legacy profiles; 5-HT pixel ratios keep the same formula.
 
 Additional verification covers same-named folders under different parents,
 descendant membership, malformed hierarchies, independent group references and
@@ -76,3 +76,34 @@ These checks verify software behavior, **not scientific validation** of an assay
 spray uniformity, cross-analyte normalization, saturation thresholds, calibration,
 or the completeness of any real study. Such validation requires the experimental
 raw data, QC evidence and calibration records.
+
+The v2.11.0 simple workflow adds schema-3 profiles without rewriting schema-1/2
+hashes or equations. Selecting a second-level folder loads all descendants and
+suggests a unique d4-5-HT standard plus eligible numeric MSI targets. Ambiguous
+standards or 5-HT identities require an explicit mapping. Applying the folder
+uses every section as a fixed reference, computes section d4 medians over their
+measured footprint, and applies the common reference divided by each median to
+all selected non-5-HT analytes. The 5-HT channel remains a pixel ratio. Missing
+values stay missing and measured zeros stay zero. A bad reference is never
+silently dropped; every default reference needs a valid factor before saving.
+
+Simple-profile ROI coverage is reported without suppressing partial summaries
+unless the explicit enforcement option is enabled. Zero valid pixels remain
+unavailable. The enforcement option also gates the coefficient's reference
+region: an insufficient reference cannot produce a factor or a saved group.
+New experiment metadata is optional for relative correction; no
+automatic ID or default QC value constitutes assay validation. Absolute ROI
+calibration still requires compatible real conditions and a saturation boundary.
+Enabling an invalid calibration blocks profile creation; an absent calibration
+does not block the default relative-correction workflow.
+Ranges are keyed to each unambiguous analyte identity; unknown or duplicate
+names retain individual ranges. General analytes follow the same method and
+range dispatch in Viewer, ROI summaries, PNG display, and real XLSX export.
+
+Additional scenarios cover automatic loading and applying, generated profile
+revisions, explicit switching from legacy conditions, retained existing settings,
+local group CAS, cloud partial failure with failed-only retry, generic-analyte
+round trips, and mixed-version scope assessment. Synthetic known-value fixtures
+check the 10/20/40 median example (factors 2/1/0.5), d4-independent section scaling,
+raw-bit invariance and exact legacy fingerprints. Final test runs are reported
+with each pull request rather than hard-coded here.

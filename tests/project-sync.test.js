@@ -303,3 +303,34 @@ test('Cloud removal deletes only the exact reviewed revision and rejects missing
   assert.equal(await f.c.Cloud.removeRowIfUnchanged('p', '2026-01-01T00:00:00.000Z'), null);
   assert.equal(requests.length, 2, 'no fallback to an unconditional delete');
 });
+
+test('simple-profile cloud save preserves arbitrary targets and requires explicit profile-change authority', async () => {
+  const f = fixture();
+  const simple = { schemaVersion: 3, methodVersion: '2.0.0', id: 'simple-profile', revision: 2, mode: 'simple',
+    mapping: { d4: 'd4', ht: 'ht' }, targets: [
+      { key: 'ht', method: 'pixel_ratio', analyteId: '5-HT', rangeScope: 'group' },
+      { key: 'g', method: 'section_scale', analyteId: 'Glutamate', rangeScope: 'group' }],
+    qc: { minD4: 0, saturationD4: null, minCoverage: 0.8, enforceCoverage: false },
+    section: { Ds: 4, k: 2 }, commonRanges: { Glutamate: [0, 200] },
+    scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'g1',
+      folderPath: ['Marmoset', 'Coronal'], memberIds: ['p'] },
+  };
+  f.edit({ normalization: simple });
+  await assert.rejects(f.c.ProjectSync.saveState(copy(f.local), f.options), /補正設定がクラウドと一致/);
+  assert.equal(f.calls.patch, 0);
+  const saved = await f.c.ProjectSync.saveState(copy(f.local), { ...f.options, allowNormalizationChange: true,
+    expectedCloudUpdatedAt: f.local.cloudUpdatedAt });
+  assert.deepEqual(copy(f.row.state.normalization), simple);
+  assert.deepEqual(copy(saved.normalization), simple);
+  assert.deepEqual(copy(f.row.meta.normalization.targets), simple.targets);
+  assert.equal(saved.molecules[0].blobId, 'raw-original');
+  assert.equal(f.calls.unconditional, 0);
+  const rawBlob = saved.molecules[0].blobId;
+  f.remoteEdit({ normalization: { ...simple, revision: 3, targets: simple.targets.slice(0, 1) } });
+  await assert.rejects(f.c.ProjectSync.saveState(copy(f.local), { ...f.options, allowNormalizationChange: true }), /クラウドの内容が更新/);
+  assert.equal(f.calls.patch, 1, 'stale schema 3 state is refused before another write');
+  const refreshed = await f.c.ProjectSync.ensureLocal('p', f.options);
+  assert.deepEqual(copy(refreshed.normalization), copy(f.row.state.normalization));
+  assert.equal(refreshed.molecules[0].blobId, rawBlob);
+  assert.equal(f.calls.download, 0);
+});

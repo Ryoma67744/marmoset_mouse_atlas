@@ -37,11 +37,11 @@ async function setup(h) {
   });
 }
 
-test('shared sync + IndexedDB adopts new profiles and safely migrates stale folder UUID across cached siblings', { timeout: 60000 }, async () => {
+for (const remoteSchemaVersion of [2, 3]) test(`shared sync + IndexedDB adopts schema ${remoteSchemaVersion} profiles and safely migrates stale folder UUID across cached siblings`, { timeout: 60000 }, async () => {
   const h = await startBrowserHarness();
   try {
     await setup(h);
-    const result = await h.page.evaluate(async () => {
+    const result = await h.page.evaluate(async remoteSchemaVersion => {
       const before = await ProjectStorage.getProject('a');
       const bitsBefore = Array.from(new Uint32Array((await ProjectStorage.getValueRaster(before.molecules[0].blobId)).buffer));
       for (const row of Object.values(testRows)) {
@@ -51,6 +51,11 @@ test('shared sync + IndexedDB adopts new profiles and safely migrates stale fold
         row.state.normalization.id = 'repaired-' + row.id;
         row.state.normalization.scope.groupId = 'repaired-group';
         row.state.normalization.revision = 2;
+        row.state.normalization.schemaVersion = remoteSchemaVersion;
+        if (remoteSchemaVersion === 3) Object.assign(row.state.normalization, {
+          methodVersion: '2.0.0', mode: 'simple', targets: [{ key: 'generic', method: 'section_scale',
+            analyteId: 'Glutamate', rangeScope: 'group' }], qc: { enforceCoverage: false },
+        });
       }
       const a = await ProjectSync.ensureLocal('a');
       const bBeforeRead = await ProjectStorage.getProject('b');
@@ -61,13 +66,16 @@ test('shared sync + IndexedDB adopts new profiles and safely migrates stale fold
         siblingBindingBeforeRead: bBeforeRead.normalizationBinding.groupId,
         siblingBaselineBeforeRead: bBeforeRead.cloudUpdatedAt,
         siblingProfileBeforeRead: bBeforeRead.normalization.id,
-        bitsBefore, bitsAfter, clean: Cloud.hashState(Cloud.stateOf(a)) === a.cloudStateHash };
-    });
+        bitsBefore, bitsAfter, clean: Cloud.hashState(Cloud.stateOf(a)) === a.cloudStateHash,
+        exactProfile: JSON.stringify(a.normalization) === JSON.stringify(testRows.a.state.normalization),
+        exactSibling: JSON.stringify(b.normalization) === JSON.stringify(testRows.b.state.normalization) };
+    }, remoteSchemaVersion);
     assert.equal(result.profileA, 'repaired-a'); assert.equal(result.profileB, 'repaired-b');
     assert.equal(result.folderGroup, 'repaired-group'); assert.equal(result.siblingBindingBeforeRead, 'repaired-group');
     assert.equal(result.siblingBaselineBeforeRead, '2026-01-01T00:00:00.000Z');
     assert.equal(result.siblingProfileBeforeRead, 'profile-b'); assert.equal(result.k, 2);
     assert.deepEqual(result.bitsBefore, result.bitsAfter); assert.equal(result.clean, true);
+    assert.equal(result.exactProfile && result.exactSibling, true);
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });

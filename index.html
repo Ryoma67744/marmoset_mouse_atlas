@@ -175,7 +175,7 @@
                         <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
                         <button id="new-folder" class="btn">+ フォルダ</button>
                         <button id="excel-export-all" class="btn btn-primary">全データをExcel一括出力</button>
-                        <button id="normalization-settings" class="btn">補正・正規化の設定</button>
+                        <button id="normalization-settings" class="btn">同位体5-HTで補正</button>
                         <button id="bulk-merge" class="btn" disabled>選択を 1 つに統合</button>
                         <button id="bulk-move" class="btn" disabled>選択を移動</button>
                         <button id="bulk-export" class="btn" disabled>選択を Export</button>
@@ -1483,8 +1483,11 @@
             const group = NormalizationScope.buildGroups(cache.projects, cache.folders).groups.find(g => g.projectIds.includes(p.id));
             const scopeState = NormalizationScope.assess(Object.assign({}, p, {normalization:norm}), group || null);
             const scopeNote = norm && norm.scope ? ' / ' + (Array.isArray(norm.scope.folderPath) ? norm.scope.folderPath.join(' / ') : '所属記録なし') + ' / ' + scopeState.reason : group ? ' / このグループでは未設定' : ' / 第2階層の対象外';
-            const profileNote = (norm ? ('補正: ' + norm.id + ' rev.' + norm.revision + ' / ' + norm.batchId +
-                (norm.invalidated ? ' — 再設定が必要' : norm.quality === 'validated' ? ' — 検証設定' : ' — 暫定') +
+            const profileLabel = norm && norm.schemaVersion === 3
+                ? (norm.mode === 'simple' ? '簡単設定' : '詳細設定') + ' / ' + (norm.targets || []).length + '分子' + (norm.batchId ? ' / ' + norm.batchId : '')
+                : norm ? norm.id + ' rev.' + norm.revision + ' / ' + norm.batchId : '';
+            const profileNote = (norm ? ('補正: ' + profileLabel +
+                (norm.invalidated ? ' — 再設定が必要' : norm.quality === 'validated' ? ' — 検証設定' : norm.schemaVersion === 3 ? ' — 相対補正' : ' — 暫定') +
                 (cloudOn() && (!cloudNorm || norm.id !== cloudNorm.id || norm.revision !== cloudNorm.revision) ? ' / この設定はクラウド未同期' : '')) : '補正: 未設定') + scopeNote +
                 (pendingFolderChanges[p.id] ? ' / フォルダー同期未完了' : '');
             row.innerHTML =
@@ -2113,19 +2116,33 @@
                 saveCloud:cloudOn() ? async saved => {
                     if (!Cloud.signedIn()) throw new Error('クラウドにログインしてください。');
                     const current = await ProjectStorage.getProject(saved.id);
+                    const requestedProfile = Cloud.hashState({normalization:saved.normalization,normalizationBinding:saved.normalizationBinding});
+                    const profileHash = project => Cloud.hashState({normalization:project && project.normalization,normalizationBinding:project && project.normalizationBinding});
                     if (!current || !current.normalization ||
-                        current.normalization.id !== saved.normalization.id ||
-                        current.normalization.revision !== saved.normalization.revision ||
+                        profileHash(current) !== requestedProfile ||
                         current.updatedAt !== saved.updatedAt) {
                         throw new Error('保存後に変更されています。設定を再読み込みしてください。');
                     }
                     if (current.cloudPending || !current.cloudUpdatedAt || !current.cloudBundlePath) {
+                        if (current.normalization.schemaVersion === 3) {
+                            await uploadProject(current);
+                            Object.assign(saved, current);
+                            return;
+                        }
                         throw new Error('本体が未アップロードです。一覧の「アップロード」で本体と設定を保存してください。');
                     }
                     const latest = await ProjectSync.saveState(current, {
                         storage:ProjectStorage,cloud:Cloud,allowNormalizationChange:true,
                         expectedCloudUpdatedAt:current.cloudUpdatedAt
                     });
+                    // The request can publish its snapshot while another tab saves
+                    // a new profile. Preserve that edit, but never count it as the
+                    // same correction having completed its cloud synchronization.
+                    const acknowledgement = ProjectSync.statusOf(latest);
+                    if (!latest || profileHash(latest) !== requestedProfile ||
+                        !acknowledgement.remoteRow || profileHash(acknowledgement.remoteRow.state) !== requestedProfile) {
+                        throw new Error('送信した設定はクラウドに保存されましたが、保存中にこの PC の設定が変更されたか、保存結果を確認できません。最新の設定を保持しています。設定を閉じて再読み込みしてください。');
+                    }
                     Object.assign(saved, latest);
                 } : null,
                 onSaved:async () => { await reload(); render(); setExcelExportControlsDisabled(true); },

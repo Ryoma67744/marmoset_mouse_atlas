@@ -101,6 +101,137 @@ function rows(workbook, name) {
 }
 function read(result) { return XLSX.read(result.bytes, { type: 'array' }); }
 
+function simpleFixture(c, withoutHt = false) {
+  const f = fixture(c, false, true);
+  delete f.project.normalization;
+  f.project.otsu = { applied: false, sourceKeys: [] };
+  for (const [key, name, values] of [
+    ['g', 'Glutamate', [0, 10, 20, NaN, 40, 50, 60, NaN]],
+    ['dup1', 'Candidate', [1, 2, 3, 4, 5, 6, 7, NaN]],
+    ['dup2', 'Candidate', [100, 200, 300, 400, 500, 600, 700, NaN]],
+    ['standard', 'Glutamate-d5', [99, 99, 99, 99, 99, 99, 99, NaN]],
+  ]) {
+    f.data[key] = new Float32Array(values);
+    f.project.molecules.push({ key, name, blobId: key });
+    f.rasters[key] = { W: 4, H: 2, values: f.data[key] };
+  }
+  const reference = JSON.parse(JSON.stringify(f.project));
+  reference.id = 'reference'; reference.normalizationBinding.memberId = 'reference';
+  const refRasters = Object.fromEntries(Object.entries(f.rasters).map(([key, raster]) => [key,
+    { W: 4, H: 2, values: Float32Array.from(raster.values, value => value * (key === 'g' ? 4 : 2)) }]));
+  const mapping = { standardKey: 'd', htKey: withoutHt ? null : 'h', targetKeys: withoutHt ? ['a', 'g', 'dup1', 'dup2'] : ['h', 'a', 'g', 'dup1', 'dup2'] };
+  const created = c.Normalization.createSimpleProfiles([
+    { project: f.project, rasters: f.rasters, simpleMapping: mapping },
+    { project: reference, rasters: refRasters, simpleMapping: mapping },
+  ], {
+    id: 'simple-profile', revision: 1, mode: 'simple',
+    scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'group-1',
+      folderPath: ['Marmoset', 'Coronal'], memberIds: ['reference', 'sample'] },
+    qc: { minD4: 0, saturationD4: null, minCoverage: 0.8, enforceCoverage: false },
+    reference: { kind: 'd4_measured', projectIds: ['sample', 'reference'], roiNames: [] },
+  });
+  f.project.normalization = created.profiles[0].normalization;
+  reference.normalization = created.profiles[1].normalization;
+  assert.equal(f.project.normalization.schemaVersion, 3);
+  assert.equal(f.project.normalization.section.k, 1.5);
+  return { ...f, reference, refRasters };
+}
+
+test('schema3 real XLSX exports every selected analyte, ROI coverage and independent analyte ranges without changing raw bits', async () => {
+  const c = app(), f = simpleFixture(c);
+  const rawBefore = Object.fromEntries(Object.entries(f.data).map(([key, values]) => [key, Buffer.from(values.buffer).toString('hex')]));
+  const before = JSON.stringify(f.project);
+  const evaluation = c.Normalization.evaluate(f.project, f.rasters);
+  const workbook = read(await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage }));
+  const raw = rows(workbook, 'Data'), derived = rows(workbook, 'Normalized_Data');
+  assert.equal(derived.length, raw.length);
+  assert.match(derived[0][5], /Glutamate \[section normalized intensity\]/);
+  assert.equal(derived[1][5], 0, 'measured zero remains zero');
+  assert.equal(derived[3][5], 30, 'a generic target is scaled even where local d4 is zero');
+  assert.equal(derived[4][5], null, 'missing generic target remains blank');
+  assert.equal(derived[3][2], null, 'HT still requires its own valid local d4');
+  assert.equal(derived[1][8], null, 'other isotope standards remain raw only');
+  assert.match(derived[0][8], /not normalized/);
+  const roi = rows(workbook, 'ROI_Quantification'), header = roi[0];
+  const generic = roi.find(row => row[2] === 'g');
+  const expected = c.Normalization.quantifyRoi(f.project, f.rasters, evaluation, new Uint8Array(8).fill(1)).find(r => r.key === 'g');
+  assert.equal(generic[header.indexOf('Normalized mean')], expected.normalized.mean);
+  assert.equal(generic[header.indexOf('Normalized n')], 6);
+  assert.equal(generic[header.indexOf('Valid coverage')], 1);
+  assert.equal(generic[header.indexOf('Method')], 'section_scale');
+  assert.equal(generic[header.indexOf('Display range scope')], 'group');
+  const range = c.Normalization.rangeForChannel(f.project.normalization, evaluation.channels.g);
+  assert.equal(generic[header.indexOf('Fixed display minimum')], range.min);
+  assert.equal(generic[header.indexOf('Fixed display maximum')], range.max);
+  const first = roi.find(row => row[2] === 'dup1'), second = roi.find(row => row[2] === 'dup2');
+  assert.equal(first[header.indexOf('Display range scope')], 'individual');
+  assert.equal(second[header.indexOf('Display range scope')], 'individual');
+  assert.notEqual(first[header.indexOf('Display range key')], second[header.indexOf('Display range key')]);
+  assert.notEqual(first[header.indexOf('Fixed display maximum')], second[header.indexOf('Fixed display maximum')]);
+  const metadata = new Map(rows(workbook, 'Normalization_Metadata').map(row => [row[0], row[1]]));
+  assert.equal(metadata.get('Format'), 'marmoset_atlas_normalization_v3');
+  assert.match(metadata.get('Other selected analytes formula'), /relative correction/);
+  assert.match(metadata.get('Display range convention'), /do not clip/);
+  assert.equal(metadata.get('normalization.targets.2.key'), 'g');
+  assert.equal(JSON.stringify(f.project), before);
+  for (const [key, values] of Object.entries(f.data)) assert.equal(Buffer.from(values.buffer).toString('hex'), rawBefore[key]);
+});
+
+test('schema3 real ZIP round-trip retains generic targets, frozen ranges, raw bits and derived workbook values', async () => {
+  const c = app(), f = simpleFixture(c);
+  const before = read(await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage }));
+  const fingerprint = c.Normalization.fingerprint(f.project, f.rasters);
+  const zip = await c.ZipIO.exportProject(f.project, { storage: f.storage });
+  const restored = (await c.ZipIO.importZip(await zip.arrayBuffer(), { storage: f.storage })).project;
+  const rasters = await c.Normalization.loadRasters(restored, { storage: f.storage });
+  assert.notEqual(restored.id, f.project.id);
+  assert.equal(c.Normalization.fingerprint(restored, rasters), fingerprint);
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.normalization)), JSON.parse(JSON.stringify(f.project.normalization)));
+  for (const molecule of restored.molecules) {
+    assert.deepEqual(Buffer.from(rasters[molecule.key].values.buffer), Buffer.from(f.rasters[molecule.key].values.buffer));
+  }
+  const after = read(await c.ExcelIO.buildProjectXlsx(restored, { storage: f.storage }));
+  assert.deepEqual(rows(after, 'Data'), rows(before, 'Data'));
+  assert.deepEqual(rows(after, 'Normalized_Data'), rows(before, 'Normalized_Data'));
+  assert.deepEqual(rows(after, 'ROI_Quantification'), rows(before, 'ROI_Quantification'));
+});
+
+test('schema3 actual folder move blocks all generic derived exports while preserving raw data', async () => {
+  const c = app(), f = simpleFixture(c);
+  const before = read(await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage }));
+  f.project.folderId = 'sagittal';
+  f.storage.listFolders = async () => [
+    { id: 'root', name: 'Marmoset', parentId: null },
+    { id: 'coronal', name: 'Coronal', parentId: 'root', normalizationGroupId: 'group-1' },
+    { id: 'sagittal', name: 'Sagittal', parentId: 'root', normalizationGroupId: 'group-2' },
+  ];
+  f.storage.listProjects = async () => [f.project];
+  const result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  const after = read(result);
+  assert.equal(result.normalization.groupStatus, 'MOVED');
+  assert.deepEqual(rows(after, 'Data'), rows(before, 'Data'));
+  for (const row of rows(after, 'Normalized_Data').slice(1)) {
+    assert.equal(row[5], null);
+    assert.equal(row[6], null);
+    assert.equal(row[7], null);
+  }
+  const roi = rows(after, 'ROI_Quantification'), header = roi[0];
+  const generic = roi.find(row => row[2] === 'g');
+  assert.equal(generic[header.indexOf('Normalized mean')], null);
+  assert.match(generic[header.indexOf('Reason codes')], /GROUP_MEMBERSHIP_CHANGED/);
+});
+
+test('generic-only schema3 workbook does not report a missing 5-HT calibration as a failure', async () => {
+  const c = app(), f = simpleFixture(c, true);
+  const result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  assert.equal(result.normalization.absoluteStatus, 'NOT_APPLIED');
+  assert.deepEqual(Array.from(result.normalization.absoluteReasonCodes), []);
+  const derived = rows(read(result), 'Normalized_Data');
+  assert.match(derived[0][2], /not normalized/);
+  assert.equal(derived[1][2], null);
+  assert.equal(derived[3][5], 30);
+});
+
 test('real XLSX preserves raw numbers and aligned derived blanks/zero; absolute ROI has no pixelwise absolute column', requiresDependencies, async () => {
   const c = app(), f = fixture(c, true);
   const snapshot = JSON.stringify(f.project);

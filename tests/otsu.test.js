@@ -66,6 +66,29 @@ test('missing source blocks fixed recipe without selecting other molecules', () 
   delete project.normalization.otsuSourceKeys;
   assert.equal(Otsu.buildProjectRecord(project, rasters, {}).reasonCodes[0], 'OTSU_SOURCE_RECIPE_MISSING');
 });
+test('generic analytes use a separately committed recipe; schema3 targets never enable or expand Otsu', () => {
+  const { project, rasters } = fixture();
+  project.molecules.push({ key: 'g', name: 'Glutamate' });
+  rasters.g = { W: 2, H: 2, values: new Float32Array([0, 1, 30, 300]) };
+  project.normalization.schemaVersion = 3;
+  project.normalization.targets = [{ key: 'g', method: 'section_scale' }];
+  project.normalization.otsuSourceKeys = [];
+  project.otsu = { applied: false, sourceKeys: [] };
+  const before = JSON.stringify(project);
+  assert.equal(Otsu.buildProjectRecord(project, rasters, project.otsu).reasonCodes[0], 'OTSU_SOURCE_RECIPE_MISSING');
+  const committed = { sourceKeys: ['g'], applied: true };
+  const record = Otsu.buildProjectRecord(project, rasters, committed);
+  assert.equal(record.usable, true);
+  assert.deepEqual(Array.from(record.sourceKeys), ['g']);
+  assert.equal(JSON.stringify(project), before);
+  for (const name of ['Glutamate-d5', '[U-13C5]Glutamate', '15N2-Glutamine', '34S-Methionine', '2H3-Carnitine']) {
+    project.molecules[3].name = name;
+    assert.equal(Otsu.buildProjectRecord(project, rasters, committed).reasonCodes[0], 'OTSU_INTERNAL_STANDARD_SOURCE', name);
+  }
+  project.molecules[3].name = 'recorded standard';
+  project.molecules[3].isIsotope = true;
+  assert.equal(Otsu.buildProjectRecord(project, rasters, committed).reasonCodes[0], 'OTSU_INTERNAL_STANDARD_SOURCE');
+});
 test('invalid explicit source recipe never falls back to profile', () => {
   const { project, rasters } = fixture();
   for (const sourceKeys of [[], null, ['ht', 'ht'], ['ht', ''], ['ht', 1]]) {

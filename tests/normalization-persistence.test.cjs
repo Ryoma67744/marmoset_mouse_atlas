@@ -4,12 +4,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { startBrowserHarness } = require('./browser-harness.cjs');
 
-test('scoped IndexedDB save rejects changed membership/ancestry and commits identity and profiles together', { timeout: 60000 }, async () => {
+for (const schemaVersion of [2, 3]) test(`schema ${schemaVersion} scoped IndexedDB save rejects changed membership/ancestry and commits identity and profiles together`, { timeout: 60000 }, async () => {
   const h = await startBrowserHarness();
   try {
     await h.page.goto(h.baseURL + '/__test_seed');
     await h.page.addScriptTag({ url: h.baseURL + '/lib/normalization-scope.js' });
-    const result = await h.page.evaluate(async () => {
+    const result = await h.page.evaluate(async schemaVersion => {
       const s = ProjectStorage;
       for (const f of [
         { id: 'root', name: 'Marmoset', parentId: null },
@@ -26,7 +26,11 @@ test('scoped IndexedDB save rejects changed membership/ancestry and commits iden
         return {
           guard: Object.assign(NormalizationScope.snapshot(projects, folders, 'group'), { groupId: 'fixed-group-id' }),
           updates: projects.filter(p => ['a', 'b'].includes(p.id)).map(p => ({
-            project: Object.assign({}, p, { normalization: { id: 'reviewed' } }), expectedUpdatedAt: p.updatedAt,
+            project: Object.assign({}, p, { normalization: { id: 'reviewed', schemaVersion,
+              scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'fixed-group-id',
+                folderPath: ['Marmoset', 'Coronal'], memberIds: ['a', 'b'] } },
+              normalizationBinding: { groupId: 'fixed-group-id', folderPath: ['Marmoset', 'Coronal'], memberId: p.id } }),
+            expectedUpdatedAt: p.updatedAt,
           })),
         };
       };
@@ -51,13 +55,19 @@ test('scoped IndexedDB save rejects changed membership/ancestry and commits iden
       const newGuard = await prepare();
       let partialRejected = false;
       try { await s.putProjectsIfUnchanged(newGuard.updates.slice(0, 1), newGuard.guard); } catch (e) { partialRejected = true; }
-      return { addedRejected, renameRejected, afterRejected, after, partialRejected };
-    });
+      await s.patchProjectFields('b', { displayName: 'Newer edited member' });
+      let staleRejected = false;
+      try { await s.putProjectsIfUnchanged(newGuard.updates, newGuard.guard); } catch (e) { staleRejected = /変更/.test(e.message); }
+      return { addedRejected, renameRejected, afterRejected, after, partialRejected, staleRejected,
+        newerName: (await s.getProject('b')).displayName };
+    }, schemaVersion);
     assert.equal(result.addedRejected, true);
     assert.equal(result.renameRejected, true);
     assert.deepEqual(result.afterRejected, { groupId: null, savedCount: 0 });
     assert.deepEqual(result.after, { groupId: 'fixed-group-id', savedCount: 2 });
     assert.equal(result.partialRejected, true);
+    assert.equal(result.staleRejected, true);
+    assert.equal(result.newerName, 'Newer edited member');
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
@@ -97,11 +107,11 @@ test('ZIP group UUID restoration reuses the second ancestor and rejects conflict
   } finally { await h.close(); }
 });
 
-test('explicit guarded group identity repair updates every member and leaves the other folder untouched', { timeout: 60000 }, async () => {
+for (const schemaVersion of [2, 3]) test(`schema ${schemaVersion} guarded group identity repair updates every member and leaves the other folder untouched`, { timeout: 60000 }, async () => {
   const h = await startBrowserHarness();
   try {
     await h.page.goto(h.baseURL + '/__test_seed');
-    const result = await h.page.evaluate(async () => {
+    const result = await h.page.evaluate(async schemaVersion => {
       const s = ProjectStorage;
       for (const f of [
         { id: 'root', name: 'Marmoset', parentId: null },
@@ -110,7 +120,9 @@ test('explicit guarded group identity repair updates every member and leaves the
       ]) await s.putFolder(f);
       for (const [id, folderId, label] of [['a', 'a-folder', 'Coronal'], ['b', 'b-folder', 'Sagittal']]) {
         await s.putProject({ id, displayName: id, folderId,
-          normalization: { schemaVersion: 2, id: 'old', scope: { groupId: 'duplicated-id' } },
+          normalization: { schemaVersion, methodVersion: schemaVersion === 3 ? '2.0.0' : '1.0.0', id: 'old',
+            scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'duplicated-id',
+              folderPath: ['Marmoset', label], memberIds: [id] } },
           normalizationBinding: { groupId: 'duplicated-id', folderPath: ['Marmoset', label], memberId: id },
         });
       }
@@ -138,7 +150,7 @@ test('explicit guarded group identity repair updates every member and leaves the
         bindingGroupId: afterA.normalizationBinding.groupId,
         otherUnchanged: beforeB === JSON.stringify({ folder: await s.getFolder('b-folder'), project: await s.getProject('b') }),
       };
-    });
+    }, schemaVersion);
     assert.equal(result.withoutFlag, true);
     assert.equal(result.mismatchedBinding, true);
     assert.equal(result.beforeSuccess, 'duplicated-id');

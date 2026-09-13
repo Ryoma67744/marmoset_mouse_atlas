@@ -200,7 +200,6 @@ test('discarding the pending intent for a remotely deleted record unblocks anoth
     await h.page.waitForFunction(() => !document.getElementById('folder-sync-status')?.textContent.trim());
     await h.page.locator('#normalization-settings').click();
     await h.page.locator('#normalization-group').selectOption('sagittal');
-    await h.page.locator('#normalization-load').click();
     await h.page.locator('#normalization-form').waitFor();
     assert.match(await h.page.locator('#normalization-body').innerText(), /Sagittal/);
     assert.deepEqual(h.errors, []);

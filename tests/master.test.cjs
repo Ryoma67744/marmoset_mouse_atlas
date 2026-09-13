@@ -31,11 +31,19 @@ async function masterFixture(h) {
 async function configure(h, {groupId='coronal',count=2,referenceName='master-a'}={}) {
   const page=h.page;
   await page.locator('#normalization-settings').click();
-  if (await page.locator('#normalization-group').inputValue() !== groupId) await page.locator('#normalization-group').selectOption(groupId);
-  assert.equal(await page.locator('#normalization-group').inputValue(),groupId);
-  assert.equal(await page.locator('[data-group-project]').count(),count,'entire selected group, not the whole atlas');
-  await page.locator('#normalization-load').click();
+  await page.locator('[data-configuration-folder]').waitFor();
+  if (await page.locator('[data-configuration-folder]').getAttribute('data-configuration-folder') !== groupId) {
+    await page.locator('#normalization-back').click();
+    await page.locator('#normalization-group').selectOption(groupId);
+    await page.locator('[data-configuration-folder]').waitFor();
+  }
+  assert.equal(await page.locator('[data-configuration-folder]').getAttribute('data-configuration-folder'),groupId);
+  if (await page.locator('#normalization-simple-form').count()) {
+    await page.locator('#normalization-simple-advanced > summary').click();
+    await page.locator('#normalization-use-detailed').click();
+  }
   await page.locator('#normalization-form').waitFor();
+  assert.equal(await page.locator('#normalization-form select[name^=map_][name$=_d4]').count(),count,'entire selected group, not the whole atlas');
   await page.locator('[name=batchId]').fill('test-acquisition-spray');
   await page.locator('[name=prepId]').fill('test-preparation');
   await page.locator('[name=minD4]').fill('0');

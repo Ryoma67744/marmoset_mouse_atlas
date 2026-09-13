@@ -67,7 +67,6 @@ test('Folder normalization names every failed load and never configures a succes
     });
     assert.equal(await h.page.locator('#normalization-group').inputValue(), 'coronal', 'descendant chooses its depth-two ancestor');
     assert.equal(await h.page.locator('[data-group-project]').count(), 2);
-    await h.page.locator('#normalization-load').click();
     await h.page.waitForFunction(() => /失敗 1件/.test(document.querySelector('#normalization-status').textContent));
     assert.match(await h.page.locator('#normalization-status').innerText(), /scope-load-b: 合成データの読み込み失敗/);
     assert.equal(await h.page.locator('#normalization-form').count(), 0);
@@ -113,8 +112,6 @@ test('Explicit whole-group save repairs a shared group ID without modifying the 
       NormalizationUI.open(Object.assign(state,{storage:ProjectStorage,refreshScope,loadProject:p=>ProjectStorage.getProject(p.id)}));
       return state;
     });
-    assert.match(await page.locator('#normalization-group-targets').innerText(), /独立した新しいグループ/);
-    await page.locator('#normalization-load').click();
     await page.locator('#normalization-form').waitFor();
     assert.notEqual(await page.locator('[name=profileId]').inputValue(), 'shared-profile');
     await page.locator('[name=batchId]').fill('confirmed-batch');
@@ -173,7 +170,11 @@ async function openOutputFixture(h, {unconfigured = false, invalidReference = fa
     }));
     return ProjectStorage.listProjects();
   },{unconfigured,invalidReference,cloudRetry});
-  await h.page.locator('#normalization-load').click();
+  await h.page.locator('[data-configuration-folder]').waitFor();
+  if (await h.page.locator('#normalization-simple-form').count()) {
+    await h.page.locator('#normalization-simple-advanced > summary').click();
+    await h.page.locator('#normalization-use-detailed').click();
+  }
   await h.page.locator('#normalization-form').waitFor();
   await h.page.locator('[name=batchId]').fill('verified-batch');
   await h.page.locator('[name=prepId]').fill('verified-prep');

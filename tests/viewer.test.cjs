@@ -412,3 +412,162 @@ test('Viewer never adopts an unseen ROI baseline while saving a separate appeara
     await master.close();
   } finally {await harness.close();}
 });
+
+async function seedSimpleViewerGroup(page, baseURL, { enforceCoverage = false } = {}) {
+  const id = await seedViewerProject(page, baseURL, {id: 'simple-viewer-' + (enforceCoverage ? 'enforced' : 'reported')});
+  return page.evaluate(async ({id,enforceCoverage}) => {
+    const folderId = await ProjectStorage.ensureFolderPath(['Marmoset', 'Coronal']);
+    const folder = await ProjectStorage.getFolder(folderId);
+    folder.normalizationGroupId = 'simple-viewer-group';
+    await ProjectStorage.putFolder(folder);
+    const original = await ProjectStorage.getProject(id);
+    const entries = [];
+    for (let section = 0; section < 2; section++) {
+      const project = structuredClone(original);
+      project.id = section ? id + '-reference' : id;
+      project.folderId = folderId;
+      project.normalizationBinding = {groupId:'simple-viewer-group',folderPath:['Marmoset','Coronal'],memberId:project.id};
+      project.molecules = [];
+      delete project.normalization;
+      project.visibleLayers = ['MSI_Glutamate'];
+      project.otsu = {applied:false,sourceKeys:[]};
+      const definitions = [
+        ['MSI_5-HT','5-HT',[2,4,6,8,10,12,14,16]],
+        ['MSI_D4-5-HT','D4-5-HT',section ? [6,6,6,6,6,6,6,6] : [2,0,0,0,2,2,2,2]],
+        ['MSI_Glutamate','Glutamate',section ? [4,8,12,16,20,24,28,160] : [0,4,NaN,8,10,12,14,16]],
+        ['MSI_GABA','GABA',section ? [200,400,600,800,1000,1200,1400,1600] : [100,200,300,400,500,600,700,800]],
+      ];
+      const rasters = {};
+      for (const [key,name,source] of definitions) {
+        const values = new Float32Array(source);
+        const blobId = await ProjectStorage.putValueRaster(values);
+        project.molecules.push({key,name,blobId,stats:MSIRaster.deriveBakeStats(values)});
+        rasters[key] = {W:4,H:2,values};
+      }
+      entries.push({project,rasters});
+    }
+    const result = Normalization.createSimpleProfiles(entries, {
+      id:'simple-viewer-profile',revision:1,mode:'simple',
+      scope:{type:'folder-depth',depth:2,includeDescendants:true,groupId:'simple-viewer-group',folderPath:['Marmoset','Coronal'],memberIds:entries.map(e=>e.project.id)},
+      qc:{minD4:0,saturationD4:null,minCoverage:0.8,enforceCoverage},
+      reference:{kind:'d4_measured',projectIds:entries.map(e=>e.project.id),roiNames:[]},calibration:null
+    });
+    for (let i=0;i<entries.length;i++) {
+      entries[i].project.normalization = result.profiles[i].normalization;
+      await ProjectStorage.putProject(entries[i].project);
+    }
+    return {id,rawBits:Array.from(new Uint32Array(entries[0].rasters.MSI_Glutamate.values.buffer))};
+  }, {id,enforceCoverage});
+}
+
+test('Simple Viewer renders generic corrected molecules with distinct ranges and exports the same image to PNG', {timeout:90000}, async () => {
+  const harness = await startBrowserHarness();
+  const {page,baseURL,errors} = harness;
+  page.on('dialog',dialog=>dialog.dismiss());
+  try {
+    const setup = await seedSimpleViewerGroup(page,baseURL);
+    await page.goto(baseURL + '/viewer/index.html?project=' + setup.id);
+    await page.waitForFunction(() => viewerReady && imageSettings.MSI_Glutamate);
+    const view = await page.evaluate(() => ({
+      method:channelResult('MSI_Glutamate').method,
+      values:Array.from(displayRaster('MSI_Glutamate').values),
+      standardValues:Array.from(displayRaster('MSI_D4-5-HT').values),
+      unit:channelUnit('MSI_Glutamate'),
+      genericRange:[imageSettings.MSI_Glutamate.vmin,imageSettings.MSI_Glutamate.vmax],
+      gabaRange:[imageSettings.MSI_GABA.vmin,imageSettings.MSI_GABA.vmax],
+      rawBits:Array.from(new Uint32Array(valueRasters.MSI_Glutamate.values.buffer)),
+    }));
+    assert.equal(view.method,'section_scale');
+    assert.deepEqual(view.values,[0,8,NaN,16,20,24,28,32]);
+    assert.equal(view.standardValues[0],2,'the selected internal standard remains raw QC');
+    assert.doesNotMatch(view.unit,/生信号|補正対象外/);
+    assert.ok(view.genericRange[1] > 32,'the same analyte uses its saved group range, including the other section');
+    assert.ok(view.genericRange[1] < view.gabaRange[1] / 10,'different generic analytes must not share one pooled scale');
+    assert.deepEqual(view.rawBits,setup.rawBits);
+    await page.evaluate(() => {
+      document.getElementById('graph-select-1').value='MSI_Glutamate';
+      document.getElementById('graph-select-2').value='none';
+      document.getElementById('graph-select-3').value='none';
+      displayGraphForRoi('all');
+    });
+    assert.match(await page.locator('#graph-container table tr').nth(1).innerText(),/18\.2857/,'ROI mean must use scaled generic values');
+    assert.doesNotMatch(await page.locator('#graph-container').innerText(),/絶対定量|CALIBRATION_MISSING|検量線が未登録/);
+    const png = await page.evaluate(() => {
+      rotationState.all=90;
+      renderCompositeImage();
+      roiCanvas.getContext('2d').clearRect(0,0,roiCanvas.width,roiCanvas.height);
+      const labels=[];
+      const originalFillText=CanvasRenderingContext2D.prototype.fillText;
+      CanvasRenderingContext2D.prototype.fillText=function(text,...args){labels.push(String(text));return originalFillText.call(this,text,...args);};
+      let exported;
+      try {exported=buildExportCanvas();} finally {CanvasRenderingContext2D.prototype.fillText=originalFillText;}
+      const x=Math.floor((exported.width-displayCanvas.width)/2);
+      const actual=exported.getContext('2d').getImageData(x,0,displayCanvas.width,displayCanvas.height).data;
+      const expected=displayCanvas.getContext('2d').getImageData(0,0,displayCanvas.width,displayCanvas.height).data;
+      // Export fills the transparent canvas background black, matching the Viewer background.
+      let mismatch=0;
+      for(let i=0;i<expected.length;i+=4) {
+        for(let c=0;c<3;c++) if(actual[i+c]!==Math.round(expected[i+c]*expected[i+3]/255)) mismatch++;
+        if(actual[i+3]!==255) mismatch++;
+      }
+      return {mismatch,labels:labels.join('\n'),height:exported.height,imageHeight:displayCanvas.height};
+    });
+    assert.equal(png.mismatch,0,'PNG image area must be the displayed corrected composition');
+    assert.match(png.labels,/Glutamate.*range/);
+    assert.ok(png.height>png.imageHeight,'provenance remains outside tissue pixels');
+    await page.locator('#value-raw').click();
+    assert.equal(await page.evaluate(()=>displayRaster('MSI_Glutamate').values[1]),4);
+    await page.locator('#value-normalized').click();
+    assert.equal(await page.evaluate(()=>displayRaster('MSI_Glutamate').values[1]),8);
+    assert.deepEqual(await page.evaluate(()=>Array.from(new Uint32Array(valueRasters.MSI_Glutamate.values.buffer))),setup.rawBits);
+    assert.deepEqual(errors,[]);
+  } finally {await harness.close();}
+});
+
+test('Simple Viewer reports partial 5-HT coverage without hiding its mean; explicit threshold still suppresses it', {timeout:90000}, async () => {
+  const harness = await startBrowserHarness();
+  const {page,baseURL,errors}=harness;
+  page.on('dialog',dialog=>dialog.dismiss());
+  try {
+    for(const enforceCoverage of [false,true]) {
+      const setup=await seedSimpleViewerGroup(page,baseURL,{enforceCoverage});
+      await page.goto(baseURL+'/viewer/index.html?project='+setup.id);
+      await page.waitForFunction(()=>viewerReady && imageSettings['MSI_5-HT']);
+      await page.evaluate(()=>{
+        document.getElementById('graph-select-1').value='MSI_5-HT';
+        document.getElementById('graph-select-2').value='none';
+        document.getElementById('graph-select-3').value='none';
+        displayGraphForRoi('all');
+      });
+      const cells=await page.locator('#graph-container table tr').nth(1).locator('td').allTextContents();
+      assert.match(cells[2],/5 \/ 8 \/ 8/);
+      assert.match(cells[2],/62\.5%/);
+      if(enforceCoverage) assert.equal(cells[1],'算出不可');
+      else {assert.match(cells[1],/^5\.4 ± /);assert.doesNotMatch(cells[3],/UNAVAILABLE/);}
+      assert.doesNotMatch(await page.locator('#graph-container').innerText(),/絶対定量|CALIBRATION_MISSING|検量線が未登録/);
+    }
+    const legacyId=await seedViewerProject(page,baseURL,{id:'legacy-low-coverage'});
+    await page.evaluate(async id=>{
+      const project=await ProjectStorage.getProject(id);
+      const rasters=await Normalization.loadRasters(project,{storage:ProjectStorage});
+      const standard=rasters['MSI_D4-5-HT'];
+      standard.values[1]=0;standard.values[2]=0;standard.values[3]=0;
+      const molecule=project.molecules.find(m=>m.key==='MSI_D4-5-HT');
+      molecule.blobId=await ProjectStorage.putValueRaster(standard.values);
+      molecule.stats=MSIRaster.deriveBakeStats(standard.values);
+      const recalculated=Normalization.createProfiles([{project,rasters}],{...project.normalization,revision:2});
+      project.normalization=recalculated.profiles[0].normalization;
+      await ProjectStorage.putProject(project);
+    },legacyId);
+    await page.goto(baseURL+'/viewer/index.html?project='+legacyId);
+    await page.waitForFunction(()=>viewerReady);
+    await page.evaluate(()=>{
+      document.getElementById('graph-select-1').value='MSI_5-HT';
+      document.getElementById('graph-select-2').value='none';
+      document.getElementById('graph-select-3').value='none';
+      displayGraphForRoi('all');
+    });
+    assert.equal(await page.locator('#graph-container table tr').nth(1).locator('td').nth(1).innerText(),'算出不可','legacy saved thresholds retain suppression');
+    assert.deepEqual(errors,[]);
+  } finally {await harness.close();}
+});

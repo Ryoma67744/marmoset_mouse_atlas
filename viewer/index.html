@@ -486,23 +486,33 @@
             if (currentPath !== path) lines.push('現在の補正フォルダー：' + currentPath);
             if (assessment) lines.push('グループ状態：' + (labels[assessment.status] || assessment.status)
                 + (assessment.reason ? ' — ' + assessment.reason : ''));
-            lines.push('DA・NE：この補正グループ内の比較用（グループごとに基準値が独立）');
+            lines.push(profile.schemaVersion >= 3
+                ? '切片係数で補正した分子：この補正グループ内の比較用（グループごとに基準値が独立）'
+                : 'DA・NE：この補正グループ内の比較用（グループごとに基準値が独立）');
             return lines;
         }
         function channelResult(key) { return normalizationEvaluation?.channels?.[key] || null; }
+        function isCorrectedChannel(channel) { return !!window.Normalization?.isCorrectedChannel(channel); }
+        function commonRangeForChannel(channel) {
+            return window.Normalization?.rangeForChannel(currentProject?.normalization, channel) || null;
+        }
+        function showsAbsoluteQuantification() {
+            const profile = currentProject?.normalization;
+            return !!profile && (Number(profile.schemaVersion || 1) < 3 || !!profile.calibration);
+        }
         function channelUnit(key) {
             if (!valueRasters[key]) return '画像輝度（定量不可）';
             if (valueDisplay.mode === 'raw') return '生信号 (a.u.)';
             const channel = channelResult(key);
             if (channel?.role === 'd4') return '生信号 (a.u.; D4 QC)';
-            if (!channel || !['ht', 'da', 'ne'].includes(channel.role)) return '生信号 (a.u.; 補正対象外)';
+            if (!isCorrectedChannel(channel)) return '生信号 (a.u.; 補正対象外)';
             return channel.unit || (channel.role === 'ht' ? '5-HT / D4 比' : '正規化信号 (a.u.)');
         }
         function displayRaster(key) {
             const raw = valueRasters[key];
             if (!raw || valueDisplay.mode === 'raw') return raw;
             const channel = channelResult(key);
-            if (channel && ['ht', 'da', 'ne'].includes(channel.role)) {
+            if (isCorrectedChannel(channel)) {
                 return { W: raw.W, H: raw.H, values: channel.values, derived: true, rawValues: raw.values };
             }
             // D4 is raw QC; unsupported molecules are explicitly labelled unprocessed.
@@ -545,9 +555,8 @@
                 if (!settings) continue;
                 const vr = displayRaster(key), channel = channelResult(key);
                 const range = finiteRange(vr?.values), actual = finiteRange(vr?.values, false);
-                const role = channel?.role;
                 const commonRecord = valueDisplay.mode === 'normalized' && valueDisplay.scale === 'common'
-                    ? currentProject?.normalization?.commonRanges?.[role] : null;
+                    ? commonRangeForChannel(channel) : null;
                 const common = commonRecord && [commonRecord.min, commonRecord.max > commonRecord.min ? commonRecord.max : commonRecord.min + Math.max(1, Math.abs(commonRecord.min) * 0.01)];
                 const saved = settings[valueDisplay.mode + 'Range'];
                 const chosen = Array.isArray(common) && common.length === 2 && common.every(Number.isFinite) && common[1] > common[0]
@@ -576,8 +585,12 @@
             if (viewerRefreshNotice) lines.unshift(viewerRefreshNotice);
             if (viewerSaveConflict) lines.unshift('⚠ 保存を停止しました：別タブの更新または保存エラーを検出しました。現在の変更は保存されていません。Master／このページを再読み込みして新しい版を確認してください。');
             const profile = currentProject?.normalization;
-            if (profile) lines.push(`Batch ${profile.batchId || '未設定'} / Profile ${profile.id} rev.${profile.revision} / ${profile.quality === 'validated' ? '検証済み設定' : '暫定設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
-            else lines.push('補正設定なし：生値を表示しています。Master の「補正・正規化設定」で基準・分子対応を設定し、保存してください。表示切替だけでは補正設定は作成されません。');
+            if (profile?.schemaVersion >= 3) {
+                lines.push(`d4-5-HTを基準にした相対補正 / ${profile.mode === 'advanced' ? '詳細設定' : '簡単設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
+                lines.push(`Profile ${profile.id} rev.${profile.revision}` + (profile.batchId ? ' / Batch ' + profile.batchId : ''));
+                if (profile.quality !== 'validated') lines.push('相対補正：実験的な妥当性は未確認');
+            } else if (profile) lines.push(`Batch ${profile.batchId || '未設定'} / Profile ${profile.id} rev.${profile.revision} / ${profile.quality === 'validated' ? '検証済み設定' : '暫定設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
+            else lines.push('補正設定なし：生値を表示しています。Master の「同位体5-HTで補正」で対象フォルダーを補正してください。表示切替だけでは補正設定は作成されません。');
             lines.push(...normalizationScopeLines());
             if (valueDisplay.scale === 'individual') lines.push('⚠ 個別レンジ：色の明るさを切片間で直接比較できません。');
             else if (valueDisplay.mode === 'raw') lines.push('生値は各分子の保存レンジ。切片間共通レンジは補正表示にのみ適用します。');
@@ -586,7 +599,10 @@
                 const channel = channelResult(key), settings = imageSettings[key];
                 let label = `${formatDisplayName(key)}: ${channelUnit(key)} [${settings?.vmin ?? '—'}, ${settings?.vmax ?? '—'}]`;
                 if (valueDisplay.mode === 'normalized' && channel?.reasonCodes?.length) label += ' — ' + normalizationReasons(channel.reasonCodes);
-                if (valueDisplay.mode === 'normalized' && ['ht', 'da', 'ne'].includes(channel?.role) && valueDisplay.scale === 'common' && !profile?.commonRanges?.[channel.role]) label += '（共通レンジ未設定・個別表示）';
+                if (valueDisplay.mode === 'normalized' && isCorrectedChannel(channel) && valueDisplay.scale === 'common') {
+                    if (channel.rangeScope === 'individual') label += '（分子の同一性を確認できないため個別レンジ）';
+                    else if (!commonRangeForChannel(channel)) label += '（共通レンジ未設定・個別表示）';
+                }
                 lines.push(label);
             }
             for (const key of checkedLayerKeys().filter(key => /^MSI_/i.test(key) && !valueRasters[key])) lines.push(formatDisplayName(key) + ': 生値ラスタなし。画像の輝度から補正・定量は算出できません。');
@@ -2504,7 +2520,7 @@ function loadAllImages() {
                 const stats = {};
                 for (const roiKey of roiKeys) {
                     const result = roiResults[roiKey]?.values.find(row => row.key === key);
-                    const corrected = valueDisplay.mode === 'normalized' && ['ht', 'da', 'ne'].includes(result?.role);
+                    const corrected = valueDisplay.mode === 'normalized' && isCorrectedChannel(channelResult(key));
                     stats[roiKey] = result ? (corrected ? result.normalized : result.raw) : calcStats(extractRoiPixels(key, roiKey));
                 }
                 const canvas = document.createElement('canvas');
@@ -2515,17 +2531,17 @@ function loadAllImages() {
                 const table = document.createElement('table');
                 table.className = 'text-xs w-full border-collapse mb-3';
                 const header = document.createElement('tr');
-                for (const title of ['ROI', '平均 ± SD', '表示値有効 / 測定 / ROI', valueDisplay.mode === 'normalized' ? '状態・絶対定量' : '生値の状態']) {
+                for (const title of ['ROI', '平均 ± SD', '表示値有効 / 測定 / ROI', valueDisplay.mode === 'normalized' ? (showsAbsoluteQuantification() ? '状態・絶対定量' : '補正の状態') : '生値の状態']) {
                     const th = document.createElement('th'); th.textContent = title; th.className = 'border p-1 text-left'; header.appendChild(th);
                 }
                 table.appendChild(header);
                 for (const roiKey of roiKeys) {
                     const result = roiResults[roiKey]?.values.find(row => row.key === key);
                     const stat = stats[roiKey];
-                    const corrected = valueDisplay.mode === 'normalized' && ['ht', 'da', 'ne'].includes(result?.role);
+                    const corrected = valueDisplay.mode === 'normalized' && isCorrectedChannel(channelResult(key));
                     let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : '生値ラスタなし：MSI 定量は算出不可';
                     const abs = result?.absolute;
-                    if (corrected && result?.role === 'ht') reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
+                    if (corrected && result?.role === 'ht' && showsAbsoluteQuantification()) reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
                     if (corrected && result?.reasonCounts) reason += '\n' + Object.entries(result.reasonCounts).filter(([, n]) => n > 0).map(([code, n]) => normalizationReasons([code]) + ': ' + n).join(' / ');
                     const mask = roiResults[roiKey]?.mask;
                     if (otsuState.applied && mask) {
@@ -2538,7 +2554,7 @@ function loadAllImages() {
                         reason += '\nOtsu 表示画素 ' + visible + '（うち判定不可 ' + unknown + '、解析有効数とは別）';
                     }
                     const row = document.createElement('tr');
-                    const coverage = ['d4', 'other'].includes(result?.role) ? '対象外' : result?.coverage == null ? '—' : fmt(result.coverage * 100) + '%';
+                    const coverage = !corrected ? '対象外' : result?.coverage == null ? '—' : fmt(result.coverage * 100) + '%';
                     const cells = [roiNames[roiKey] || roiKey, stat.n && Number.isFinite(stat.mean) ? fmt(stat.mean) + ' ± ' + fmt(stat.sd) : '算出不可', result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry}` + (corrected ? ` (補正 coverage ${coverage})` : '') : String(stat.n), (corrected ? result?.status || 'UNAVAILABLE' : result?.rawStatus || (stat.n ? 'RAW' : 'UNAVAILABLE')) + (reason ? '\n' + reason : '')];
                     for (const text of cells) { const td = document.createElement('td'); td.textContent = text; td.className = 'border p-1 align-top'; td.style.whiteSpace = 'pre-line'; row.appendChild(td); }
                     table.appendChild(row);
