@@ -17,13 +17,13 @@ function app() {
   return c;
 }
 
-function fixture() {
+function fixture(schemaVersion = 2) {
   const values = new Float32Array([0, 2, NaN, -0]);
   const project = {
     id: 'original-member', displayName: 'folder-persistence', folderPath: ['Marmoset', 'Coronal', 'Section'],
     grid: { W: 2, H: 2 }, molecules: [{ key: 'd', name: 'D4-5-HT', blobId: 'd' }], images: {},
     normalization: {
-      id: 'profile-1', schemaVersion: 2, revision: 1,
+      id: 'profile-1', schemaVersion, revision: 1,
       scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'group-coronal',
         folderPath: ['Marmoset', 'Coronal'], memberIds: ['original-member', 'missing-sibling'] },
       reference: { projectIds: ['missing-sibling'], Dref: 30 }, section: { Ds: 20, k: 1.5 },
@@ -31,6 +31,14 @@ function fixture() {
     },
     normalizationBinding: { groupId: 'group-coronal', folderPath: ['Marmoset', 'Coronal'], memberId: 'original-member' },
   };
+  if (schemaVersion === 3) Object.assign(project.normalization, {
+    methodVersion: '2.0.0', mode: 'simple', mapping: { ht: 'h', d4: 'd', da: null, ne: null },
+    targets: [{ key: 'h', method: 'pixel_ratio', analyteId: '5-HT', rangeScope: 'group' },
+      { key: 'generic', method: 'section_scale', analyteId: 'Glutamate', rangeScope: 'group' }],
+    excludedKeys: ['d'], qc: { minD4: 0, saturationD4: null, minCoverage: 0.8, enforceCoverage: false },
+    commonRanges: { '5-HT': [0, 2], Glutamate: [0, 60] },
+    reference: { kind: 'd4_measured', projectIds: ['original-member', 'missing-sibling'], Dref: 30 },
+  });
   const calls = [];
   const storage = {
     getValueRaster: async () => values,
@@ -49,8 +57,8 @@ function fixture() {
   return { project, storage, calls, values };
 }
 
-test('ZIP subset restore preserves immutable group membership, fixed factors and portable member binding', async () => {
-  const c = app(), f = fixture();
+for (const schemaVersion of [2, 3]) test(`schema ${schemaVersion} ZIP subset restore preserves exact profile, raw bits and portable member binding`, async () => {
+  const c = app(), f = fixture(schemaVersion);
   const before = JSON.stringify(f.project.normalization);
   const zip = await c.ZipIO.exportProject(f.project, { storage: f.storage });
   const restored = await c.ZipIO.importZip(await zip.arrayBuffer(), { storage: f.storage });
@@ -88,10 +96,11 @@ test('cloud import applies current folder/binding before an obsolete bundle can 
   assert.equal(restored.project.normalization.section.k, 1.5);
 });
 
-test('cloud round trip preserves current binding separately from calculation provenance and detects a moved member', () => {
-  const c = app(), f = fixture();
+for (const schemaVersion of [2, 3]) test(`schema ${schemaVersion} cloud round trip preserves calculation provenance and detects a moved member`, () => {
+  const c = app(), f = fixture(schemaVersion);
   const state = c.Cloud.stateOf(f.project), restored = {};
   c.Cloud.applyState(restored, state);
+  assert.equal(JSON.stringify(restored.normalization), JSON.stringify(f.project.normalization));
   assert.equal(JSON.stringify(restored.normalizationBinding), JSON.stringify(f.project.normalizationBinding));
   const before = c.Cloud.hashState(state);
   restored.normalizationBinding = { groupId: 'group-sagittal', folderPath: ['Marmoset', 'Sagittal'], memberId: 'original-member' };
@@ -102,6 +111,11 @@ test('cloud round trip preserves current binding separately from calculation pro
   assert.equal(meta.normalizationBinding.groupId, 'group-sagittal');
   assert.equal(meta.normalization.status, 'GROUP_MEMBERSHIP_CHANGED');
   assert.equal(restored.normalization.section.k, 1.5);
+  if (schemaVersion === 3) {
+    assert.equal(meta.normalization.mode, 'simple');
+    assert.equal(meta.normalization.standardKey, 'd');
+    assert.equal(JSON.stringify(meta.normalization.targets), JSON.stringify(f.project.normalization.targets));
+  }
 });
 
 test('authoritative cloud state omitting a profile does not resurrect archived normalization', async () => {

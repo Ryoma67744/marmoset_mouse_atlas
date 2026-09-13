@@ -161,3 +161,22 @@ test('null binding is moved; unavailable hierarchy preserves an unbound standalo
   assert.equal(context.assessment.status, 'MOVED', 'an available empty hierarchy proves the group is absent');
   assert.equal(context.project.normalizationBinding.groupId, null);
 });
+
+test('simple scoped profiles preserve actual-folder context and detect mixed schema or methods with identical IDs', () => {
+  const f = fixture();
+  for (const p of f.projects.slice(0, 2)) profile(p, ['a', 'b'], { schemaVersion: 3, methodVersion: '2.0.0', mode: 'simple' });
+  const group = () => S.buildGroups(f.projects, f.folders).groups.find(g => g.folderId === 'c');
+  const before = JSON.stringify(f.projects[0].normalization);
+  assert.equal(S.resolveContext(f.projects[0], f.folders, f.projects).assessment.status, 'CURRENT');
+  f.projects[1].normalization.schemaVersion = 2;
+  assert.equal(S.assess(f.projects[0], group()).status, 'MIXED');
+  f.projects[1].normalization.schemaVersion = 3;
+  f.projects[1].normalization.methodVersion = 'future';
+  assert.equal(S.assess(f.projects[0], group()).status, 'MIXED');
+  f.projects[1].normalization.methodVersion = '2.0.0';
+  f.projects[1].normalization.mode = 'advanced';
+  assert.equal(S.assess(f.projects[0], group()).status, 'MIXED');
+  f.projects[0].folderId = 's';
+  assert.equal(S.resolveContext(f.projects[0], f.folders, f.projects).assessment.status, 'MOVED');
+  assert.equal(JSON.stringify(f.projects[0].normalization), before);
+});
