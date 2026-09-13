@@ -18,7 +18,7 @@ function app(maxRows) {
   const c = { console, XLSX, JSZip, Float32Array, Float64Array, Uint8Array, Blob };
   c.window = c;
   vm.createContext(c);
-  for (const file of ['msi.js', 'normalization.js', 'otsu.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
+  for (const file of ['msi.js', 'normalization-scope.js', 'normalization.js', 'otsu.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
     let source = fs.readFileSync(path.join(__dirname, '../lib', file), 'utf8');
     if (file === 'excelio.js' && maxRows) source = source.replace('const EXCEL_MAX_ROWS = 1048576;', 'const EXCEL_MAX_ROWS = ' + maxRows + ';');
     vm.runInContext(source, c, { filename: file });
@@ -26,7 +26,7 @@ function app(maxRows) {
   return c;
 }
 
-function fixture(c, withCalibration) {
+function fixture(c, withCalibration, withScope = false) {
   const data = {
     h: new Float32Array([0, 4, 6, 8, 1.234567891, -0, 4, NaN]),
     d: new Float32Array([1, 2, 0, 4, 1, 2, 4, NaN]),
@@ -44,6 +44,11 @@ function fixture(c, withCalibration) {
   };
   const rasters = Object.fromEntries(Object.entries(data).map(([key, values]) => [key, { W: 4, H: 2, values }]));
   const reference = Object.assign({}, project, { id: 'reference', displayName: 'reference' });
+  if (withScope) {
+    project.folderPath = ['Marmoset', 'Coronal renamed', 'slice'];
+    project.normalizationBinding = { groupId: 'group-1', folderPath: ['Marmoset', 'Coronal renamed'], memberId: 'sample' };
+    reference.normalizationBinding = { groupId: 'group-1', folderPath: ['Marmoset', 'Coronal renamed'], memberId: 'reference' };
+  }
   const refRasters = Object.fromEntries(Object.entries(data).map(([key, values]) => [key,
     { W: 4, H: 2, values: Float32Array.from(values, value => value * 2) }]));
   const config = { id: 'fixed-profile', revision: 1, batchId: 'batch', prepId: 'prep', quality: 'provisional',
@@ -54,17 +59,36 @@ function fixture(c, withCalibration) {
       unit: 'pmol/mm2', slope: 2, intercept: 0, lloq: 0, uloq: 100,
       responseMin: 0, responseMax: 200, responseAggregation: 'mean_pixel_ratio', prepId: 'prep', batchId: 'batch' } : null,
     otsuSourceRoles: ['ht', 'da'],
+    ...(withScope ? { scope: { type: 'folder-depth', depth: 2, includeDescendants: true, groupId: 'group-1',
+      folderPath: ['Marmoset', 'Coronal'], memberIds: ['reference', 'sample'] } } : {}),
   };
   const created = c.Normalization.createProfiles([{ project, rasters }, { project: reference, rasters: refRasters }], config);
   project.normalization = created.profiles[0].normalization;
   assert.equal(project.normalization.section.k, 2);
   let serial = 0;
+  const folders = [];
   const storage = {
     getValueRaster: async id => data[id],
     putValueRaster: async values => { const id = 'imported_' + ++serial; data[id] = values; return id; },
-    ensureFolderPath: async () => null, uid: prefix => prefix + '_new', putProject: async () => {},
+    ensureFolderPath: async names => {
+      let parentId = null;
+      for (const name of names) {
+        let folder = folders.find(f => f.parentId === parentId && f.name === name);
+        if (!folder) { folder = { id: 'folder-' + folders.length, name, parentId }; folders.push(folder); }
+        parentId = folder.id;
+      }
+      return parentId;
+    },
+    restoreNormalizationGroup: async (folderId, groupId) => {
+      const group = c.NormalizationScope.groupForFolder(folderId, folders);
+      assert.ok(group, 'a scoped archive restores its actual second-level folder');
+      const folder = folders.find(f => f.id === group.folderId);
+      if (folder.normalizationGroupId && folder.normalizationGroupId !== groupId) throw new Error('Conflicting group');
+      folder.normalizationGroupId = groupId;
+    },
+    uid: prefix => prefix + '_new', putProject: async () => {},
   };
-  return { project, rasters, storage, data };
+  return { project, rasters, storage, data, folders };
 }
 
 function rows(workbook, name) {
@@ -139,6 +163,58 @@ test('real JSZip CSV9 round-trip remaps IDs but preserves raw bits, grid metadat
   assert.equal(after.section.k, 2);
   assert.deepEqual(Array.from(after.channels.a.values), Array.from(before.channels.a.values));
   assert.equal(c.Cloud.hashState(c.Cloud.stateOf(result.project)), c.Cloud.hashState(c.Cloud.stateOf(f.project)));
+});
+
+test('schema2 standalone ZIP preserves portable membership, frozen factors and per-row Excel provenance', requiresDependencies, async () => {
+  const c = app(), f = fixture(c, false, true);
+  const before = c.Normalization.evaluate(f.project, f.rasters);
+  assert.equal(f.project.normalization.schemaVersion, 2);
+  const blob = await c.ZipIO.exportProject(f.project, { storage: f.storage });
+  const restored = await c.ZipIO.importZip(await blob.arrayBuffer(), { storage: f.storage });
+  const imported = restored.project;
+  assert.notEqual(imported.id, f.project.id);
+  const group = c.NormalizationScope.groupForFolder(imported.folderId, f.folders);
+  assert.equal(f.folders.find(folder => folder.id === group.folderId).normalizationGroupId, 'group-1');
+  assert.deepEqual(JSON.parse(JSON.stringify(imported.normalizationBinding)), f.project.normalizationBinding);
+  assert.deepEqual(JSON.parse(JSON.stringify(imported.normalization)), JSON.parse(JSON.stringify(f.project.normalization)));
+  const rasters = await c.Normalization.loadRasters(imported, { storage: f.storage });
+  const after = c.Normalization.evaluate(imported, rasters);
+  assert.equal(after.status, before.status);
+  assert.equal(after.section.k, 2);
+  assert.deepEqual(Array.from(after.channels.a.values), Array.from(before.channels.a.values));
+  assert.equal(c.Cloud.hashState(c.Cloud.stateOf(imported)), c.Cloud.hashState(c.Cloud.stateOf(f.project)));
+  const result = await c.ExcelIO.buildProjectXlsx(imported, { storage: f.storage });
+  const workbook = read(result), roi = rows(workbook, 'ROI_Quantification'), h = roi[0];
+  assert.equal(result.normalization.groupId, 'group-1');
+  for (const row of roi.slice(1)) {
+    assert.equal(row[h.indexOf('Normalization folder at calculation')], 'Marmoset / Coronal');
+    assert.equal(row[h.indexOf('Current normalization folder')], 'Marmoset / Coronal renamed');
+    assert.equal(row[h.indexOf('Profile schema version')], 2);
+    assert.equal(row[h.indexOf('Group reference D4 (Dref)')], before.section.Dref);
+  }
+  const metadata = new Map(rows(workbook, 'Normalization_Metadata').map(row => [row[0], row[1]]));
+  assert.equal(metadata.get('normalizationBinding.memberId'), 'sample');
+  assert.equal(metadata.get('normalization.scope.memberIds.0'), 'reference');
+});
+
+test('a moved scoped project exports unchanged raw values and blank derived values with membership reason', requiresDependencies, async () => {
+  const c = app(), f = fixture(c, true, true);
+  const before = read(await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage }));
+  f.project.normalizationBinding = { groupId: 'different-group', folderPath: ['Marmoset', 'Sagittal'], memberId: 'sample' };
+  const result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  const workbook = read(result);
+  assert.equal(result.normalization.groupStatus, 'MOVED');
+  assert.deepEqual(rows(workbook, 'Data'), rows(before, 'Data'));
+  const normalized = rows(workbook, 'Normalized_Data');
+  for (const row of normalized.slice(1)) {
+    assert.equal(row[2], null);
+    assert.equal(row[4], null);
+    assert.match(row[7], /GROUP_MEMBERSHIP_CHANGED/);
+  }
+  const roi = rows(workbook, 'ROI_Quantification'), h = roi[0], ht = roi.find(row => row[2] === 'h');
+  assert.equal(ht[h.indexOf('Absolute value')], null);
+  assert.equal(ht[h.indexOf('Current normalization folder')], 'Marmoset / Sagittal');
+  assert.equal(ht[h.indexOf('Group reference D4 (Dref)')], f.project.normalization.section.Dref);
 });
 
 test('real XLSX paired sheet splitting is readable with identical x/y boundaries', requiresDependencies, async () => {

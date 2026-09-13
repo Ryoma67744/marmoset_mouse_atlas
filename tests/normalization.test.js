@@ -6,7 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const sandbox = { window: {}, Float32Array, Float64Array, Uint8Array, ArrayBuffer, DataView, Date };
 vm.createContext(sandbox);
-for (const file of ['msi.js', 'normalization.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'lib', file), 'utf8'), sandbox);
+for (const file of ['msi.js', 'normalization-scope.js', 'normalization.js']) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'lib', file), 'utf8'), sandbox);
 const N = sandbox.window.Normalization;
 const keys = { ht: 'MSI_5-HT', d4: 'MSI_D4-5-HT', da: 'MSI_DA', ne: 'MSI_NE' };
 const names = { ht: '5-HT', d4: 'D4-5-HT', da: 'DA', ne: 'NE' };
@@ -302,4 +302,104 @@ test('loadRasters reads each saved Float32 source and preserves project coordina
   const values = Object.fromEntries(a.project.molecules.map(m => [m.blobId, a.rasters[m.key].values]));
   const loaded = await N.loadRasters(a.project, { storage: { async getValueRaster(id) { return values[id]; } } });
   assert.equal(loaded[keys.ht].W, 2); assert.equal(loaded[keys.ht].H, 1); assert.equal(loaded[keys.ht].values, values['a-ht']);
+});
+
+function scope(ids, groupId = 'group-a', folderPath = ['Marmoset', 'Coronal']) {
+  return { type: 'folder-depth', depth: 2, includeDescendants: true, groupId, folderPath, memberIds: ids };
+}
+test('independent folder groups keep their own Dref and common ranges while retaining all raw bits', () => {
+  const a = entry('a', { ht: [10, 10], d4: [2, 2], da: [10, 20], ne: [4, 8] });
+  const b = entry('b', { ht: [20, 20], d4: [4, 4], da: [20, 40], ne: [8, 16] });
+  const c = entry('c', { ht: [100, 100], d4: [20, 20], da: [100, 200], ne: [40, 80] });
+  const d = entry('d', { ht: [200, 200], d4: [40, 40], da: [200, 400], ne: [80, 160] });
+  const before = [a, b, c, d].map(e => Object.values(e.rasters).map(r => Buffer.from(r.values.buffer).toString('hex')));
+  apply([a, b], { scope: scope(['b', 'a']) }); apply([c, d], { scope: scope(['c', 'd'], 'group-b', ['Marmoset', 'Sagittal']) });
+  assert.equal(a.project.normalization.schemaVersion, 2); assert.deepEqual(Array.from(a.project.normalization.scope.memberIds), ['a', 'b']);
+  assert.equal(a.project.normalization.section.Dref, 3); assert.equal(c.project.normalization.section.Dref, 30);
+  assert.equal(a.project.normalization.section.k, 1.5); assert.equal(b.project.normalization.section.k, 0.75);
+  assert.deepEqual(JSON.parse(JSON.stringify(a.project.normalization.commonRanges.da)), { min: 15, max: 30 });
+  assert.deepEqual(JSON.parse(JSON.stringify(c.project.normalization.commonRanges.da)), { min: 150, max: 300 });
+  const frozen = JSON.stringify(a.project.normalization);
+  c.rasters[keys.da].values[0] = 999; apply([c, d], { scope: scope(['c', 'd'], 'group-b', ['Marmoset', 'Sagittal']) });
+  assert.equal(JSON.stringify(a.project.normalization), frozen);
+  assert.deepEqual(Array.from(N.evaluate(a.project, a.rasters).channels[keys.ht].values), [5, 5]);
+  c.rasters[keys.da].values[0] = 100;
+  assert.deepEqual([a, b, c, d].map(e => Object.values(e.rasters).map(r => Buffer.from(r.values.buffer).toString('hex'))), before);
+});
+test('scope members and references must be exactly the supplied group, without duplicate portable identities', () => {
+  const a = entry('a', { ht: [2], d4: [1], da: [3] }), b = entry('b', { ht: [4], d4: [2], da: [6] });
+  for (const invalid of [null, {}, scope(['a']), scope(['a', 'b', 'external']), scope(['a', 'a']),
+    { ...scope(['a', 'b']), depth: 3 }, { ...scope(['a', 'b']), type: 'manual' }, { ...scope(['a', 'b']), includeDescendants: false },
+    { ...scope(['a', 'b']), folderPath: ['One'] }, { ...scope(['a', 'b']), groupId: '' }, { ...scope(['a', 'b']), folderId: 'local-unsafe' }]) {
+    assert.throws(() => apply([a, b], { scope: invalid }), /補正グループ/);
+  }
+  assert.throws(() => apply([a, b], { scope: scope(['a', 'b']), reference: { kind: 'whole_tissue', projectIds: ['external'] } }), /計算対象/);
+  b.project.normalizationBinding = { memberId: 'a', groupId: 'old', folderPath: ['Old', 'Group'] };
+  assert.throws(() => apply([a, b], { scope: scope(['a', 'b']) }), /補正グループ/);
+});
+test('portable members survive import and scoped references use original member identities', () => {
+  const a = entry('import-a', { ht: [2], d4: [1], da: [3] }), b = entry('import-b', { ht: [4], d4: [2], da: [6] });
+  a.project.normalizationBinding = { memberId: 'original-a', groupId: 'group-old', folderPath: ['Old', 'Place'] };
+  b.project.normalizationBinding = { memberId: 'original-b', groupId: 'group-old', folderPath: ['Old', 'Place'] };
+  const before = JSON.stringify(a.project);
+  const configScope = scope(['original-b', 'original-a']);
+  const result = N.createProfiles([a, b], config(['import-a', 'import-b'], { scope: configScope }));
+  assert.equal(JSON.stringify(a.project), before); assert.deepEqual(configScope.memberIds, ['original-b', 'original-a']);
+  const p = result.profiles[0].normalization;
+  assert.deepEqual(Array.from(p.reference.projectIds), ['original-a', 'original-b']); assert.equal(p.reference.entries[0].memberId, 'original-a');
+  assert.equal(p.commonRanges.da.min, 4.5); // Prospective destination binding is used for range calculation.
+  a.project.normalization = p;
+  a.project.normalizationBinding = { memberId: 'original-a', groupId: 'group-a', folderPath: ['Renamed', 'Current'] };
+  const frozen = JSON.stringify(p), expected = Array.from(N.evaluate(a.project, a.rasters).channels[keys.da].values);
+  a.project.id = 'another-local-id'; a.project.folderId = 'another-local-folder';
+  assert.deepEqual(Array.from(N.evaluate(a.project, a.rasters).channels[keys.da].values), expected);
+  delete a.project.normalizationBinding; // Standalone historical export remains usable without local membership evidence.
+  assert.deepEqual(Array.from(N.evaluate(a.project, a.rasters).channels[keys.da].values), expected);
+  assert.equal(JSON.stringify(a.project.normalization), frozen);
+});
+test('explicit moved binding blocks derived values but preserves original numeric snapshot and raw ROI summaries', () => {
+  const a = entry('a', { ht: [2], d4: [1], da: [3] }); apply([a], { scope: scope(['a']) });
+  const before = JSON.stringify(a.project.normalization);
+  for (const binding of [null, { groupId: null, memberId: 'a', folderPath: null }, { groupId: 'other', memberId: 'a', folderPath: ['Other', 'Group'] }]) {
+    a.project.normalizationBinding = binding;
+    const ev = N.evaluate(a.project, a.rasters);
+    assert.equal(ev.channels[keys.ht].values, null); assert.equal(ev.channels[keys.da].values, null);
+    assert.ok(ev.reasonCodes.includes('GROUP_MEMBERSHIP_CHANGED')); assert.equal(quantify(a)[0].raw.mean, 2);
+    assert.equal(ev.channels[keys.d4].status, 'RAW_QC'); assert.equal(JSON.stringify(a.project.normalization), before);
+  }
+});
+test('all immutable scope fields are fingerprinted while malformed schemas and bindings fail explicitly', () => {
+  for (const mutate of [p => { p.scope.groupId = 'changed'; }, p => { p.scope.folderPath[1] = 'Renamed audit record'; },
+    p => { p.scope.memberIds.push('new'); }, p => { p.scope.includeDescendants = false; }]) {
+    const a = entry('a', { ht: [2], d4: [1] }); apply([a], { scope: scope(['a']) }); mutate(a.project.normalization);
+    assert.ok(N.evaluate(a.project, a.rasters).reasonCodes.includes('NORMALIZATION_PROFILE_STALE'));
+  }
+  const a = entry('a', { ht: [2], d4: [1] }); apply([a], { scope: scope(['a']) });
+  a.project.normalizationBinding = { groupId: 'group-a', memberId: 'external', folderPath: ['Marmoset', 'Coronal'] };
+  assert.ok(N.evaluate(a.project, a.rasters).reasonCodes.includes('NORMALIZATION_SCOPE_INVALID'));
+  a.project.normalization.schemaVersion = 9;
+  assert.ok(N.evaluate(a.project, a.rasters).reasonCodes.includes('NORMALIZATION_SCHEMA_UNSUPPORTED'));
+});
+test('legacy v1 calculation fingerprint is exactly preserved against an independently recorded pre-change golden value', () => {
+  const e = { project: { id: 'legacy', displayName: 'legacy', grid: { W: 1, H: 1 }, molecules: [
+    { key: 'h', name: '5-HT' }, { key: 'd', name: 'D4-5-HT' }, { key: 'a', name: 'DA' }
+  ] }, rasters: { h: { W: 1, H: 1, values: new Float32Array([10]) }, d: { W: 1, H: 1, values: new Float32Array([2]) }, a: { W: 1, H: 1, values: new Float32Array([6]) } } };
+  const result = N.createProfiles([e], config(['legacy'], { id: 'legacy-profile' }));
+  e.project.normalization = result.profiles[0].normalization;
+  assert.equal(e.project.normalization.schemaVersion, 1); assert.equal(e.project.normalization.scope, undefined);
+  assert.equal(e.project.normalization.rawFingerprint, 'f32-v1:e935a0b55a2727c3');
+  assert.equal(e.project.normalization.calculationFingerprint, '071de9bdf0813429');
+  e.project.id = 'legacy-imported'; assert.equal(N.evaluate(e.project, e.rasters).channels.h.values[0], 5);
+});
+test('malformed scoped references fail with explicit reasons instead of throwing during imported ROI geometry checks', () => {
+  const a = entry('a', { ht: [2], d4: [1] });
+  for (const ref of [{ kind: 'roi', projectIds: ['a'], roiNames: 'wrong type' }, { kind: 'qc', projectIds: [5] },
+    { kind: 'qc', projectIds: ['a', 'a'] }]) {
+    assert.throws(() => apply([a], { scope: scope(['a']), reference: ref }), /参照/);
+  }
+  for (const ref of [null, { kind: 'roi', projectIds: ['a'], roiNames: 'wrong type' }, { kind: 'qc', projectIds: ['a'], entries: [] }]) {
+    apply([a], { scope: scope(['a']) }); a.project.normalization.reference = ref;
+    const ev = N.evaluate(a.project, a.rasters);
+    assert.equal(ev.status, 'UNAVAILABLE'); assert.ok(ev.reasonCodes.includes('NORMALIZATION_SCOPE_INVALID'));
+  }
 });

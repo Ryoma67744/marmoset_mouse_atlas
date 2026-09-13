@@ -11,14 +11,14 @@ async function startBrowserHarness() {
     try {
       const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
       if (pathname === '/__test_seed') {
-        response.setHeader('Content-Type', 'text/html');
-        response.end('<!doctype html><script src="/lib/storage.js"></script><script src="/lib/msi.js"></script><script src="/lib/normalization.js"></script>');
+        response.setHeader('Content-Type', 'text/html; charset=utf-8');
+        response.end('<!doctype html><meta charset="utf-8"><script src="/lib/storage.js"></script><script src="/lib/msi.js"></script><script src="/lib/normalization-scope.js"></script><script src="/lib/normalization.js"></script>');
         return;
       }
       const filename = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
       if (!filename.startsWith(root + path.sep)) { response.writeHead(403); response.end(); return; }
       const data = await fs.readFile(filename);
-      response.setHeader('Content-Type', filename.endsWith('.html') ? 'text/html' : filename.endsWith('.js') ? 'application/javascript' : 'application/octet-stream');
+      response.setHeader('Content-Type', filename.endsWith('.html') ? 'text/html; charset=utf-8' : filename.endsWith('.js') ? 'application/javascript; charset=utf-8' : 'application/octet-stream');
       response.end(data);
     } catch (_) { response.writeHead(404); response.end(); }
   });

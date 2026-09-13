@@ -16,6 +16,7 @@
     <script src="../lib/otsu.js"></script>
     <script src="../lib/align.js"></script>
     <script src="../lib/msi.js"></script>
+    <script src="../lib/normalization-scope.js"></script>
     <script src="../lib/normalization.js"></script>
     <script src="../lib/ingest.js"></script>
     <script src="../lib/imzml.js"></script>
@@ -423,6 +424,9 @@
         let otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
         // Numerical data and presentation state must never share mutable rasters.
         let normalizationEvaluation = null;
+        let viewerNormalizationGroup = null;
+        let viewerScopeAssessment = null;
+        let viewerEffectiveNormalizationBinding = null;
         let valueDisplay = { mode: 'raw', scale: 'common' };
         let savedOtsuRequested = false;
         let otsuDraft = null;
@@ -433,6 +437,54 @@
 
         function normalizationReasons(codes) {
             return (codes || []).map(code => window.Normalization ? Normalization.reasonText(code) : code).join(' / ');
+        }
+        async function loadViewerScopeContext(project) {
+            viewerNormalizationGroup = null;
+            viewerScopeAssessment = null;
+            viewerEffectiveNormalizationBinding = null;
+            if (!project?.normalization?.scope || !window.NormalizationScope) return;
+            try {
+                const [projects, folders] = await Promise.all([ProjectStorage.listProjects(), ProjectStorage.listFolders()]);
+                const owner = NormalizationScope.groupForFolder(project.folderId, folders);
+                const result = NormalizationScope.buildGroups(projects, folders);
+                viewerNormalizationGroup = owner ? result.groups.find(group => group.folderId === owner.folderId) || owner : null;
+                // A folder moved by an older tab may precede binding sync. Use
+                // actual resolved membership for this read only calculation;
+                // leave the saved profile and project untouched for provenance.
+                if (viewerNormalizationGroup && viewerNormalizationGroup.groupId !== project.normalization.scope.groupId) {
+                    viewerEffectiveNormalizationBinding = {
+                        groupId: viewerNormalizationGroup.groupId || null,
+                        folderPath: viewerNormalizationGroup.path,
+                        memberId: NormalizationScope.memberId(project),
+                    };
+                }
+                viewerScopeAssessment = NormalizationScope.assess(normalizationProjectForEvaluation(project), viewerNormalizationGroup);
+            } catch (error) {
+                viewerScopeAssessment = { status: 'UNKNOWN', reason: '現在のフォルダー構成を確認できません。Master を再読み込みして確認してください。' };
+                console.warn('[normalization scope] フォルダー構成を確認できません', error);
+            }
+        }
+        function normalizationProjectForEvaluation(project = currentProject) {
+            return viewerEffectiveNormalizationBinding && project ? { ...project, normalizationBinding: viewerEffectiveNormalizationBinding } : project;
+        }
+        function normalizationScopeLines() {
+            const profile = currentProject?.normalization, scope = profile?.scope;
+            if (!profile) return [];
+            if (!scope) return ['補正グループ：従来設定（第2階層フォルダー未指定）'];
+            const path = Array.isArray(scope.folderPath) ? scope.folderPath.join(' / ') : '記録なし';
+            const binding = currentProject.normalizationBinding;
+            const currentPath = viewerNormalizationGroup?.label || (viewerScopeAssessment && viewerScopeAssessment.status !== 'UNKNOWN'
+                ? '第2階層への所属なし' : Array.isArray(binding?.folderPath) ? binding.folderPath.join(' / ') : '未確認');
+            const labels = { CURRENT: '適用済み', COMPOSITION_CHANGED: '構成変更あり（保存済みの基準・係数を保持）',
+                MIXED: '設定混在／同期未完了', MOVED: '所属変更・現在のグループには未適用',
+                SAVED_SNAPSHOT: '保存済みの補正結果', LEGACY: '従来設定', UNCONFIGURED: '補正未設定', UNKNOWN: '所属確認不可' };
+            const assessment = viewerScopeAssessment;
+            const lines = ['補正グループ（計算時）：' + path];
+            if (currentPath !== path) lines.push('現在の補正フォルダー：' + currentPath);
+            if (assessment) lines.push('グループ状態：' + (labels[assessment.status] || assessment.status)
+                + (assessment.reason ? ' — ' + assessment.reason : ''));
+            lines.push('DA・NE：この補正グループ内の比較用（グループごとに基準値が独立）');
+            return lines;
         }
         function channelResult(key) { return normalizationEvaluation?.channels?.[key] || null; }
         function channelUnit(key) {
@@ -518,6 +570,7 @@
             const profile = currentProject?.normalization;
             if (profile) lines.push(`Batch ${profile.batchId || '未設定'} / Profile ${profile.id} rev.${profile.revision} / ${profile.quality === 'validated' ? '検証済み設定' : '暫定設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
             else lines.push('補正設定なし。Master で基準・分子対応を設定してください。');
+            lines.push(...normalizationScopeLines());
             if (valueDisplay.scale === 'individual') lines.push('⚠ 個別レンジ：色の明るさを切片間で直接比較できません。');
             else if (valueDisplay.mode === 'raw') lines.push('生値は各分子の保存レンジ。切片間共通レンジは補正表示にのみ適用します。');
             const keys = checkedLayerKeys().filter(k => valueRasters[k]);
@@ -759,6 +812,7 @@
                 }),
                 otsuState.applied ? 'Otsu ON / 判定可能画素の非表示 ' + (otsuState.record?.nOriginal ? (100 * otsuState.record.nRemoved / otsuState.record.nOriginal).toFixed(1) : '0.0') + '% / 未判定は表示維持 / ROI・Excel の解析値への影響なし' : 'Otsu OFF / ROI・Excel の解析値への影響なし',
                 '灰色: 測定済み・算出不可 / 透明: 未測定 / Profile: ' + (currentProject?.normalization?.id || '未設定') + ' rev.' + (currentProject?.normalization?.revision || '—'),
+                ...normalizationScopeLines(),
             ];
             const measure = annotated.getContext('2d');
             measure.font = '14px sans-serif';
@@ -917,7 +971,7 @@
         });
 
         async function initializeViewer() {
-            normalizationEvaluation = window.Normalization && currentProject ? Normalization.evaluate(currentProject, valueRasters) : null;
+            normalizationEvaluation = window.Normalization && currentProject ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
             const savedMode = currentProject?.valueDisplay?.mode;
             valueDisplay.mode = ['normalized', 'raw'].includes(savedMode) ? savedMode
                 : normalizationEvaluation && ['VALID', 'PROVISIONAL', 'PARTIAL'].includes(normalizationEvaluation.status) ? 'normalized' : 'raw';
@@ -1615,7 +1669,7 @@ function loadAllImages() {
             currentProject.roi = atlasData.roi;
             analysisRoiCache.clear();
             if (window.Normalization) {
-                normalizationEvaluation = Normalization.evaluate(currentProject, valueRasters);
+                normalizationEvaluation = Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters);
                 useModeRanges();
                 refreshValueDisplayUi();
                 renderCompositeImage();
@@ -4030,7 +4084,8 @@ function loadAllImages() {
         if (!row || !row.bundle_path) return null;
         const blob = await Cloud.downloadBundle(row.bundle_path);
         // id を渡して同じ id で取り込む (渡さないと別データとして増える)
-        const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id });
+        const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id,
+          state: row.state, folderPath: row.folder_path || [], displayName: row.display_name });
         const project = res.project;
         Cloud.applyState(project, row.state);
         if (row.display_name) project.displayName = row.display_name;
@@ -4062,6 +4117,7 @@ function loadAllImages() {
       currentProject = p;
       viewerStoredUpdatedAt = p.updatedAt;
       viewerSaveConflict = false;
+      await loadViewerScopeContext(p);
 
       // TIC は分子の像ではないので表示しない。登録済みのデータに入っていても外す
       // (背景除去が使う TIC は、残りの分子から毎回計算している)。

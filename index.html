@@ -224,6 +224,7 @@
     <script src="lib/otsu.js"></script>
     <script src="lib/align.js"></script>
     <script src="lib/msi.js"></script>
+    <script src="lib/normalization-scope.js"></script>
     <script src="lib/normalization.js"></script>
     <script src="lib/normalization-ui.js"></script>
     <script src="lib/ingest.js"></script>
@@ -936,6 +937,32 @@
         let currentFolderId = null;                 // null = 一番上
         let expanded = new Set();                   // 展開中のフォルダ id
         let cache = { folders: [], projects: [], tree: null };
+        // Only explicit folder operations enqueue remote writes. A read/refresh must
+        // never push an older local path over a newer remote folder assignment.
+        const FOLDER_SYNC_PREFIX = 'marmoset:pendingFolderChange:';
+        function readFolderChanges() {
+            const out = {};
+            for (let i=0;i<localStorage.length;i++) {
+                const key = localStorage.key(i);
+                if (!key || !key.startsWith(FOLDER_SYNC_PREFIX)) continue;
+                try { out[decodeURIComponent(key.slice(FOLDER_SYNC_PREFIX.length))] = JSON.parse(localStorage.getItem(key)); } catch (_) {}
+            }
+            return out;
+        }
+        let pendingFolderChanges = readFolderChanges();
+        async function changeFolderQueue(id, value, expected) {
+            const apply = () => {
+                const key = FOLDER_SYNC_PREFIX + encodeURIComponent(id);
+                if (expected && localStorage.getItem(key) !== JSON.stringify(expected)) return;
+                if (value) localStorage.setItem(key, JSON.stringify(value)); else localStorage.removeItem(key);
+                pendingFolderChanges = readFolderChanges();
+            };
+            if (navigator.locks) await navigator.locks.request('marmoset-folder-queue-' + id, apply);
+            else apply();
+        }
+        window.addEventListener('storage', event => {
+            if (event.key && event.key.startsWith(FOLDER_SYNC_PREFIX)) { pendingFolderChanges = readFolderChanges(); renderFolderSync(); }
+        });
 
         const FOLDER_KEY = 'marmoset:currentFolder';
         try {
@@ -968,6 +995,7 @@
 
         /** 保存層から読み直してツリーを組み直す */
         async function reload() {
+            pendingFolderChanges = readFolderChanges();
             // ---- クラウドの行を先に取る -------------------------------------
             const pathToFolderId = new Map();
             if (cloudOn() && Cloud.signedIn()) {
@@ -983,6 +1011,10 @@
                         if (pathToFolderId.has(key)) continue;
                         pathToFolderId.set(key, names.length ? await ProjectStorage.ensureFolderPath(names) : null);
                     }
+                    for (const pending of Object.values(pendingFolderChanges)) {
+                        const key = JSON.stringify(pending.path);
+                        if (!pathToFolderId.has(key)) pathToFolderId.set(key, pending.path.length ? await ProjectStorage.ensureFolderPath(pending.path) : null);
+                    }
                 } catch (e) {
                     console.warn('[cloud] 一覧を取得できません', e);
                     cloudRows = null;
@@ -996,6 +1028,23 @@
             const [folders, projects] = await Promise.all([
                 ProjectStorage.listFolders(), ProjectStorage.listProjects(),
             ]);
+            const remoteById = new Map((cloudRows || []).map(row => [row.id, row]));
+            for (const p of projects) {
+                const row = remoteById.get(p.id);
+                if (!row || pendingFolderChanges[p.id] || row.updated_at === p.cloudUpdatedAt) continue;
+                const remoteFolder = pathToFolderId.get(JSON.stringify(row.folder_path || [])) || null;
+                const remoteBinding = row.state && row.state.normalizationBinding;
+                if ((p.folderId || null) !== remoteFolder || remoteBinding && JSON.stringify(remoteBinding) !== JSON.stringify(p.normalizationBinding)) {
+                    const expected = p.updatedAt;
+                    const clean = Cloud.hashState(Cloud.stateOf(p)) === p.cloudStateHash;
+                    p.folderId = remoteFolder;
+                    if (remoteBinding) p.normalizationBinding = remoteBinding;
+                    // A remote location-only refresh is not an unsaved scientific edit.
+                    // Keep the old cloud revision so ensureLocal still retrieves newer content.
+                    if (clean) p.cloudStateHash = Cloud.hashState(Cloud.stateOf(p));
+                    await ProjectStorage.putProjectsIfUnchanged([{project:p,expectedUpdatedAt:expected}]);
+                }
+            }
             const tree = ProjectStorage.buildFolderTree(folders);
             // 壊れていた親子関係はルートに拾い上げたので、保存し直す
             for (const f of tree.repaired) {
@@ -1016,6 +1065,15 @@
                 projects: mergeWithCloud(projects, cloudRows, pathToFolderId),
                 tree: tree,
             };
+            // Recover portable group identities without using machine-local folder IDs.
+            const resolved = NormalizationScope.buildGroups(cache.projects, folders);
+            for (const group of resolved.groups) {
+                const folder = tree.byId.get(group.folderId);
+                if (group.groupId && folder && !folder.normalizationGroupId) {
+                    await ProjectStorage.restoreNormalizationGroup(group.folderId, group.groupId);
+                    folder.normalizationGroupId = group.groupId;
+                }
+            }
         }
 
         async function refreshProjectList() {
@@ -1029,15 +1087,64 @@
             paintCloudChip();
             updateStorageNote();
             // フォルダを動かしたぶんをクラウドへ反映する (ずれが無ければ何も送らない)
-            reconcileFolderPaths().catch(e => console.warn('[cloud] 反映に失敗', e));
+            reconcileFolderPaths().catch(e => showError('フォルダー同期が未完了です: ' + e.message));
         }
 
         function render() {
             renderTree();
             renderBreadcrumb();
             renderContents();
+            renderFolderSync();
             refreshBulkButtons();
             if (excelBatchBusy || normalizationBusy) setExcelExportControlsDisabled(true);
+        }
+
+        function renderFolderSync() {
+            const list = document.getElementById('project-list');
+            if (!list) return;
+            let panel = document.getElementById('folder-sync-status');
+            if (!panel) { panel = document.createElement('div'); panel.id = 'folder-sync-status'; list.before(panel); }
+            const records = Object.entries(pendingFolderChanges);
+            panel.style.cssText = records.length ? 'border:1px solid #d97706;background:#fffbeb;padding:10px;margin:8px 0;font-size:12px' : 'display:none';
+            if (!records.length) { panel.textContent = ''; return; }
+            panel.innerHTML = '<strong>フォルダー同期が未完了：' + records.length + '件</strong><div>' +
+                records.map(([id,p]) => esc(p.name || id) + ' → ' + esc(p.path.join(' / ') || 'すべて')).join('<br>') + '</div>' +
+                '<button class="btn" id="folder-sync-retry" style="margin-top:8px">同期を再試行</button> ' +
+                '<button class="btn" id="folder-sync-revert" style="margin-top:8px">クラウドの最新の所属に戻す</button>';
+            const run = async action => {
+                panel.querySelectorAll('button').forEach(b => { b.disabled = true; });
+                try { await action(); await reload(); render(); }
+                catch (e) { showError(e.message); renderFolderSync(); }
+            };
+            panel.querySelector('#folder-sync-retry').onclick = () => run(async () => {
+                if (!cloudReady()) throw new Error('クラウドに接続してから再試行してください。');
+                const rows = new Map((await Cloud.listProjects()).map(r => [r.id, r]));
+                const current = readFolderChanges();
+                const changed = Object.entries(current).filter(([id,p]) => rows.has(id) && rows.get(id).updated_at !== p.expectedUpdatedAt);
+                if (changed.length && !confirm('クラウド側が更新されています。最新のデータ・補正設定を保持し、次の所属変更だけを反映しますか？\n\n' +
+                    changed.map(([id,p]) => (p.name || id) + '\n現在: ' + (rows.get(id).folder_path || []).join(' / ') + '\n移動先: ' + p.path.join(' / ')).join('\n\n'))) return;
+                for (const [id,p] of changed) await changeFolderQueue(id, Object.assign({},p,{expectedUpdatedAt:rows.get(id).updated_at}),p);
+                await reconcileFolderPaths();
+            });
+            panel.querySelector('#folder-sync-revert').onclick = () => run(async () => {
+                if (!cloudReady()) throw new Error('クラウドに接続してから最新の所属を取得してください。');
+                if (!confirm('未同期の所属変更を取り消し、クラウドの最新の所属に戻します。生値と保存済みの補正計算記録は保持します。')) return;
+                const rows = new Map((await Cloud.listProjects()).map(r => [r.id, r]));
+                for (const [id,pending] of Object.entries(readFolderChanges())) {
+                    const row = rows.get(id), project = await ProjectStorage.getProject(id);
+                    if (row && project) {
+                        const expected = project.updatedAt;
+                        project.folderId = await ProjectStorage.ensureFolderPath(row.folder_path || []);
+                        if (row.state && Object.prototype.hasOwnProperty.call(row.state,'normalizationBinding')) project.normalizationBinding = row.state.normalizationBinding;
+                        else if (project.normalization && project.normalization.scope) project.normalizationBinding = {
+                            groupId:null,folderPath:(row.folder_path || []).length>=2 ? row.folder_path.slice(0,2) : null,
+                            memberId:NormalizationScope.memberId(project),
+                        };
+                        await ProjectStorage.putProjectsIfUnchanged([{project,expectedUpdatedAt:expected}]);
+                    }
+                    await changeFolderQueue(id,null,pending);
+                }
+            });
         }
 
         // ---- 数え上げ -------------------------------------------------------
@@ -1133,27 +1240,92 @@
                 let payload;
                 try { payload = JSON.parse(ev.dataTransfer.getData('text/plain')); } catch (e) { return; }
                 if (!payload || !Array.isArray(payload.ids)) return;
-                if (payload.type === 'folder') await moveFolders(payload.ids, folderId);
-                else await moveProjects(payload.ids, folderId);
+                await runFolderOperation(() => payload.type === 'folder'
+                    ? moveFolders(payload.ids, folderId) : moveProjects(payload.ids, folderId));
             });
         }
 
-        async function moveProjects(ids, folderId) {
-            for (const id of ids) {
-                const p = await ProjectStorage.getProject(id);
-                if (p) { p.folderId = folderId || null; await ProjectStorage.putProject(p); continue; }
-                // まだ手元に落としていないデータ。行の folder_path だけ動かす。
-                const stub = cache.projects.find(x => x.id === id && x.__cloudOnly);
-                if (stub) {
-                    stub.folderId = folderId || null;
-                    await patchCloudMeta(stub,
-                        { folder_path: ProjectStorage.folderPathNames(folderId || null, cache.tree.byId) });
+        async function runFolderOperation(action) {
+            try { await action(); }
+            catch (e) {
+                showError('フォルダー操作を完了できませんでした。現在の所属を確認してやり直してください: ' + e.message);
+                await refreshProjectList();
+            }
+        }
+
+        function captureFolderLocations(folderIds, projectIds) {
+            return cache.projects.map(p => ({
+                project: p, folderId: p.folderId || null,
+                path: ProjectStorage.folderPathNames(p.folderId, cache.tree.byId),
+                affected:(projectIds || []).includes(p.id) || (folderIds || []).some(id =>
+                    p.folderId === id || ProjectStorage.isDescendantFolder(p.folderId,id,cache.tree.byId)),
+            }));
+        }
+
+        async function finishFolderOperation(before, overrides) {
+            const [folders, locals] = await Promise.all([ProjectStorage.listFolders(), ProjectStorage.listProjects()]);
+            const localById = new Map(locals.map(p => [p.id, p]));
+            const tree = ProjectStorage.buildFolderTree(folders);
+            const rows = before.map(item => {
+                const p = localById.get(item.project.id) || Object.assign({}, item.project);
+                if (!localById.has(p.id) && overrides && overrides.has(p.id)) p.folderId = overrides.get(p.id);
+                return p;
+            });
+            const groups = NormalizationScope.buildGroups(rows, folders).groups;
+            const updates = [];
+            const queued = [];
+            for (const item of before) {
+                if (!item.affected) continue;
+                const p = rows.find(row => row.id === item.project.id);
+                if (!p) continue;
+                const path = ProjectStorage.folderPathNames(p.folderId, tree.byId);
+                const profile = p.normalization || item.project.__row && item.project.__row.state && item.project.__row.state.normalization;
+                const oldBinding = p.normalizationBinding || item.project.__row && item.project.__row.state && item.project.__row.state.normalizationBinding;
+                const group = groups.find(g => g.projectIds.includes(p.id));
+                const binding = profile && profile.scope ? {
+                    groupId: group && group.groupId || null,
+                    folderPath: group ? group.path.slice() : null,
+                    memberId: oldBinding && oldBinding.memberId || p.id,
+                } : null;
+                const moved = JSON.stringify(path) !== JSON.stringify(item.path);
+                const rebound = binding && JSON.stringify(binding) !== JSON.stringify(oldBinding || null);
+                if (!moved && !rebound) continue;
+                if (binding) p.normalizationBinding = binding;
+                if (localById.has(p.id)) {
+                    updates.push({project:p,expectedUpdatedAt:p.updatedAt});
+                }
+                const remote = item.project.__row;
+                if (remote || p.cloudUpdatedAt) {
+                    queued.push([p.id, {
+                        path, binding, expectedUpdatedAt:remote ? remote.updated_at : p.cloudUpdatedAt,
+                        name:p.displayName,
+                    }]);
                 }
             }
+            if (updates.length) await ProjectStorage.putProjectsIfUnchanged(updates);
+            for (const [id,pending] of queued) await changeFolderQueue(id,pending);
+            try { await reconcileFolderPaths(); }
+            catch (e) { showError('フォルダー同期が未完了です。再試行するか、最新状態を確認して操作をやり直してください: ' + e.message); }
             await refreshProjectList();
         }
 
+        async function moveProjects(ids, folderId) {
+            const before = captureFolderLocations([],ids);
+            const overrides = new Map(ids.map(id => [id, folderId || null]));
+            const updates = [];
+            for (const id of ids) {
+                const p = await ProjectStorage.getProject(id);
+                if (p) {
+                    p.folderId = folderId || null;
+                    updates.push({project:p,expectedUpdatedAt:p.updatedAt});
+                }
+            }
+            if (updates.length) await ProjectStorage.putProjectsIfUnchanged(updates);
+            await finishFolderOperation(before, overrides);
+        }
+
         async function moveFolders(ids, targetId) {
+            const before = captureFolderLocations(ids,[]);
             for (const id of ids) {
                 if (id === targetId) continue;
                 // ★ 自分の子孫の中へは移せない (ツリーが輪になって行方不明になる)
@@ -1166,7 +1338,7 @@
                 f.parentId = targetId || null;
                 await ProjectStorage.putFolder(f);
             }
-            await refreshProjectList();
+            await finishFolderOperation(before);
         }
 
         // ---- パンくず --------------------------------------------------------
@@ -1246,9 +1418,11 @@
             row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
                 const name = (prompt('フォルダ名', f.name) || '').trim();
                 if (!name || name === f.name) return;
-                f.name = name;
-                await ProjectStorage.putFolder(f);
-                await refreshProjectList();
+                const before = captureFolderLocations([f.id],[]);
+                await runFolderOperation(async () => {
+                    await ProjectStorage.putFolder(Object.assign({}, f, {name}));
+                    await finishFolderOperation(before);
+                });
             });
             row.querySelector('[data-act="move"]').addEventListener('click', () => {
                 openFolderPicker('「' + f.name + '」の移動先', (target) => moveFolders([f.id], target), f.id);
@@ -1259,8 +1433,12 @@
                     ? `フォルダ「${f.name}」を削除します。\n中身 (${n2} 件) は 1 つ上の階層に移動します。データは削除されません。`
                     : `フォルダ「${f.name}」を削除しますか?`;
                 if (!confirm(msg)) return;
-                await ProjectStorage.deleteFolder(f.id);
-                await refreshProjectList();
+                const before = captureFolderLocations([f.id],[]);
+                const overrides = new Map(before.filter(item => item.folderId === f.id).map(item => [item.project.id, f.parentId || null]));
+                await runFolderOperation(async () => {
+                    await ProjectStorage.deleteFolder(f.id);
+                    await finishFolderOperation(before, overrides);
+                });
             });
             return row;
         }
@@ -1291,9 +1469,13 @@
                 ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
             const norm = p.normalization || p.__row && p.__row.state && p.__row.state.normalization;
             const cloudNorm = p.__row && p.__row.state && p.__row.state.normalization;
-            const profileNote = norm ? ('補正: ' + norm.id + ' rev.' + norm.revision + ' / ' + norm.batchId +
+            const group = NormalizationScope.buildGroups(cache.projects, cache.folders).groups.find(g => g.projectIds.includes(p.id));
+            const scopeState = NormalizationScope.assess(Object.assign({}, p, {normalization:norm}), group || null);
+            const scopeNote = norm && norm.scope ? ' / ' + (Array.isArray(norm.scope.folderPath) ? norm.scope.folderPath.join(' / ') : '所属記録なし') + ' / ' + scopeState.reason : group ? ' / このグループでは未設定' : ' / 第2階層の対象外';
+            const profileNote = (norm ? ('補正: ' + norm.id + ' rev.' + norm.revision + ' / ' + norm.batchId +
                 (norm.invalidated ? ' — 再設定が必要' : norm.quality === 'validated' ? ' — 検証設定' : ' — 暫定') +
-                (cloudOn() && (!cloudNorm || norm.id !== cloudNorm.id || norm.revision !== cloudNorm.revision) ? ' / この設定はクラウド未同期' : '')) : '補正: 未設定';
+                (cloudOn() && (!cloudNorm || norm.id !== cloudNorm.id || norm.revision !== cloudNorm.revision) ? ' / この設定はクラウド未同期' : '')) : '補正: 未設定') + scopeNote +
+                (pendingFolderChanges[p.id] ? ' / フォルダー同期未完了' : '');
             row.innerHTML =
                 '<input type="checkbox" class="sel h-4 w-4 rounded border-gray-300" value="' + esc(p.id) + '">' +
                 '<div class="flex-1 min-w-0">' +
@@ -1676,7 +1858,7 @@
                 item.style.paddingLeft = (depth * 14 + 6) + 'px';
                 item.textContent = (id ? '📁 ' : '📚 ') + folder.name;
                 if (blocked) item.title = '自分自身または配下のフォルダへは移動できません';
-                else item.addEventListener('click', async () => { back.remove(); await onPick(id); });
+                else item.addEventListener('click', async () => { back.remove(); await runFolderOperation(() => onPick(id)); });
                 box.appendChild(item);
                 if (id === null || !blocked) {
                     for (const c of directFolders(id)) add(c, depth + 1);
@@ -1870,7 +2052,7 @@
         let excelBatchCancelRequested = false;
         let normalizationBusy = false;
 
-        document.getElementById('normalization-settings').addEventListener('click', () => {
+        document.getElementById('normalization-settings').addEventListener('click', async () => {
             if (excelBatchBusy || normalizationBusy) return;
             if (!window.Normalization || !window.NormalizationUI) {
                 showError('補正モジュールを読み込めません。ページを再読み込みしてください。');
@@ -1879,8 +2061,18 @@
             const chosen = selectedIds();
             normalizationBusy = true;
             setExcelExportControlsDisabled(true);
+            try { await reload(); }
+            catch (e) { normalizationBusy = false; setExcelExportControlsDisabled(false); showError(e.message); return; }
             NormalizationUI.open({
                 projects:cache.projects.slice(), selectedIds:chosen, storage:ProjectStorage,
+                folders:cache.folders.slice(), currentFolderId,
+                refreshScope:async () => {
+                    pendingFolderChanges = readFolderChanges();
+                    if (Object.keys(pendingFolderChanges).length) throw new Error('フォルダー同期が未完了です。先に同期を完了してください。');
+                    await reload();
+                    if (cloudOn() && (!Cloud.signedIn() || cloudOffline)) throw new Error('クラウドの対象一覧を確認できません。接続後に再読み込みしてください。');
+                    return {projects:cache.projects.slice(),folders:cache.folders.slice(),currentFolderId};
+                },
                 folderName:p=>projectFolderNames(p).join(' / '),
                 loadProject:async row => {
                     assertNoPendingCloudConflict(row);
@@ -1972,7 +2164,6 @@
         }
 
         function projectFolderNames(p) {
-            if (p && p.__row && Array.isArray(p.__row.folder_path)) return p.__row.folder_path.slice();
             if (!p || !cache.tree || !cache.tree.byId) return [];
             return ProjectStorage.folderPathNames(p.folderId, cache.tree.byId);
         }
@@ -2394,10 +2585,13 @@
         function cloudStub(r, pathToFolderId) {
             const meta = r.meta || {};
             const state = r.state || {};
+            const pending = pendingFolderChanges[r.id];
             return {
                 id: r.id,
                 displayName: r.display_name || '(名前なし)',
-                folderId: pathToFolderId.get(JSON.stringify(r.folder_path || [])) || null,
+                folderId: pathToFolderId.get(JSON.stringify(pending ? pending.path : r.folder_path || [])) || null,
+                normalization: state.normalization || null,
+                normalizationBinding: pending && pending.binding || state.normalizationBinding || null,
                 grid: meta.grid || {},
                 molecules: (meta.molecules || []).map(n => ({ name: n })),
                 images: Object.assign({}, meta.hasHe ? { HE_Stain: {} } : {},
@@ -2470,11 +2664,15 @@
             }
             const blob = await Cloud.downloadBundle(row.bundle_path, onProgress);
             // ★ id を渡すのが要点。渡さないと取り込むたびに別データとして増える。
-            const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id });
+            const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id,
+                state:row.state,folderPath:row.folder_path || [],displayName:row.display_name });
             const project = res.project;
             Cloud.applyState(project, row.state);
             if (row.display_name) project.displayName = row.display_name;
             project.folderId = await ProjectStorage.ensureFolderPath(row.folder_path || []);
+            if (project.normalizationBinding && project.normalizationBinding.groupId) {
+                await ProjectStorage.restoreNormalizationGroup(project.folderId, project.normalizationBinding.groupId);
+            }
             project.cloudRev = row.bundle_rev | 0;
             project.cloudBundlePath = row.bundle_path;
             project.cloudUpdatedAt = row.updated_at;
@@ -2553,25 +2751,63 @@
             // ★ 実体 → 行 の順。逆にすると、行だけ残って「どの PC でも開けない
             //   データ」になる。実体だけ残るのは次の登録で上書きされるので害が小さい。
             if (path) { try { await Cloud.removeBundle(path); } catch (e) { console.warn('[cloud] ZIP を消せません', e); } }
-            try { await Cloud.removeRow(p.id); } catch (e) { console.warn('[cloud] 行を消せません', e); }
+            try {
+                await Cloud.removeRow(p.id);
+                await changeFolderQueue(p.id, null);
+            } catch (e) { console.warn('[cloud] 行を消せません', e); }
         }
 
         /**
          * フォルダの名前変更・移動・削除は、触っていないデータの居場所まで変える。
-         * 3 箇所それぞれに反映を書くと必ず抜けるので、一覧を組み直したあとに
-         * 「ずれている行だけ」まとめて直す。普段は 1 件も送らない。
+         * 明示操作で記録した同期待ちだけを、クラウドの更新時刻を確認して送る。
+         * 一覧を読んだだけでは、ローカルの古い所属を送り返さない。
          */
+        let folderSyncTask = null;
         async function reconcileFolderPaths() {
-            if (!cloudReady()) return;
-            for (const p of cache.projects) {
-                if (!p.__row || p.__cloudOnly) continue;
-                const path = ProjectStorage.folderPathNames(p.folderId, cache.tree.byId);
-                if (JSON.stringify(path) === JSON.stringify(p.__row.folder_path || [])) continue;
-                try {
-                    const row = await Cloud.patchRow(p.id, { folder_path: path });
-                    if (row) { p.__row = row; p.cloudUpdatedAt = row.updated_at; await ProjectStorage.putProject(p); }
-                } catch (e) { console.warn('[cloud] フォルダ位置の反映に失敗', p.id, e); }
-            }
+            if (folderSyncTask) return folderSyncTask;
+            pendingFolderChanges = readFolderChanges();
+            if (!cloudReady() || !Object.keys(pendingFolderChanges).length) return;
+            folderSyncTask = (async () => {
+                const failures = [];
+                const latestRows = new Map((await Cloud.listProjects()).map(row => [row.id, row]));
+                for (const [id, pending] of Object.entries(pendingFolderChanges)) {
+                    try {
+                        const remote = latestRows.get(id);
+                        if (!remote) throw new Error('クラウドのデータがありません。最新の所属へ戻す操作で同期待ちを解除してください。');
+                        if (remote.updated_at !== pending.expectedUpdatedAt) throw new Error('クラウドで更新されています。同期の再試行で最新状態を確認してください。');
+                        const localBefore = await ProjectStorage.getProject(id);
+                        if (localBefore) {
+                            const folders = await ProjectStorage.listFolders();
+                            const localPath = ProjectStorage.folderPathNames(localBefore.folderId, ProjectStorage.buildFolderTree(folders).byId);
+                            if (JSON.stringify(localPath) !== JSON.stringify(pending.path)) throw new Error('別タブで所属が変更されています。現在の所属を確認して移動操作をやり直してください。');
+                        }
+                        const patch = {folder_path:pending.path};
+                        if (pending.binding) {
+                            patch.state = Object.assign({}, remote.state || {}, {normalizationBinding:pending.binding});
+                            patch.meta = Object.assign({}, remote.meta || {}, {normalizationBinding:pending.binding});
+                        }
+                        const row = await Cloud.patchRowIfUnchanged(id, patch, pending.expectedUpdatedAt);
+                        if (!row) throw new Error('クラウドで更新されています。最新状態を確認し、移動操作をやり直してください。');
+                        // The remote operation is complete even if a newer local edit
+                        // prevents acknowledgement. Never retry a successful old CAS.
+                        await changeFolderQueue(id, null, pending);
+                        const latest = await ProjectStorage.getProject(id);
+                        if (latest) {
+                            const folders = await ProjectStorage.listFolders();
+                            const path = ProjectStorage.folderPathNames(latest.folderId, ProjectStorage.buildFolderTree(folders).byId);
+                            if (JSON.stringify(path) === JSON.stringify(pending.path)) {
+                                const expected = latest.updatedAt;
+                                latest.cloudUpdatedAt = row.updated_at;
+                                latest.cloudStateHash = Cloud.hashState(row.state || {});
+                                try { await ProjectStorage.putProjectsIfUnchanged([{project:latest,expectedUpdatedAt:expected}]); }
+                                catch (e) { console.warn('[cloud] 所属は同期済みです。新しいローカル編集は保持しました:', id, e); }
+                            }
+                        }
+                    } catch (e) { failures.push((pending.name || id) + ': ' + e.message); }
+                }
+                if (failures.length) throw new Error(failures.join('\n'));
+            })();
+            try { await folderSyncTask; } finally { folderSyncTask = null; }
         }
 
         // ---- ログイン画面 ----------------------------------------------------
