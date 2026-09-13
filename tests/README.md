@@ -30,6 +30,15 @@ analytes do not use local D4 denominators; reference snapshots and ranges are fi
 require a compatible ROI calibration; unavailable values are not zero-filled;
 stale Viewer saves cannot erase newer Master settings.
 
+Display ranges in v2.12 are versioned separately from immutable normalization
+profiles. Tests cover exact finite nearest-rank P99, sparse/all-zero/signed data,
+per-molecule raw/normalized manual settings, reversible legacy migration and
+the huge-group-range black-image regression. Common P99 snapshots pool all
+valid corrected pixels of the same method/name/unit, require the complete
+portable member inventory and never mutate historical profile ranges or hashes.
+Display-only updates, cloud/ZIP restoration and effective Excel/PNG provenance
+must preserve correction arrays and ROI numerical summaries.
+
 Folder normalization in v2.10 adds a second-level group boundary: the selected
 folder and every descendant form one target set, while root/first-level datasets
 remain outside the automatic groups. Reference datasets and common ranges must

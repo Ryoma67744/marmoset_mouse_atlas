@@ -12,7 +12,7 @@ async function startBrowserHarness() {
       const pathname = decodeURIComponent(new URL(request.url, 'http://localhost').pathname);
       if (pathname === '/__test_seed') {
         response.setHeader('Content-Type', 'text/html; charset=utf-8');
-        response.end('<!doctype html><meta charset="utf-8"><script src="/lib/storage.js"></script><script src="/lib/msi.js"></script><script src="/lib/normalization-scope.js"></script><script src="/lib/normalization.js"></script>');
+        response.end('<!doctype html><meta charset="utf-8"><script src="/lib/storage.js"></script><script src="/lib/msi.js"></script><script src="/lib/normalization-scope.js"></script><script src="/lib/normalization.js"></script><script src="/lib/display-range.js"></script>');
         return;
       }
       const filename = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));

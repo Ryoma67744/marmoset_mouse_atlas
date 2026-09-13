@@ -37,7 +37,7 @@ function context(maxRows) {
     write: workbook => { c.lastWorkbook = workbook; return new Uint8Array([1, 2, 3]); },
   };
   vm.createContext(c);
-  for (const file of ['msi.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
+  for (const file of ['msi.js', 'display-range.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
     let source = fs.readFileSync(path.join(__dirname, '../lib', file), 'utf8');
     if (file === 'excelio.js' && maxRows) source = source.replace('const EXCEL_MAX_ROWS = 1048576;', 'const EXCEL_MAX_ROWS = ' + maxRows + ';');
     vm.runInContext(source, c, { filename: file });
