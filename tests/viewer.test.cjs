@@ -550,7 +550,7 @@ test('Simple Viewer renders generic corrected molecules with distinct ranges and
     assert.deepEqual(view.values,[0,8,NaN,16,20,24,28,32]);
     assert.equal(view.standardValues[0],2,'the selected internal standard remains raw QC');
     assert.doesNotMatch(view.unit,/生信号|補正対象外/);
-    assert.ok(view.genericRange[1] > 32,'the same analyte uses its saved group range, including the other section');
+    assert.equal(view.genericRange[1],32,'the default automatic range uses this image rather than another section');
     assert.ok(view.genericRange[1] < view.gabaRange[1] / 10,'different generic analytes must not share one pooled scale');
     assert.deepEqual(view.rawBits,setup.rawBits);
     await page.evaluate(() => {

@@ -18,7 +18,7 @@ function app(maxRows) {
   const c = { console, XLSX, JSZip, Float32Array, Float64Array, Uint8Array, Blob };
   c.window = c;
   vm.createContext(c);
-  for (const file of ['msi.js', 'normalization-scope.js', 'normalization.js', 'otsu.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
+  for (const file of ['msi.js', 'normalization-scope.js', 'normalization.js', 'display-range.js', 'otsu.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
     let source = fs.readFileSync(path.join(__dirname, '../lib', file), 'utf8');
     if (file === 'excelio.js' && maxRows) source = source.replace('const EXCEL_MAX_ROWS = 1048576;', 'const EXCEL_MAX_ROWS = ' + maxRows + ';');
     vm.runInContext(source, c, { filename: file });

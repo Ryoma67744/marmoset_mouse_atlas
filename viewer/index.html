@@ -18,6 +18,7 @@
     <script src="../lib/msi.js"></script>
     <script src="../lib/normalization-scope.js"></script>
     <script src="../lib/normalization.js"></script>
+    <script src="../lib/display-range.js"></script>
     <script src="../lib/ingest.js"></script>
     <script src="../lib/imzml.js"></script>
     <script src="../lib/zipio.js"></script>
@@ -303,7 +304,9 @@
                         <span>表示値:</span>
                         <button type="button" id="value-normalized" class="px-2 py-1 rounded border" aria-pressed="false">補正・正規化</button>
                         <button type="button" id="value-raw" class="px-2 py-1 rounded border" aria-pressed="true">生値</button>
-                        <label>色レンジ <select id="value-scale" class="border rounded"><option value="common">固定共通レンジ</option><option value="individual">個別レンジ</option></select></label>
+                        <label>選択分子の色レンジ <select id="value-scale" class="border rounded"><option value="individual">自動：この画像</option><option value="common">共通：同じフォルダー・同じ分子</option><option value="manual">手動</option></select></label>
+                        <button type="button" id="value-range-auto-all" class="px-2 py-1 rounded border" title="現在の表示値について、全MSI分子を画像ごとの自動範囲に戻す">全MSIを自動</button>
+                        <button type="button" id="value-range-restore" class="px-2 py-1 rounded border" hidden>以前の表示範囲を復元</button>
                     </div>
                     <div id="normalization-skipped-notice" hidden class="shrink-0 px-2 py-2 text-sm font-semibold bg-amber-100 text-amber-900 border border-amber-400 rounded" role="status" aria-live="polite">内部標準なし・未補正（生値表示）</div>
                     <div id="value-display-status" class="shrink-0 text-xs px-2 py-1 bg-amber-50 max-h-24 overflow-y-auto" role="status" aria-live="polite"></div>
@@ -439,7 +442,8 @@
         let viewerNormalizationGroup = null;
         let viewerScopeAssessment = null;
         let viewerEffectiveNormalizationBinding = null;
-        let valueDisplay = { mode: 'raw', scale: 'common' };
+        let valueDisplay = { mode: 'raw', scale: 'individual' };
+        let displayRangeProject = null;
         let savedOtsuRequested = false;
         let otsuDraft = null;
         let otsuPending = false;
@@ -498,9 +502,6 @@
         function isNormalizationSkipped() { return !!window.Normalization?.isSkippedProfile(currentProject?.normalization); }
         function skippedNormalizationNotice() { return '内部標準なし・未補正（生値表示）'; }
         function isCorrectedChannel(channel) { return !!window.Normalization?.isCorrectedChannel(channel); }
-        function commonRangeForChannel(channel) {
-            return window.Normalization?.rangeForChannel(currentProject?.normalization, channel) || null;
-        }
         function showsAbsoluteQuantification() {
             const profile = currentProject?.normalization;
             return !isNormalizationSkipped() && !!profile && (Number(profile.schemaVersion || 1) < 3 || !!profile.calibration);
@@ -550,9 +551,27 @@
             if (values) for (const value of values) if (Number.isFinite(value)) { min = Math.min(min, value); max = Math.max(max, value); }
             return Number.isFinite(min) ? [min, max > min || !expand ? max : min + Math.max(1, Math.abs(min) * 0.01)] : [0, 1];
         }
+        // The D4 QC and unprocessed channels always retain their raw presentation state.
+        function prepareViewerDisplayRanges() {
+            if (!currentProject) return;
+            // Migration and cached range decisions are presentation state until a user
+            // saves. Opening a Viewer must not appear to create unsaved project edits.
+            displayRangeProject = { ...normalizationProjectForEvaluation(), valueDisplay: structuredClone(currentProject.valueDisplay || {}),
+                layerDisplay: structuredClone(currentProject.layerDisplay || {}) };
+            valueDisplay = { ...DisplayRange.prepareProject(displayRangeProject) };
+        }
+        function rangeModeForKey(key) { return displayRaster(key)?.derived ? 'normalized' : 'raw'; }
+        function rangeStrategyLabel(strategy) {
+            return ({ individual: '自動：この画像 (P99)', common: '共通：同じフォルダー・同じ分子 (P99)', manual: '手動' })[strategy] || '自動：この画像 (P99)';
+        }
+        function rangeStateForKey(key) {
+            return currentProject && valueRasters[key] ? DisplayRange.layerState(displayRangeProject, key, rangeModeForKey(key)) : null;
+        }
         function rememberModeRanges() {
+            // Compatibility fields record the effective window only. DisplayRange owns the
+            // separate automatic/common/manual preferences and never infers intent here.
             for (const [key, settings] of Object.entries(imageSettings)) {
-                if (valueRasters[key]) settings[valueDisplay.mode + 'Range'] = [settings.vmin, settings.vmax];
+                if (valueRasters[key]) settings[rangeModeForKey(key) + 'Range'] = [settings.vmin, settings.vmax];
             }
         }
         function useModeRanges() {
@@ -560,18 +579,41 @@
             for (const key of Object.keys(valueRasters)) {
                 const settings = imageSettings[key];
                 if (!settings) continue;
-                const vr = displayRaster(key), channel = channelResult(key);
-                const range = finiteRange(vr?.values), actual = finiteRange(vr?.values, false);
-                const commonRecord = valueDisplay.mode === 'normalized' && valueDisplay.scale === 'common'
-                    ? commonRangeForChannel(channel) : null;
-                const common = commonRecord && [commonRecord.min, commonRecord.max > commonRecord.min ? commonRecord.max : commonRecord.min + Math.max(1, Math.abs(commonRecord.min) * 0.01)];
-                const saved = settings[valueDisplay.mode + 'Range'];
-                const chosen = Array.isArray(common) && common.length === 2 && common.every(Number.isFinite) && common[1] > common[0]
-                    ? common : Array.isArray(saved) && saved.every(Number.isFinite) ? saved : range;
-                settings.vmin = chosen[0]; settings.vmax = chosen[1];
-                settings.actualMin = actual[0]; settings.actualMax = actual[1];
+                const vr = displayRaster(key);
+                if (!currentProject) {
+                    const range = finiteRange(vr?.values);
+                    settings.vmin = range[0]; settings.vmax = range[1];
+                    continue;
+                }
+                const result = DisplayRange.resolve({ project: displayRangeProject, key,
+                    mode: rangeModeForKey(key), values: vr?.values, channel: channelResult(key), rawFingerprint: normalizationEvaluation?.fingerprint });
+                settings.displayWindow = result;
+                settings.vmin = result.min; settings.vmax = result.max;
+                settings.actualMin = result.actualMin; settings.actualMax = result.actualMax;
             }
             fillSettingsStrip();
+        }
+        function syncRangeControls() {
+            const key = activeSettingsKey, state = key && rangeStateForKey(key);
+            const scale = document.getElementById('value-scale');
+            if (scale) {
+                scale.value = state?.strategy || 'individual';
+                scale.disabled = !state || otsuPending || !!otsuDraft;
+                const common = scale.querySelector('option[value="common"]');
+                if (common) common.disabled = !state || rangeModeForKey(key) !== 'normalized';
+            }
+            const restore = document.getElementById('value-range-restore');
+            if (restore) { restore.hidden = !state?.legacy; restore.disabled = otsuPending || !!otsuDraft; }
+            const all = document.getElementById('value-range-auto-all');
+            if (all) all.disabled = !Object.keys(valueRasters).length || otsuPending || !!otsuDraft;
+        }
+        function applyRangeStrategy(key, strategy) {
+            if (!currentProject || !valueRasters[key]) return;
+            const state = rangeStateForKey(key), settings = imageSettings[key];
+            if (strategy === 'manual' && !state.manual) {
+                DisplayRange.setManual(displayRangeProject, key, rangeModeForKey(key), settings.vmin, settings.vmax);
+            } else DisplayRange.setStrategy(displayRangeProject, key, rangeModeForKey(key), strategy);
+            valueDisplay.scale = strategy; // Legacy readers only; the active channel owns the real strategy.
         }
         function refreshValueDisplayUi() {
             const skipped = isNormalizationSkipped();
@@ -588,8 +630,7 @@
                     button.title = skipped ? skippedNormalizationNotice() : currentProject?.normalization ? '保存済みの補正設定で表示' : 'Master で補正設定を保存すると使用できます';
                 }
             }
-            const scale = document.getElementById('value-scale');
-            if (scale) scale.value = valueDisplay.scale;
+            syncRangeControls();
             const status = document.getElementById('value-display-status');
             if (!status) return;
             const lines = [valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではありません）' : '生値表示'];
@@ -606,16 +647,30 @@
             } else if (profile) lines.push(`Batch ${profile.batchId || '未設定'} / Profile ${profile.id} rev.${profile.revision} / ${profile.quality === 'validated' ? '検証済み設定' : '暫定設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
             else lines.push('補正設定なし：生値を表示しています。Master の「同位体5-HTで補正」で対象フォルダーを補正してください。表示切替だけでは補正設定は作成されません。');
             lines.push(...normalizationScopeLines());
-            if (valueDisplay.scale === 'individual') lines.push('⚠ 個別レンジ：色の明るさを切片間で直接比較できません。');
-            else if (valueDisplay.mode === 'raw') lines.push('生値は各分子の保存レンジ。切片間共通レンジは補正表示にのみ適用します。');
+            if (Object.keys(valueRasters).some(key => imageSettings[key]?.displayWindow?.strategy === 'individual')) lines.push('画像ごとの自動レンジ：色の明るさを切片間で直接比較できません。');
+            if (Object.keys(valueRasters).some(key => displayRangeProject?.layerDisplay?.[key]?.displayRanges?.normalized?.legacy)) lines.push('表示方法を更新しました。旧補正レンジは退避済みです。分子を選んで「以前の表示範囲を復元」できます。');
             const keys = checkedLayerKeys().filter(k => valueRasters[k]);
             for (const key of keys) {
                 const channel = channelResult(key), settings = imageSettings[key];
                 let label = `${formatDisplayName(key)}: ${channelUnit(key)} [${settings?.vmin ?? '—'}, ${settings?.vmax ?? '—'}]`;
                 if (valueDisplay.mode === 'normalized' && channel?.reasonCodes?.length) label += ' — ' + normalizationReasons(channel.reasonCodes);
-                if (valueDisplay.mode === 'normalized' && isCorrectedChannel(channel) && valueDisplay.scale === 'common') {
-                    if (channel.rangeScope === 'individual') label += '（分子の同一性を確認できないため個別レンジ）';
-                    else if (!commonRangeForChannel(channel)) label += '（共通レンジ未設定・個別表示）';
+                const windowInfo = settings?.displayWindow;
+                if (windowInfo) {
+                    label += ' / ' + rangeStrategyLabel(windowInfo.strategy);
+                    if (windowInfo.reason === 'DISPLAY_SOURCE_CHANGED') label += '（元データ・補正設定が変わったため、自動範囲に更新）';
+                    else if (windowInfo.reason === 'MANUAL_RANGE_INVALID') label += '（保存された手動範囲が無効なため、自動範囲で表示）';
+                    else if (windowInfo.reason) label += '（共通範囲を使用できないため、この画像の範囲で表示。Masterで分子名・共通表示レンジを確認してください）';
+                    if (windowInfo.status === 'ALL_ZERO' || (windowInfo.nFinite > 0 && windowInfo.actualMin === 0 && windowInfo.actualMax === 0)) label += ' / 有効画素はすべて0';
+                    else if (!windowInfo.nFinite) label += ' / 有限の表示値なし';
+                    else label += ' / 表示範囲外 ' + (100 * (windowInfo.clippedFraction || 0)).toFixed(2) + '%（値は保持）';
+                    if (windowInfo.strategy === 'common' && windowInfo.groupId) {
+                        label += ' / グループ ' + windowInfo.groupId + ' / 対象 ' + windowInfo.groupContributorCount + ' データ';
+                        if (windowInfo.maximum) {
+                            const maximum = windowInfo.maximum;
+                            label += ' / グループ最大値 ' + maximum.value + ' (' + maximum.dataName + ', x=' + maximum.x + ', y=' + maximum.y + ')';
+                            if (maximum.denominator != null) label += ' / 対応する内部標準値 ' + maximum.denominator;
+                        }
+                    }
                 }
                 lines.push(label);
             }
@@ -662,8 +717,19 @@
             document.getElementById('value-raw').addEventListener('click', () => changeValueMode('raw'));
             document.getElementById('value-normalized').addEventListener('click', () => changeValueMode('normalized'));
             document.getElementById('value-scale').addEventListener('change', event => {
-                if (otsuPending || otsuDraft) { event.target.value = valueDisplay.scale; return; }
-                rememberModeRanges(); valueDisplay.scale = event.target.value; useModeRanges(); redrawValueViews(); saveValueDisplay();
+                if (otsuPending || otsuDraft) { syncRangeControls(); return; }
+                applyRangeStrategy(activeSettingsKey, event.target.value);
+                useModeRanges(); redrawValueViews(); saveValueDisplay();
+            });
+            document.getElementById('value-range-auto-all').addEventListener('click', () => {
+                if (otsuPending || otsuDraft) return;
+                for (const key of Object.keys(valueRasters)) applyRangeStrategy(key, 'individual');
+                useModeRanges(); redrawValueViews(); saveValueDisplay();
+            });
+            document.getElementById('value-range-restore').addEventListener('click', () => {
+                if (otsuPending || otsuDraft || !valueRasters[activeSettingsKey]) return;
+                DisplayRange.restoreLegacy(displayRangeProject, activeSettingsKey, rangeModeForKey(activeSettingsKey));
+                useModeRanges(); redrawValueViews(); saveValueDisplay();
             });
             refreshValueDisplayUi();
         }
@@ -845,10 +911,10 @@
             annotated.width = Math.max(W, 640);
             const info = [
                 ...(isNormalizationSkipped() ? [skippedNormalizationNotice()] : []),
-                (valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではない）' : '生値表示') + ' / ' + (valueDisplay.scale === 'common' ? '固定レンジ（未設定分子は個別）' : '個別レンジ'),
+                (valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではない）' : '生値表示'),
                 ...checkedLayerKeys().filter(key => valueRasters[key]).map(key => {
                     const settings = imageSettings[key];
-                    return formatDisplayName(key) + ': ' + channelUnit(key) + ' / range [' + settings?.vmin + ', ' + settings?.vmax + ']';
+                    return formatDisplayName(key) + ': ' + channelUnit(key) + ' / ' + rangeStrategyLabel(settings?.displayWindow?.strategy) + ' / range [' + settings?.vmin + ', ' + settings?.vmax + ']' + ' / 表示範囲外 ' + (100 * (settings?.displayWindow?.clippedFraction || 0)).toFixed(2) + '%' + (settings?.displayWindow?.groupId ? ' / Group ' + settings.displayWindow.groupId : '');
                 }),
                 otsuState.applied ? 'Otsu ON / 判定可能画素の非表示 ' + (otsuState.record?.nOriginal ? (100 * otsuState.record.nRemoved / otsuState.record.nOriginal).toFixed(1) : '0.0') + '% / 未判定は表示維持 / ROI・Excel の解析値への影響なし' : 'Otsu OFF / ROI・Excel の解析値への影響なし',
                 '灰色: 測定済み・算出不可 / 透明: 未測定 / Profile: ' + (currentProject?.normalization?.id || '未設定') + ' rev.' + (currentProject?.normalization?.revision || '—'),
@@ -1014,9 +1080,10 @@
             normalizationEvaluation = window.Normalization && currentProject ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
             viewerEvaluatedProfile = JSON.stringify(currentProject?.normalization || null);
             const savedMode = currentProject?.valueDisplay?.mode;
+            prepareViewerDisplayRanges();
             valueDisplay.mode = !currentProject?.normalization || isNormalizationSkipped() ? 'raw' : ['normalized', 'raw'].includes(savedMode) ? savedMode
                 : normalizationEvaluation && ['VALID', 'PROVISIONAL', 'PARTIAL'].includes(normalizationEvaluation.status) ? 'normalized' : 'raw';
-            valueDisplay.scale = currentProject?.valueDisplay?.scale === 'individual' ? 'individual' : 'common';
+            valueDisplay.scale = valueDisplay.scale || 'individual';
             populateRoiList();
             // ★ キャンバスの寸法を決める前に出す。あとから左半分が現れると
             //   #image-viewer の幅が縮み、フィット計算が古い幅のままずれる。
@@ -1253,18 +1320,24 @@ function loadAllImages() {
                 const fmt = fmtFor(key);
                 let vmin = parseFloat(vminInput.value);
                 let vmax = parseFloat(vmaxInput.value);
-                if (!Number.isFinite(vmin)) vmin = settings.actualMin;
-                if (!Number.isFinite(vmax)) vmax = settings.actualMax;
+                if (!Number.isFinite(vmin)) vmin = Number.isFinite(settings.actualMin) ? settings.actualMin : settings.vmin;
+                if (!Number.isFinite(vmax)) vmax = Number.isFinite(settings.actualMax) ? settings.actualMax : settings.vmax;
                 if (!(vmax > vmin)) {
                     // 上下が交差したら、直近に触られていない側を最小限ずらす
                     const eps = settings.raw ? Math.max(1e-9, Math.abs(vmin) * 1e-6) : 1;
                     vmax = vmin + eps;
                 }
+                if (!Number.isFinite(vmin) || !Number.isFinite(vmax) || !(vmax > vmin) || !Number.isFinite(vmax - vmin)) {
+                    fillSettingsStrip();
+                    alert('表示範囲は、差が有限となる下限・上限を指定してください。');
+                    return;
+                }
                 settings.vmin = vmin;
                 settings.vmax = vmax;
                 if (valueRasters[key]) {
-                    valueDisplay.scale = 'individual';
-                    if (currentProject) currentProject.valueDisplay = { ...valueDisplay };
+                    DisplayRange.setManual(displayRangeProject, key, rangeModeForKey(key), vmin, vmax);
+                    valueDisplay.scale = 'manual';
+                    useModeRanges();
                 }
                 vminInput.value = fmt(vmin);
                 vmaxInput.value = fmt(vmax);
@@ -1280,10 +1353,8 @@ function loadAllImages() {
                 if (!settings) return;
                 const vr2 = displayRaster(key);
                 if (vr2) {
-                    const range = finiteRange(vr2.values);
-                    settings.vmin = range[0]; settings.vmax = range[1];
-                    valueDisplay.scale = 'individual';
-                    if (currentProject) currentProject.valueDisplay = { ...valueDisplay };
+                    applyRangeStrategy(key, 'individual');
+                    useModeRanges();
                 } else {
                     settings.vmin = settings.actualMin; settings.vmax = settings.actualMax;
                 }
@@ -1344,6 +1415,7 @@ function loadAllImages() {
         /** ストリップの表示を activeSettingsKey のレイヤに合わせる */
         function fillSettingsStrip() {
             const strip = document.getElementById('layer-settings-strip');
+            syncRangeControls();
             if (!strip || !strip.dataset.built) return;
             const key = activeSettingsKey;
             const settings = key ? imageSettings[key] : null;
@@ -1357,7 +1429,7 @@ function loadAllImages() {
             strip.querySelector('#strip-range-label').textContent =
                 '強度レンジ ' + (isRaw ? '(' + channelUnit(key) + ')' : '(輝度 0-255)');
             strip.querySelector('#strip-actual').textContent =
-                '実測 ' + fmt(settings.actualMin) + ' 〜 ' + fmt(settings.actualMax);
+                '実測 ' + fmt(settings.actualMin) + ' 〜 ' + fmt(settings.actualMax) + (settings.displayWindow ? ' / ' + rangeStrategyLabel(settings.displayWindow.strategy) + ' / 範囲外 ' + (100 * (settings.displayWindow.clippedFraction || 0)).toFixed(2) + '%' : '');
 
             const vminInput = strip.querySelector('.vmin-input');
             const vmaxInput = strip.querySelector('.vmax-input');
@@ -1607,19 +1679,22 @@ function loadAllImages() {
             currentProject.visibleLayers = checkedLayerKeys();
             queueSaveProject();
         }
+        function serializeViewerLayerDisplay() {
+            rememberModeRanges();
+            currentProject.valueDisplay = { ...valueDisplay };
+            currentProject.layerDisplay = currentProject.layerDisplay || {};
+            for (const [key, s] of Object.entries(imageSettings)) {
+                const record = { ...(currentProject.layerDisplay[key] || {}),
+                    vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
+                    grayscale: !!s.grayscale, rawRange: s.rawRange, normalizedRange: s.normalizedRange,
+                    ...(s.displayWindow ? { effectiveDisplayRange: { ...s.displayWindow, mode: rangeModeForKey(key) } } : {}),
+                };
+                currentProject.layerDisplay[key] = valueRasters[key] ? DisplayRange.serializeLayer(displayRangeProject, key, record) : record;
+            }
+        }
         function persistLayerDisplay() {
             if (!currentProject) return;
-            rememberModeRanges();
-            currentProject.layerDisplay = currentProject.layerDisplay || {};
-            for (const key of Object.keys(imageSettings)) {
-                const s = imageSettings[key];
-                currentProject.layerDisplay[key] = {
-                    ...(currentProject.layerDisplay[key] || {}),
-                    vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
-                    grayscale: !!s.grayscale,
-                    rawRange: s.rawRange, normalizedRange: s.normalizedRange,
-                };
-            }
+            serializeViewerLayerDisplay();
             refreshValueDisplayUi();
             queueSaveProject();
         }
@@ -3099,8 +3174,7 @@ function loadAllImages() {
         // ビューア側の現在値をプロジェクトに書き戻す
         function syncProjectFromViewer() {
             if (!currentProject) return;
-            rememberModeRanges();
-            currentProject.valueDisplay = { ...valueDisplay };
+            serializeViewerLayerDisplay();
             currentProject.visibleLayers = checkedLayerKeys();
             currentProject.viewerTransform = Object.assign({}, viewTransform);
             currentProject.rotation = {
@@ -3109,16 +3183,6 @@ function loadAllImages() {
             currentProject.otsu = committedOtsuSettings();
             currentProject.roi = atlasData.roi || currentProject.roi;
             currentProject.world_coords = atlasData.world_coords || currentProject.world_coords;
-            currentProject.layerDisplay = currentProject.layerDisplay || {};
-            for (const key of Object.keys(imageSettings)) {
-                const s = imageSettings[key];
-                currentProject.layerDisplay[key] = {
-                    ...(currentProject.layerDisplay[key] || {}),
-                    vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
-                    grayscale: !!s.grayscale,
-                    rawRange: s.rawRange, normalizedRange: s.normalizedRange,
-                };
-            }
         }
 
         async function exportZip() {
@@ -4165,9 +4229,8 @@ function loadAllImages() {
       await loadViewerScopeContext(currentProject);
       normalizationEvaluation = window.Normalization ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
       analysisRoiCache.clear();
+      prepareViewerDisplayRanges();
       if (!currentProject.normalization || isNormalizationSkipped()) valueDisplay.mode = 'raw';
-      else if (['raw', 'normalized'].includes(currentProject.valueDisplay?.mode)) valueDisplay.mode = currentProject.valueDisplay.mode;
-      valueDisplay.scale = currentProject.valueDisplay?.scale === 'individual' ? 'individual' : 'common';
       useModeRanges();
       redrawValueViews();
       const active = document.querySelector('.roi-item.active');
