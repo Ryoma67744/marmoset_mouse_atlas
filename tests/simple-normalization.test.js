@@ -217,3 +217,146 @@ test('v2 golden fingerprint, formulas and role keyed range are unchanged from re
   assert.deepEqual(plain(N.rangeForChannel(a.project.normalization, ev.channels.a)), { min: 6, max: 6 });
   assert.equal(N.SCHEMA_VERSION, 2); assert.equal(N.METHOD_VERSION, '1.0.0');
 });
+
+test('absent standards are explicitly skipped and excluded from group references and corrected ranges', () => {
+  const a = entry('a', { h: [10, 20], d: [2, 2], g: [6, 12] });
+  const skipped = entry('absent', { h: [1e6, 2e6], g: [1e8, 2e8], duplicate: [1e9, 2e9] }, { duplicate: 'Glutamate' });
+  const c = entry('c', { h: [20, 40], d: [4, 4], g: [12, 24] });
+  const out = apply([a, skipped, c]);
+  assert.equal(out.canSave, true); assert.deepEqual(plain(out.summary), { total: 3, corrected: 2, skipped: 1 });
+  assert.deepEqual(out.preview.map(p => p.skipped), [false, true, false]);
+  for (const e of [a, skipped, c]) {
+    assert.deepEqual(Array.from(e.project.normalization.scope.memberIds), ['a', 'absent', 'c']);
+    assert.deepEqual(Array.from(e.project.normalization.reference.projectIds), ['a', 'c']);
+    assert.deepEqual(Array.from(e.project.normalization.reference.entries, r => r.Ds), [2, 4]);
+  }
+  assert.equal(a.project.normalization.section.Dref, 3); assert.equal(a.project.normalization.section.k, 1.5);
+  assert.equal(c.project.normalization.section.k, 0.75);
+  const ev = N.evaluate(a.project, a.rasters), skipEval = N.evaluate(skipped.project, skipped.rasters);
+  assert.equal(ev.channels.g.rangeScope, 'group', 'duplicates in skipped data do not split active ranges');
+  assert.deepEqual(plain(N.rangeForChannel(a.project.normalization, ev.channels.g)), { min: 9, max: 18 });
+  assert.deepEqual(plain(skipped.project.normalization.commonRanges), plain(a.project.normalization.commonRanges));
+  assert.equal(skipEval.status, 'SKIPPED'); assert.equal(N.isSkippedProfile(skipped.project.normalization), true);
+  assert.deepEqual(plain(skipped.project.normalization.application), { status: 'skipped', reasonCode: 'INTERNAL_STANDARD_MISSING' });
+  assert.deepEqual(plain(skipped.project.normalization.mapping), { ht: null, d4: null, da: null, ne: null });
+  assert.deepEqual(Array.from(skipped.project.normalization.targets), []);
+  for (const field of ['Ds', 'Dref', 'k']) assert.equal(skipped.project.normalization.section[field], null);
+  for (const channel of Object.values(skipEval.channels)) {
+    assert.equal(channel.values, null); assert.equal(channel.method, 'not_applied'); assert.equal(channel.applicable, false);
+    assert.equal(channel.unit, 'raw a.u.'); assert.equal(channel.status, 'SKIPPED');
+    assert.deepEqual(Array.from(channel.reasonCodes), ['INTERNAL_STANDARD_MISSING']);
+    assert.equal(N.rangeForChannel(skipped.project.normalization, channel), null);
+  }
+  assert.equal(quantify(skipped)[0].raw.mean, 1.5e6); assert.equal(quantify(skipped)[0].normalized.mean, null);
+  assert.equal(quantify(skipped)[0].status, 'SKIPPED'); assert.ok(quantify(skipped)[0].reasonCodes.includes('INTERNAL_STANDARD_MISSING'));
+});
+
+test('all-absent groups save explicit skip records without references, HT disambiguation or absolute quantification', () => {
+  const a = entry('a', { h: [2, 4], h2: [6, 8] }, { h2: 'Serotonin' }), b = entry('b', { g: [10, 20] });
+  assert.equal(N.suggestSimpleMapping(a.project, a.rasters).skipEligible, true);
+  assert.deepEqual(Array.from(N.suggestSimpleMapping(a.project, a.rasters).issues), []);
+  const out = apply([a, b], { mode: 'advanced', reference: { kind: 'roi', projectIds: [], roiNames: [] }, calibration: curve({ source: '' }) });
+  assert.equal(out.canSave, true); assert.deepEqual(plain(out.summary), { total: 2, corrected: 0, skipped: 2 });
+  assert.deepEqual(Array.from(out.reasonCodes), []);
+  for (const e of [a, b]) {
+    assert.deepEqual(plain(e.project.normalization.reference.projectIds), []);
+    assert.deepEqual(plain(e.project.normalization.reference.entries), []);
+    assert.deepEqual(plain(e.project.normalization.commonRanges), {});
+    assert.equal(N.evaluate(e.project, e.rasters).status, 'SKIPPED');
+    for (const row of quantify(e)) {
+      assert.equal(row.status, 'SKIPPED'); assert.equal(row.normalized.mean, null); assert.equal(row.normalized.n, 0);
+      assert.equal(row.absolute.status, 'NOT_APPLICABLE'); assert.equal(row.absolute.value, null);
+      assert.deepEqual(Array.from(row.absolute.reasonCodes), ['INTERNAL_STANDARD_MISSING']);
+    }
+  }
+});
+
+test('declared unreadable, ambiguous or invalid standards never become absence skips', () => {
+  const absent = entry('absent', { h: [2] });
+  const unreadable = entry('unreadable', { h: [2] });
+  unreadable.project.molecules.push({ key: 'd', name: 'D4-5-HT' });
+  assert.equal(N.suggestSimpleMapping(unreadable.project, unreadable.rasters).skipEligible, false);
+  assert.ok(N.suggestSimpleMapping(unreadable.project, unreadable.rasters).issues.includes('RAW_MISSING'));
+  assert.throws(() => apply([absent, unreadable]), error => error.code === 'RAW_MISSING');
+  const ambiguous = entry('ambiguous', { h: [2], d: [1] });
+  ambiguous.project.molecules.push({ key: 'd2', name: '5-HT-d4' });
+  assert.equal(N.suggestSimpleMapping(ambiguous.project, ambiguous.rasters).standardKey, null);
+  assert.ok(N.suggestSimpleMapping(ambiguous.project, ambiguous.rasters).issues.includes('D4_AMBIGUOUS'));
+  ambiguous.simpleMapping = { standardKey: null };
+  assert.throws(() => apply([ambiguous]), error => error.code === 'D4_AMBIGUOUS');
+  for (const d4 of [0, NaN, -1, 100]) {
+    const invalid = entry('invalid', { h: [2], d: [d4] });
+    const out = apply([absent, invalid], { qc: { saturationD4: 100 } });
+    assert.equal(out.canSave, false); assert.equal(N.isSkippedProfile(invalid.project.normalization), false);
+    assert.ok(out.reasonCodes.includes('REFERENCE_PARTIAL'));
+  }
+  const brokenTarget = entry('broken-target', { h: [2] });
+  brokenTarget.project.molecules.push({ key: 'g', name: 'Glutamate', blobId: 'unreadable-blob' });
+  assert.throws(() => apply([brokenTarget]), error => error.code === 'RAW_MISSING');
+  const wrongShape = entry('wrong-shape', { h: [2, 4] });
+  wrongShape.rasters.h.W = 1;
+  assert.throws(() => apply([absent, wrongShape]), error => error.code === 'COORDINATE_MISMATCH');
+});
+
+test('only skipped members are filtered from requested references and custom numeric standard selection can override absence', () => {
+  const a = entry('a', { d: [2], g: [10] }), absent = entry('absent', { g: [1e9] }), c = entry('c', { d: [4], g: [20] });
+  const entries = [a, absent, c];
+  assert.equal(apply(entries, { reference: { kind: 'd4_measured', projectIds: ['a', 'c'], roiNames: [] } }).canSave, true);
+  assert.throws(() => apply(entries, { reference: { kind: 'd4_measured', projectIds: ['a', 'absent'], roiNames: [] } }), /参照/);
+  const chosen = apply(entries, { mode: 'advanced', reference: { kind: 'd4_measured', projectIds: ['a', 'absent'], roiNames: [] } });
+  assert.equal(chosen.canSave, true); assert.equal(c.project.normalization.section.Dref, 2);
+  assert.deepEqual(Array.from(c.project.normalization.reference.projectIds), ['a']);
+  assert.throws(() => apply(entries, { mode: 'advanced', reference: { kind: 'd4_measured', projectIds: ['absent'], roiNames: [] } }), /参照/);
+  const custom = entry('custom', { h: [10], custom: [2], g: [6] }, { custom: 'Internal standard (custom)' });
+  assert.equal(N.suggestSimpleMapping(custom.project, custom.rasters).skipEligible, true);
+  custom.simpleMapping = { standardKey: 'custom' };
+  assert.equal(apply([custom]).canSave, true); assert.equal(N.isSkippedProfile(custom.project.normalization), false);
+  assert.equal(N.evaluate(custom.project, custom.rasters).channels.h.values[0], 5);
+});
+
+test('skip records preserve raw bits and retain stale or changed membership checks', () => {
+  const a = entry('a', { h: [-0, NaN, 1 / 3, -2] });
+  const before = Buffer.from(a.rasters.h.values.buffer).toString('hex');
+  apply([a]);
+  const frozen = JSON.stringify(a.project.normalization);
+  N.evaluate(a.project, a.rasters); quantify(a);
+  assert.equal(Buffer.from(a.rasters.h.values.buffer).toString('hex'), before);
+  assert.equal(quantify(a)[0].raw.n, 3); assert.equal(quantify(a)[0].rawStatus, 'PARTIAL');
+  a.project.normalization.targets = [{ key: 'h', method: 'pixel_ratio', rangeScope: 'group', analyteId: 'tampered' }];
+  const tampered = N.evaluate(a.project, a.rasters);
+  assert.equal(tampered.status, 'UNAVAILABLE'); assert.equal(tampered.channels.h.unit, 'raw a.u.');
+  assert.equal(tampered.channels.h.applicable, false); assert.equal(tampered.channels.h.values, null);
+  a.project.normalization = JSON.parse(frozen);
+  a.project.normalizationBinding = null;
+  const moved = N.evaluate(a.project, a.rasters);
+  assert.equal(moved.status, 'UNAVAILABLE'); assert.ok(moved.reasonCodes.includes('GROUP_MEMBERSHIP_CHANGED'));
+  assert.ok(moved.reasonCodes.includes('INTERNAL_STANDARD_MISSING')); assert.equal(quantify(a)[0].normalized.mean, null);
+  delete a.project.normalizationBinding;
+  a.rasters.h.values[2] = 9;
+  assert.ok(N.evaluate(a.project, a.rasters).reasonCodes.includes('NORMALIZATION_PROFILE_STALE'));
+  assert.equal(JSON.stringify(a.project.normalization), frozen);
+  a.project.normalization.application.reasonCode = 'different-reason';
+  assert.ok(N.evaluate(a.project, a.rasters).reasonCodes.includes('NORMALIZATION_PROFILE_STALE'));
+});
+
+test('explicit recalculation replaces a saved skip when the actual standard is added', () => {
+  const a = entry('a', { h: [10, 20], g: [6, 12] });
+  apply([a]); const skippedSnapshot = JSON.stringify(a.project.normalization);
+  a.project.molecules.push({ key: 'd', name: 'D4-5-HT' });
+  a.rasters.d = { W: 2, H: 1, values: new Float32Array([2, 2]) };
+  assert.ok(N.evaluate(a.project, a.rasters).reasonCodes.includes('NORMALIZATION_PROFILE_STALE'));
+  assert.equal(JSON.stringify(a.project.normalization), skippedSnapshot, 'discovery alone never rewrites a saved record');
+  const out = apply([a], { revision: 2 });
+  assert.equal(out.canSave, true); assert.deepEqual(plain(out.summary), { total: 1, corrected: 1, skipped: 0 });
+  assert.equal(N.isSkippedProfile(a.project.normalization), false); assert.equal(a.project.normalization.revision, 2);
+  assert.deepEqual(Array.from(N.evaluate(a.project, a.rasters).channels.h.values), [5, 10]);
+});
+
+test('active schema3 fingerprint is identical to released v2.11.0 when no member is skipped', () => {
+  const a = entry('simple-golden', { h: [10], d: [2], g: [6] });
+  apply([a]);
+  // Captured independently from the released source before adding skip support.
+  assert.equal(a.project.normalization.calculationFingerprint, 'cde76fd08417c1ca');
+  assert.equal(a.project.normalization.rawFingerprint, 'f32-v1:69e57487954ed50d');
+  assert.equal(Object.hasOwn(a.project.normalization, 'application'), false);
+});

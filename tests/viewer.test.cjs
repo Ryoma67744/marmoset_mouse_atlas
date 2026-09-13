@@ -460,6 +460,74 @@ async function seedSimpleViewerGroup(page, baseURL, { enforceCoverage = false } 
   }, {id,enforceCoverage});
 }
 
+test('Skipped correction keeps a persistent raw notice, ROI values and PNG provenance despite a saved normalized mode', {timeout:90000}, async () => {
+  const harness = await startBrowserHarness();
+  const {page,baseURL,errors} = harness;
+  page.on('dialog',dialog=>dialog.dismiss());
+  try {
+    const setup = await seedSimpleViewerGroup(page,baseURL);
+    await page.evaluate(async id => {
+      const project = await ProjectStorage.getProject(id);
+      const reference = await ProjectStorage.getProject(id + '-reference');
+      project.molecules = project.molecules.filter(m => m.key !== 'MSI_D4-5-HT');
+      const entries = [];
+      for (const p of [project, reference]) entries.push({project:p,rasters:await Normalization.loadRasters(p,{storage:ProjectStorage})});
+      const result = Normalization.createSimpleProfiles(entries,{...project.normalization,revision:2});
+      if (!result.canSave || !Normalization.isSkippedProfile(result.profiles[0].normalization)) throw new Error('Skip fixture was not saved');
+      for(let i=0;i<entries.length;i++) {
+        entries[i].project.normalization=result.profiles[i].normalization;
+        // Imported/older display preferences must never relabel skipped raw data.
+        entries[i].project.valueDisplay={mode:'normalized',scale:'common'};
+        await ProjectStorage.putProject(entries[i].project);
+      }
+    },setup.id);
+    await page.goto(baseURL + '/viewer/index.html?project=' + setup.id);
+    await page.waitForFunction(()=>viewerReady && imageSettings.MSI_Glutamate);
+    assert.equal(await page.locator('#normalization-skipped-notice').isVisible(),true);
+    assert.equal(await page.locator('#normalization-skipped-notice').innerText(),'内部標準なし・未補正（生値表示）');
+    assert.equal(await page.locator('#value-normalized').isDisabled(),true);
+    assert.equal(await page.locator('#value-raw').getAttribute('aria-pressed'),'true');
+    const state=await page.evaluate(()=>({mode:valueDisplay.mode,unit:channelUnit('MSI_Glutamate'),values:Array.from(displayRaster('MSI_Glutamate').values),range:[imageSettings.MSI_Glutamate.vmin,imageSettings.MSI_Glutamate.vmax]}));
+    assert.equal(state.mode,'raw');
+    assert.match(state.unit,/内部標準なし・未補正/);
+    assert.deepEqual(state.values,[0,4,NaN,8,10,12,14,16]);
+    assert.ok(state.range[1]<=16,'the corrected group range must not be reused for skipped raw data');
+    const status=await page.locator('#value-display-status').innerText();
+    assert.match(status,/補正をスキップ/);
+    assert.doesNotMatch(status,/d4-5-HTを基準にした相対補正|グループ状態：適用済み|切片係数で補正した分子/);
+    await page.evaluate(async()=>{
+      await changeValueMode('normalized');
+      document.getElementById('graph-select-1').value='MSI_Glutamate';
+      document.getElementById('graph-select-2').value='none';
+      document.getElementById('graph-select-3').value='none';
+      displayGraphForRoi('all');
+    });
+    assert.equal(await page.evaluate(()=>valueDisplay.mode),'raw');
+    const cells=await page.locator('#graph-container table tr').nth(1).locator('td').allTextContents();
+    assert.ok(Math.abs(Number.parseFloat(cells[1])-64/7)<0.00001,'ROI must show the raw mean');
+    assert.match(cells[3],/内部標準なし・未補正（生値表示）/);
+    assert.doesNotMatch(await page.locator('#graph-container').innerText(),/絶対定量|検量線/);
+    const pngLabels=await page.evaluate(()=>{
+      const labels=[], original=CanvasRenderingContext2D.prototype.fillText;
+      CanvasRenderingContext2D.prototype.fillText=function(text,...args){labels.push(String(text));return original.call(this,text,...args);};
+      try {buildExportCanvas();} finally {CanvasRenderingContext2D.prototype.fillText=original;}
+      return labels.join('\n');
+    });
+    assert.match(pngLabels,/内部標準なし・未補正（生値表示）/);
+    assert.doesNotMatch(pngLabels,/補正・正規化表示|切片係数で補正した分子/);
+    // The same guard must run when a newer Master profile arrives in an open Viewer.
+    await page.evaluate(async()=>{
+      currentProject.valueDisplay.mode='normalized';
+      valueDisplay.mode='normalized';
+      await refreshViewerEvaluation();
+    });
+    assert.equal(await page.evaluate(()=>valueDisplay.mode),'raw');
+    assert.equal(await page.locator('#normalization-skipped-notice').isVisible(),true);
+    assert.deepEqual(await page.evaluate(()=>Array.from(new Uint32Array(valueRasters.MSI_Glutamate.values.buffer))),setup.rawBits);
+    assert.deepEqual(errors,[]);
+  } finally {await harness.close();}
+});
+
 test('Simple Viewer renders generic corrected molecules with distinct ranges and exports the same image to PNG', {timeout:90000}, async () => {
   const harness = await startBrowserHarness();
   const {page,baseURL,errors} = harness;
@@ -468,6 +536,7 @@ test('Simple Viewer renders generic corrected molecules with distinct ranges and
     const setup = await seedSimpleViewerGroup(page,baseURL);
     await page.goto(baseURL + '/viewer/index.html?project=' + setup.id);
     await page.waitForFunction(() => viewerReady && imageSettings.MSI_Glutamate);
+    assert.equal(await page.locator('#normalization-skipped-notice').isVisible(),false);
     const view = await page.evaluate(() => ({
       method:channelResult('MSI_Glutamate').method,
       values:Array.from(displayRaster('MSI_Glutamate').values),

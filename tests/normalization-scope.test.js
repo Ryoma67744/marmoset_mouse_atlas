@@ -23,6 +23,38 @@ function profile(project, ids = ['a', 'b'], overrides = {}) {
     groupId: 'uuid-c', folderPath: ['Marmoset', 'Coronal'], memberIds: ids }, ...overrides };
   project.normalizationBinding = { groupId: 'uuid-c', folderPath: ['Marmoset', 'Coronal'], memberId: project.id };
 }
+test('intentional missing-standard skips keep folder membership current without claiming every member was corrected', () => {
+  const f = fixture(), active = f.projects[0], skipped = f.projects[1];
+  const reference = {projectIds:['a'],entries:[{projectId:'a',memberId:'a',rawFingerprint:'raw-a'}]};
+  profile(active, ['a','b'], {schemaVersion:3,methodVersion:'2.0.0',mode:'simple',rawFingerprint:'raw-a',reference});
+  profile(skipped, ['a','b'], {schemaVersion:3,methodVersion:'2.0.0',mode:'simple',reference,
+    application:{status:'skipped',reasonCode:'INTERNAL_STANDARD_MISSING'}});
+  const group = () => S.buildGroups(f.projects,f.folders).groups.find(g=>g.folderId==='c');
+  const correction = S.assess(active,group()), omission = S.assess(skipped,group());
+  assert.equal(correction.status,'CURRENT'); assert.equal(correction.uncorrected,false);
+  assert.equal(omission.status,'CURRENT'); assert.equal(omission.uncorrected,true);
+  assert.equal(omission.correctedCount,1); assert.equal(omission.skippedCount,1);
+  assert.match(omission.reason,/内部標準なし.*生値/); assert.match(correction.reason,/補正対象 1件・スキップ 1件/);
+  assert.match(S.assess(skipped,null).reason,/スキップ.*未確認/);
+  assert.doesNotMatch(S.assess(skipped,null).reason,/係数を使用/);
+  // Portable IDs survive restoration; intentional omission is not a missing member.
+  active.id='restored-a'; skipped.id='restored-b';
+  assert.equal(S.assess(skipped,group()).status,'CURRENT');
+  skipped.normalization.revision=2;
+  assert.equal(S.assess(active,group()).status,'MIXED');
+  skipped.normalization.revision=1; skipped.normalizationBinding.groupId='other';
+  assert.equal(S.assess(skipped,group()).status,'MOVED');
+});
+test('all-skipped groups are recorded as zero corrections and scope still detects added members', () => {
+  const f=fixture();
+  for (const p of f.projects.slice(0,2)) profile(p,['a','b'],{schemaVersion:3,methodVersion:'2.0.0',mode:'simple',
+    reference:{projectIds:[],entries:[]},application:{status:'skipped',reasonCode:'INTERNAL_STANDARD_MISSING'}});
+  const group=()=>S.buildGroups(f.projects,f.folders).groups.find(g=>g.folderId==='c');
+  const assessment=S.assess(f.projects[0],group());
+  assert.equal(assessment.status,'CURRENT');assert.equal(assessment.correctedCount,0);assert.equal(assessment.skippedCount,2);
+  f.projects.push({id:'new',folderId:'deep'});
+  assert.equal(S.assess(f.projects[0],group()).status,'COMPOSITION_CHANGED');
+});
 test('actual second ancestor includes descendants and separates identical terminal names and top-level datasets', () => {
   const f = fixture(), built = S.buildGroups(f.projects, f.folders);
   assert.deepEqual(json(built.groups.map(g => [g.folderId, g.path, g.projectIds])), [
