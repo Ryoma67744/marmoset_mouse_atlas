@@ -130,3 +130,23 @@ test('authoritative cloud state omitting a profile does not resurrect archived n
   assert.equal(restored.project.valueDisplay.mode, 'raw');
   assert.equal(restored.project.cloudUpdatedAt, 'remote-current');
 });
+
+test('cloud state and metadata retain an explicit uncorrected skip and hash it separately from an unset profile', () => {
+  const c = app(), f = fixture(3);
+  f.project.normalization.application = { status: 'skipped', reasonCode: 'INTERNAL_STANDARD_MISSING' };
+  f.project.normalization.mapping = { ht: null, d4: null, da: null, ne: null };
+  f.project.normalization.targets = [];
+  f.project.normalization.section = { Ds: null, Dref: null, k: null, status: 'SKIPPED', reasonCodes: ['INTERNAL_STANDARD_MISSING'] };
+  f.project.valueDisplay = { mode: 'raw', scale: 'common' };
+  const state = c.Cloud.stateOf(f.project), restored = {};
+  c.Cloud.applyState(restored, state);
+  assert.equal(JSON.stringify(restored.normalization), JSON.stringify(f.project.normalization));
+  assert.equal(restored.valueDisplay.mode, 'raw');
+  assert.equal(JSON.stringify(c.Cloud.metaOf(restored).normalization.application), JSON.stringify(f.project.normalization.application));
+  assert.equal(c.Cloud.metaOf(restored).normalization.status, 'SKIPPED');
+  const skippedHash = c.Cloud.hashState(state);
+  delete restored.normalization.application;
+  assert.notEqual(c.Cloud.hashState(c.Cloud.stateOf(restored)), skippedHash, 'a lost skip marker must create a state mismatch');
+  restored.normalization = null;
+  assert.notEqual(c.Cloud.hashState(c.Cloud.stateOf(restored)), skippedHash, 'an unconfigured project differs from a deliberately recorded skip');
+});

@@ -8,7 +8,7 @@ const { startBrowserHarness, seedViewerProject } = require('./browser-harness.cj
 // Exercise the real Master saveCloud adapter, profile UI, IndexedDB, state
 // serializers, and ProjectSync CAS. Only cloud transport and ZIP byte building
 // are synthetic; real ZIP round-trips are covered by export integration tests.
-async function fixture(h, failStateOnce = false) {
+async function fixture(h, failStateOnce = false, absentStandard = false) {
   const source = await fs.readFile(path.join(__dirname, '../lib/cloud.js'), 'utf8');
   await h.context.route(h.baseURL + '/lib/cloud-config.js', route => route.fulfill({
     contentType: 'application/javascript', body: 'window.CLOUD_CONFIG = {};'
@@ -53,7 +53,7 @@ async function fixture(h, failStateOnce = false) {
   }));
   for (const id of ['simple-master-a', 'simple-master-b']) await seedViewerProject(h.page, h.baseURL, { id });
   await h.page.addScriptTag({ url: h.baseURL + '/lib/cloud.js' });
-  const before = await h.page.evaluate(async failStateOnce => {
+  const before = await h.page.evaluate(async ({ failStateOnce, absentStandard }) => {
     await ProjectStorage.putFolder({ id: 'species', name: 'Marmoset', parentId: null });
     await ProjectStorage.putFolder({ id: 'coronal', name: 'Coronal', parentId: 'species', normalizationGroupId: 'simple-master-group' });
     sessionStorage.setItem('marmoset:currentFolder', 'coronal');
@@ -65,6 +65,7 @@ async function fixture(h, failStateOnce = false) {
       if (p.id === 'simple-master-b') {
         const standard = p.molecules.find(m => m.key === 'MSI_D4-5-HT');
         standard.blobId = await ProjectStorage.putValueRaster(new Float32Array(8).fill(4));
+        if (absentStandard) p.molecules = p.molecules.filter(m => m !== standard);
       }
       const values = new Float32Array([0, 2, NaN, 4, 6, 8, 10, 12]);
       p.molecules.push({ key: 'MSI_Glutamate', name: 'Glutamate', blobId: await ProjectStorage.putValueRaster(values), stats: MSIRaster.deriveBakeStats(values) });
@@ -83,7 +84,7 @@ async function fixture(h, failStateOnce = false) {
     localStorage.setItem('simple-master-remote', JSON.stringify(remote));
     if (failStateOnce) localStorage.setItem('simple-master-fail-once', 'yes');
     return { bits, remote };
-  }, failStateOnce);
+  }, { failStateOnce, absentStandard });
   await h.page.goto(h.baseURL + '/');
   await h.page.waitForFunction(() => document.querySelectorAll('#project-list input.sel').length === 2);
   await h.page.evaluate(() => { ZipIO.exportProject = async () => new Blob(['synthetic raw replacement bundle']); });
@@ -105,7 +106,7 @@ async function snapshot(page) {
         bits[p.id + ':' + m.key] = Array.from(new Uint32Array(values.buffer, values.byteOffset, values.length));
       }
       const ev = Normalization.evaluate(p, rasters);
-      derived[p.id] = Array.from(ev.channels.MSI_Glutamate.values);
+      derived[p.id] = ev.channels.MSI_Glutamate.values ? Array.from(ev.channels.MSI_Glutamate.values) : null;
     }
     return { projects, bits, derived, remote: JSON.parse(localStorage.getItem('simple-master-remote')),
       calls: JSON.parse(localStorage.getItem('simple-master-calls') || '[]') };
@@ -159,6 +160,75 @@ test('actual Master simple apply uploads pending raw data and state-only setting
     assertSaved(after, before);
     assert.equal(after.calls.filter(call => call.kind === 'patch').length, 2);
     assert.deepEqual(dialogs, []); assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('actual Master saves absent-standard skip records with active members and retries only their failed cloud write', { timeout: 90000 }, async () => {
+  const h = await startBrowserHarness(), dialogs = [];
+  h.page.on('dialog', dialog => { dialogs.push(dialog.message()); return dialog.dismiss(); });
+  try {
+    const before = await fixture(h, true, true);
+    await h.page.locator('#normalization-simple-apply').click();
+    await waitSaved(h.page, 1);
+    const partial = await snapshot(h.page);
+    const active = partial.projects['simple-master-a'], skipped = partial.projects['simple-master-b'];
+    assert.deepEqual(partial.bits, before.bits);
+    assert.equal(active.normalization.id, skipped.normalization.id);
+    assert.equal(active.normalization.revision, 1);
+    assert.equal(skipped.normalization.revision, 1);
+    assert.equal(active.valueDisplay.mode, 'normalized');
+    assert.equal(skipped.valueDisplay.mode, 'raw');
+    assert.deepEqual(skipped.normalization.application, { status: 'skipped', reasonCode: 'INTERNAL_STANDARD_MISSING' });
+    assert.equal(active.normalization.application, undefined, 'existing active profile shape is retained');
+    for (const p of [active, skipped]) {
+      assert.deepEqual(p.normalization.scope.memberIds, ['simple-master-a', 'simple-master-b']);
+      assert.deepEqual(p.normalization.reference.projectIds, ['simple-master-a']);
+      assert.deepEqual(p.normalization.reference.entries.map(entry => entry.memberId), ['simple-master-a']);
+    }
+    assert.equal(active.normalization.section.Dref, 2);
+    assert.equal(active.normalization.section.k, 1);
+    assert.equal(skipped.normalization.section.Ds, null);
+    assert.equal(skipped.normalization.section.Dref, null);
+    assert.equal(skipped.normalization.section.k, null);
+    assert.deepEqual(skipped.normalization.targets, []);
+    assert.deepEqual(partial.derived['simple-master-a'], [0, 2, NaN, 4, 6, 8, 10, 12]);
+    assert.equal(partial.derived['simple-master-b'], null);
+    assert.equal(partial.remote['simple-master-b'].state.normalization, null);
+    assert.match(await h.page.locator('#normalization-status').innerText(), /スキップ|未補正/);
+    await h.page.locator('#normalization-simple-cloud').click();
+    await waitSaved(h.page, 2);
+    const after = await snapshot(h.page);
+    assert.deepEqual(after.bits, before.bits);
+    for (const id of ['simple-master-a', 'simple-master-b']) {
+      const p = after.projects[id];
+      assert.deepEqual(p.normalization, partial.projects[id].normalization);
+      assert.deepEqual(after.remote[id].state.normalization, p.normalization);
+      assert.equal(after.remote[id].state.valueDisplay.mode, p.valueDisplay.mode);
+      assert.equal(after.remote[id].updated_at, p.cloudUpdatedAt);
+    }
+    assert.deepEqual(after.remote['simple-master-b'].meta.normalization.application, skipped.normalization.application);
+    assert.equal(after.remote['simple-master-b'].meta.normalization.status, 'SKIPPED');
+    assert.equal(after.remote['simple-master-a'].meta.normalization.application, undefined);
+    assert.equal(after.calls.filter(call => call.kind === 'upload').length, 1);
+    assert.equal(after.calls.filter(call => call.kind === 'patch' && call.id === 'simple-master-a').length, 1);
+    assert.equal(after.calls.filter(call => call.kind === 'patch' && call.id === 'simple-master-b').length, 2);
+    assert.ok(after.calls.filter(call => call.kind === 'patch').every(call => call.expected === call.actual));
+    await h.page.locator('#normalization-close').click();
+    await h.page.reload();
+    await h.page.waitForFunction(() => document.querySelectorAll('#project-list input.sel').length === 2);
+    const skippedRow = h.page.locator('#project-list input.sel[value="simple-master-b"]').locator('..');
+    assert.match(await skippedRow.innerText(), /内部標準なし.*未補正|未補正.*内部標準なし/);
+    const assessments = await h.page.evaluate(async () => {
+      const projects = await ProjectStorage.listProjects(), folders = await ProjectStorage.listFolders();
+      const group = NormalizationScope.buildGroups(projects, folders).groups.find(g => g.folderId === 'coronal');
+      return projects.map(p => ({ id: p.id, ...NormalizationScope.assess(p, group) }));
+    });
+    for (const assessment of assessments) assert.equal(assessment.status, 'CURRENT');
+    await h.page.locator('#normalization-settings').click();
+    await h.page.locator('#normalization-simple-form').waitFor();
+    assert.equal(await h.page.locator('[data-simple-project]').count(), 2);
+    assert.deepEqual(dialogs, [], 'active and intentionally skipped records share one saved group');
+    assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
 

@@ -1479,6 +1479,7 @@
             const aligned = p.world_coords && p.world_coords.T_he_to_msi
                 ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
             const norm = p.normalization || p.__row && p.__row.state && p.__row.state.normalization;
+            const skippedNormalization = Normalization.isSkippedProfile(norm);
             const cloudNorm = p.__row && p.__row.state && p.__row.state.normalization;
             const group = NormalizationScope.buildGroups(cache.projects, cache.folders).groups.find(g => g.projectIds.includes(p.id));
             const scopeState = NormalizationScope.assess(Object.assign({}, p, {normalization:norm}), group || null);
@@ -1486,8 +1487,8 @@
             const profileLabel = norm && norm.schemaVersion === 3
                 ? (norm.mode === 'simple' ? '簡単設定' : '詳細設定') + ' / ' + (norm.targets || []).length + '分子' + (norm.batchId ? ' / ' + norm.batchId : '')
                 : norm ? norm.id + ' rev.' + norm.revision + ' / ' + norm.batchId : '';
-            const profileNote = (norm ? ('補正: ' + profileLabel +
-                (norm.invalidated ? ' — 再設定が必要' : norm.quality === 'validated' ? ' — 検証設定' : norm.schemaVersion === 3 ? ' — 相対補正' : ' — 暫定') +
+            const profileNote = (norm ? ((skippedNormalization ? '未補正: 内部標準なし（補正をスキップ）' : '補正: ' + profileLabel) +
+                (norm.invalidated ? ' — 再設定が必要' : skippedNormalization ? ' — 生値表示' : norm.quality === 'validated' ? ' — 検証設定' : norm.schemaVersion === 3 ? ' — 相対補正' : ' — 暫定') +
                 (cloudOn() && (!cloudNorm || norm.id !== cloudNorm.id || norm.revision !== cloudNorm.revision) ? ' / この設定はクラウド未同期' : '')) : '補正: 未設定') + scopeNote +
                 (pendingFolderChanges[p.id] ? ' / フォルダー同期未完了' : '');
             row.innerHTML =
@@ -1501,7 +1502,7 @@
                     (hasImmuno ? ' &nbsp;·&nbsp; 免染: あり' : '') +
                     ' &nbsp;·&nbsp; ' + aligned +
                   '</div>' +
-                  '<div class="text-xs text-gray-500 mt-0.5">' + esc(profileNote) + '</div>' +
+                  '<div class="text-xs ' + (skippedNormalization ? 'text-amber-700 font-semibold' : 'text-gray-500') + ' mt-0.5">' + esc(profileNote) + '</div>' +
                   '<div class="text-xs text-gray-400 mt-0.5">更新 ' + esc((p.updatedAt || '').slice(0, 19).replace('T', ' ')) + '</div>' +
                 '</div>' +
                 '<div class="flex items-center gap-1 shrink-0">' +

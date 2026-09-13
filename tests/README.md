@@ -81,7 +81,7 @@ The v2.11.0 simple workflow adds schema-3 profiles without rewriting schema-1/2
 hashes or equations. Selecting a second-level folder loads all descendants and
 suggests a unique d4-5-HT standard plus eligible numeric MSI targets. Ambiguous
 standards or 5-HT identities require an explicit mapping. Applying the folder
-uses every section as a fixed reference, computes section d4 medians over their
+uses every non-skipped section as a fixed reference, computes section d4 medians over their
 measured footprint, and applies the common reference divided by each median to
 all selected non-5-HT analytes. The 5-HT channel remains a pixel ratio. Missing
 values stay missing and measured zeros stay zero. A bad reference is never
@@ -107,3 +107,23 @@ round trips, and mixed-version scope assessment. Synthetic known-value fixtures
 check the 10/20/40 median example (factors 2/1/0.5), d4-independent section scaling,
 raw-bit invariance and exact legacy fingerprints. Final test runs are reported
 with each pull request rather than hard-coded here.
+
+The v2.11.1 missing-standard workflow skips a dataset only when the internal
+standard is genuinely undeclared and no numeric standard is explicitly selected.
+The folder still receives one atomic set of correction or skip records. Skip
+profiles retain every folder member in scope but contribute no section median,
+reference value, coefficient, or normalized range values. A folder with no
+standards can save skip records without manufacturing correction values.
+Ambiguous declared standards, registered but missing/corrupt rasters, nonnumeric
+standards, invalid d4 reference signals, and incompatible coordinates still block
+correction. A missing standard is never treated as a numeric zero.
+
+Regression scenarios include a mixed folder with section medians 2 and 4 plus an
+absent standard (reference 3), all-skipped folders, active-profile fingerprint
+compatibility, retained folder scope and cloud/ZIP provenance, and explicit
+reapplication after adding d4. UI checks cover automatic skip mapping, disabled
+irrelevant inputs, planned/applied counts, atomic saving, and existing CAS guards.
+Viewer and output checks require raw images and ROI summaries with a conspicuous
+uncorrected notice, even if an obsolete stored display mode says normalized.
+Normalized Excel cells stay blank with SKIPPED / INTERNAL_STANDARD_MISSING;
+raw values remain intact. PNG output also identifies uncorrected data.

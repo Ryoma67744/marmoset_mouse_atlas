@@ -137,6 +137,83 @@ function simpleFixture(c, withoutHt = false) {
   return { ...f, reference, refRasters };
 }
 
+function skippedFixture(c) {
+  const f = simpleFixture(c);
+  f.project.molecules = f.project.molecules.filter(m => m.key !== 'd');
+  delete f.rasters.d;
+  const created = c.Normalization.createSimpleProfiles([
+    { project: f.project, rasters: f.rasters },
+    { project: f.reference, rasters: f.refRasters },
+  ], { ...f.project.normalization, id: 'skipped-profile', revision: 2 });
+  assert.equal(created.canSave, true);
+  f.project.normalization = created.profiles[0].normalization;
+  f.reference.normalization = created.profiles[1].normalization;
+  assert.equal(c.Normalization.isSkippedProfile(f.project.normalization), true);
+  return f;
+}
+
+test('skipped internal-standard correction exports raw values and explicit skipped reasons without derived or absolute values', async () => {
+  const c = app(), f = skippedFixture(c);
+  const before = JSON.stringify(f.project);
+  const rawBefore = Object.fromEntries(Object.entries(f.rasters).map(([key, raster]) => [key, Buffer.from(raster.values.buffer).toString('hex')]));
+  const result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  const workbook = read(result), raw = rows(workbook, 'Data'), derived = rows(workbook, 'Normalized_Data');
+  assert.equal(result.normalization.status, 'SKIPPED');
+  assert.equal(result.normalization.skipped, true);
+  assert.equal(result.normalization.factor, null);
+  assert.equal(result.normalization.absoluteStatus, 'NOT_APPLIED');
+  assert.deepEqual(Array.from(result.normalization.absoluteReasonCodes), []);
+  assert.equal(raw[2][2], f.data.h[1]);
+  assert.equal(derived.length, raw.length);
+  for (let column = 2; column < 2 + f.project.molecules.length; column++) {
+    assert.match(derived[0][column], /not normalized: internal standard absent/);
+    assert.ok(derived.slice(1).every(row => row[column] === null));
+  }
+  const statusColumn = derived[0].indexOf('5-HT [status]');
+  assert.equal(derived[1][statusColumn], 'SKIPPED');
+  assert.match(derived[1][statusColumn + 1], /INTERNAL_STANDARD_MISSING/);
+  const roi = rows(workbook, 'ROI_Quantification'), header = roi[0];
+  for (const row of roi.slice(1)) {
+    assert.equal(row[header.indexOf('Status')], 'SKIPPED');
+    assert.match(row[header.indexOf('Reason codes')], /INTERNAL_STANDARD_MISSING/);
+    assert.ok(Number.isFinite(row[header.indexOf('Raw mean')]));
+    assert.equal(row[header.indexOf('Normalized mean')], null);
+    assert.equal(row[header.indexOf('Normalized n')], 0);
+    assert.equal(row[header.indexOf('Absolute value')], null);
+    assert.equal(row[header.indexOf('Absolute status')], 'NOT_APPLICABLE');
+    assert.equal(row[header.indexOf('Fixed display minimum')], null);
+    assert.equal(row[header.indexOf('Fixed display maximum')], null);
+  }
+  const metadata = new Map(rows(workbook, 'Normalization_Metadata').map(row => [row[0], row[1]]));
+  assert.equal(metadata.get('Correction skipped'), true);
+  assert.equal(metadata.get('Correction skip reason'), 'INTERNAL_STANDARD_MISSING');
+  assert.equal(metadata.get('normalization.application.status'), 'skipped');
+  assert.match(metadata.get('Group comparison'), /No correction was applied/);
+  assert.equal(JSON.stringify(f.project), before);
+  for (const [key, raster] of Object.entries(f.rasters)) assert.equal(Buffer.from(raster.values.buffer).toString('hex'), rawBefore[key]);
+});
+
+test('real ZIP and cloud state preserve skipped correction identity and raw data across restoration', async () => {
+  const c = app(), f = skippedFixture(c);
+  const before = read(await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage }));
+  const zip = await c.ZipIO.exportProject(f.project, { storage: f.storage });
+  const restored = (await c.ZipIO.importZip(await zip.arrayBuffer(), { storage: f.storage })).project;
+  const rasters = await c.Normalization.loadRasters(restored, { storage: f.storage });
+  assert.notEqual(restored.id, f.project.id);
+  assert.equal(c.Normalization.isSkippedProfile(restored.normalization), true);
+  assert.deepEqual(JSON.parse(JSON.stringify(restored.normalization)), JSON.parse(JSON.stringify(f.project.normalization)));
+  assert.equal(c.Normalization.evaluate(restored, rasters).status, 'SKIPPED');
+  for (const molecule of restored.molecules) assert.deepEqual(Buffer.from(rasters[molecule.key].values.buffer), Buffer.from(f.rasters[molecule.key].values.buffer));
+  const after = read(await c.ExcelIO.buildProjectXlsx(restored, { storage: f.storage }));
+  for (const sheet of ['Data', 'Normalized_Data', 'ROI_Quantification']) assert.deepEqual(rows(after, sheet), rows(before, sheet));
+  const state = JSON.parse(JSON.stringify(c.Cloud.stateOf(restored)));
+  const fromCloud = JSON.parse(JSON.stringify(restored));
+  delete fromCloud.normalization;
+  c.Cloud.applyState(fromCloud, state);
+  assert.deepEqual(JSON.parse(JSON.stringify(fromCloud.normalization)), JSON.parse(JSON.stringify(restored.normalization)));
+  assert.equal(c.Normalization.evaluate(fromCloud, rasters).status, 'SKIPPED');
+});
+
 test('schema3 real XLSX exports every selected analyte, ROI coverage and independent analyte ranges without changing raw bits', async () => {
   const c = app(), f = simpleFixture(c);
   const rawBefore = Object.fromEntries(Object.entries(f.data).map(([key, values]) => [key, Buffer.from(values.buffer).toString('hex')]));

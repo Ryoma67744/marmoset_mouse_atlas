@@ -305,6 +305,7 @@
                         <button type="button" id="value-raw" class="px-2 py-1 rounded border" aria-pressed="true">生値</button>
                         <label>色レンジ <select id="value-scale" class="border rounded"><option value="common">固定共通レンジ</option><option value="individual">個別レンジ</option></select></label>
                     </div>
+                    <div id="normalization-skipped-notice" hidden class="shrink-0 px-2 py-2 text-sm font-semibold bg-amber-100 text-amber-900 border border-amber-400 rounded" role="status" aria-live="polite">内部標準なし・未補正（生値表示）</div>
                     <div id="value-display-status" class="shrink-0 text-xs px-2 py-1 bg-amber-50 max-h-24 overflow-y-auto" role="status" aria-live="polite"></div>
                     <div id="layer-settings-strip" class="hidden shrink-0 border border-t-0 border-gray-200 rounded-b mb-1 px-2 py-1 text-xs bg-gray-50"></div>
                     <!-- 大津法のヒストグラム (トグル ON のときだけ表示) -->
@@ -478,6 +479,8 @@
             const binding = currentProject.normalizationBinding;
             const currentPath = (Array.isArray(viewerScopePath) ? viewerScopePath.join(' / ') || '第2階層への所属なし' : null) || viewerNormalizationGroup?.label || (viewerScopeAssessment && viewerScopeAssessment.status !== 'UNKNOWN'
                 ? '第2階層への所属なし' : Array.isArray(binding?.folderPath) ? binding.folderPath.join(' / ') : '未確認');
+            if (isNormalizationSkipped()) return ['補正をスキップしたフォルダー（記録時）：' + path,
+                ...(currentPath !== path ? ['現在のフォルダー：' + currentPath] : [])];
             const labels = { CURRENT: '適用済み', COMPOSITION_CHANGED: '構成変更あり（保存済みの基準・係数を保持）',
                 MIXED: '設定混在／同期未完了', MOVED: '所属変更・現在のグループには未適用',
                 SAVED_SNAPSHOT: '保存済みの補正結果', LEGACY: '従来設定', UNCONFIGURED: '補正未設定', UNKNOWN: '所属確認不可' };
@@ -492,16 +495,19 @@
             return lines;
         }
         function channelResult(key) { return normalizationEvaluation?.channels?.[key] || null; }
+        function isNormalizationSkipped() { return !!window.Normalization?.isSkippedProfile(currentProject?.normalization); }
+        function skippedNormalizationNotice() { return '内部標準なし・未補正（生値表示）'; }
         function isCorrectedChannel(channel) { return !!window.Normalization?.isCorrectedChannel(channel); }
         function commonRangeForChannel(channel) {
             return window.Normalization?.rangeForChannel(currentProject?.normalization, channel) || null;
         }
         function showsAbsoluteQuantification() {
             const profile = currentProject?.normalization;
-            return !!profile && (Number(profile.schemaVersion || 1) < 3 || !!profile.calibration);
+            return !isNormalizationSkipped() && !!profile && (Number(profile.schemaVersion || 1) < 3 || !!profile.calibration);
         }
         function channelUnit(key) {
             if (!valueRasters[key]) return '画像輝度（定量不可）';
+            if (isNormalizationSkipped()) return '生信号 (a.u.; 内部標準なし・未補正)';
             if (valueDisplay.mode === 'raw') return '生信号 (a.u.)';
             const channel = channelResult(key);
             if (channel?.role === 'd4') return '生信号 (a.u.; D4 QC)';
@@ -510,7 +516,7 @@
         }
         function displayRaster(key) {
             const raw = valueRasters[key];
-            if (!raw || valueDisplay.mode === 'raw') return raw;
+            if (!raw || valueDisplay.mode === 'raw' || isNormalizationSkipped()) return raw;
             const channel = channelResult(key);
             if (isCorrectedChannel(channel)) {
                 return { W: raw.W, H: raw.H, values: channel.values, derived: true, rawValues: raw.values };
@@ -550,6 +556,7 @@
             }
         }
         function useModeRanges() {
+            if (isNormalizationSkipped()) valueDisplay.mode = 'raw';
             for (const key of Object.keys(valueRasters)) {
                 const settings = imageSettings[key];
                 if (!settings) continue;
@@ -567,14 +574,18 @@
             fillSettingsStrip();
         }
         function refreshValueDisplayUi() {
+            const skipped = isNormalizationSkipped();
+            if (skipped) valueDisplay.mode = 'raw';
+            const skippedNotice = document.getElementById('normalization-skipped-notice');
+            if (skippedNotice) skippedNotice.hidden = !skipped;
             for (const mode of ['raw', 'normalized']) {
                 const button = document.getElementById('value-' + mode);
                 if (!button) continue;
                 button.setAttribute('aria-pressed', String(valueDisplay.mode === mode));
                 button.classList.toggle('bg-blue-100', valueDisplay.mode === mode);
                 if (mode === 'normalized' && !otsuPending && !otsuDraft) {
-                    button.disabled = !currentProject?.normalization;
-                    button.title = currentProject?.normalization ? '保存済みの補正設定で表示' : 'Master で補正設定を保存すると使用できます';
+                    button.disabled = skipped || !currentProject?.normalization;
+                    button.title = skipped ? skippedNormalizationNotice() : currentProject?.normalization ? '保存済みの補正設定で表示' : 'Master で補正設定を保存すると使用できます';
                 }
             }
             const scale = document.getElementById('value-scale');
@@ -585,7 +596,10 @@
             if (viewerRefreshNotice) lines.unshift(viewerRefreshNotice);
             if (viewerSaveConflict) lines.unshift('⚠ 保存を停止しました：別タブの更新または保存エラーを検出しました。現在の変更は保存されていません。Master／このページを再読み込みして新しい版を確認してください。');
             const profile = currentProject?.normalization;
-            if (profile?.schemaVersion >= 3) {
+            if (skipped) {
+                lines.push(skippedNormalizationNotice() + '：d4-5-HTがないため、このデータの補正をスキップしました。');
+                if (normalizationEvaluation?.reasonCodes?.length) lines.push(normalizationReasons(normalizationEvaluation.reasonCodes));
+            } else if (profile?.schemaVersion >= 3) {
                 lines.push(`d4-5-HTを基準にした相対補正 / ${profile.mode === 'advanced' ? '詳細設定' : '簡単設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
                 lines.push(`Profile ${profile.id} rev.${profile.revision}` + (profile.batchId ? ' / Batch ' + profile.batchId : ''));
                 if (profile.quality !== 'validated') lines.push('相対補正：実験的な妥当性は未確認');
@@ -633,7 +647,7 @@
         }
         async function changeValueMode(mode) {
             if (mode === valueDisplay.mode || otsuPending || otsuDraft) return;
-            if (mode === 'normalized' && !currentProject?.normalization) { refreshValueDisplayUi(); return; }
+            if (mode === 'normalized' && (!currentProject?.normalization || isNormalizationSkipped())) { refreshValueDisplayUi(); return; }
             if (otsuState.applied && !(await confirmOtsuAction('表示値の切替'))) return;
             const before = valueDisplay.mode;
             const previousSettings = structuredClone(imageSettings);
@@ -830,6 +844,7 @@
             const annotated = document.createElement('canvas');
             annotated.width = Math.max(W, 640);
             const info = [
+                ...(isNormalizationSkipped() ? [skippedNormalizationNotice()] : []),
                 (valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではない）' : '生値表示') + ' / ' + (valueDisplay.scale === 'common' ? '固定レンジ（未設定分子は個別）' : '個別レンジ'),
                 ...checkedLayerKeys().filter(key => valueRasters[key]).map(key => {
                     const settings = imageSettings[key];
@@ -999,7 +1014,7 @@
             normalizationEvaluation = window.Normalization && currentProject ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
             viewerEvaluatedProfile = JSON.stringify(currentProject?.normalization || null);
             const savedMode = currentProject?.valueDisplay?.mode;
-            valueDisplay.mode = !currentProject?.normalization ? 'raw' : ['normalized', 'raw'].includes(savedMode) ? savedMode
+            valueDisplay.mode = !currentProject?.normalization || isNormalizationSkipped() ? 'raw' : ['normalized', 'raw'].includes(savedMode) ? savedMode
                 : normalizationEvaluation && ['VALID', 'PROVISIONAL', 'PARTIAL'].includes(normalizationEvaluation.status) ? 'normalized' : 'raw';
             valueDisplay.scale = currentProject?.valueDisplay?.scale === 'individual' ? 'individual' : 'common';
             populateRoiList();
@@ -2540,6 +2555,7 @@ function loadAllImages() {
                     const stat = stats[roiKey];
                     const corrected = valueDisplay.mode === 'normalized' && isCorrectedChannel(channelResult(key));
                     let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : '生値ラスタなし：MSI 定量は算出不可';
+                    if (isNormalizationSkipped()) reason = skippedNormalizationNotice() + (reason ? '\n' + reason : '');
                     const abs = result?.absolute;
                     if (corrected && result?.role === 'ht' && showsAbsoluteQuantification()) reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
                     if (corrected && result?.reasonCounts) reason += '\n' + Object.entries(result.reasonCounts).filter(([, n]) => n > 0).map(([code, n]) => normalizationReasons([code]) + ': ' + n).join(' / ');
@@ -4149,7 +4165,7 @@ function loadAllImages() {
       await loadViewerScopeContext(currentProject);
       normalizationEvaluation = window.Normalization ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
       analysisRoiCache.clear();
-      if (!currentProject.normalization) valueDisplay.mode = 'raw';
+      if (!currentProject.normalization || isNormalizationSkipped()) valueDisplay.mode = 'raw';
       else if (['raw', 'normalized'].includes(currentProject.valueDisplay?.mode)) valueDisplay.mode = currentProject.valueDisplay.mode;
       valueDisplay.scale = currentProject.valueDisplay?.scale === 'individual' ? 'individual' : 'common';
       useModeRanges();
