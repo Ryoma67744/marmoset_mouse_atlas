@@ -64,6 +64,7 @@ function fixture(c) {
     putValueRaster: async values => { const key = 'new_' + ++id; data[key] = values; return key; },
     ensureFolderPath: async () => null,
     uid: prefix => prefix + '_new', putProject: async p => { storage.lastProject = p; },
+    commitImportedProject: async (p, options) => { p.folderId = await storage.ensureFolderPath(options.folderPath); storage.lastProject = p; return p; },
   };
   let quantifyCalls = 0;
   c.Normalization = {

@@ -37,7 +37,13 @@ function fixture() {
     putValueRaster: async imported => { calls.push(['raster', imported]); return 'new-raster'; },
     ensureFolderPath: async names => { calls.push(['path', names]); return 'new-leaf-folder'; },
     restoreNormalizationGroup: async (id, groupId) => { calls.push(['group', id, groupId]); },
-    putProject: async imported => { calls.push(['project', imported.id]); },
+    commitImportedProject: async (imported, options) => {
+      imported.folderId = await storage.ensureFolderPath(options.folderPath);
+      if (imported.normalizationBinding && imported.normalizationBinding.groupId) await storage.restoreNormalizationGroup(imported.folderId, imported.normalizationBinding.groupId);
+      calls.push(['project', imported.id]);
+      return imported;
+    },
+    deleteBlob: async id => { calls.push(['cleanup', id]); },
     uid: () => 'new-local-member',
   };
   return { project, storage, calls, values };
@@ -52,18 +58,18 @@ test('ZIP subset restore preserves immutable group membership, fixed factors and
   assert.equal(restored.project.folderId, 'new-leaf-folder');
   assert.equal(JSON.stringify(restored.project.normalization), before);
   assert.equal(JSON.stringify(restored.project.normalizationBinding), JSON.stringify(f.project.normalizationBinding));
-  assert.deepEqual(f.calls.map(call => call[0]), ['path', 'group', 'raster', 'project']);
-  assert.deepEqual(f.calls[1], ['group', 'new-leaf-folder', 'group-coronal']);
-  assert.deepEqual(Buffer.from(f.calls[2][1].buffer), Buffer.from(f.values.buffer));
+  assert.deepEqual(f.calls.map(call => call[0]), ['raster', 'path', 'group', 'project']);
+  assert.deepEqual(f.calls[2], ['group', 'new-leaf-folder', 'group-coronal']);
+  assert.deepEqual(Buffer.from(f.calls[0][1].buffer), Buffer.from(f.values.buffer));
 });
 
-test('ZIP identity conflict stops before raw/project writes and never changes saved profile', async () => {
+test('ZIP identity conflict cleans its staged raw data and never commits a project', async () => {
   const c = app(), f = fixture();
   const before = JSON.stringify(f.project);
   f.storage.restoreNormalizationGroup = async () => { throw new Error('ZIP の補正グループIDが保存先フォルダーと一致しません'); };
   const zip = await c.ZipIO.exportProject(f.project, { storage: f.storage });
   await assert.rejects(c.ZipIO.importZip(await zip.arrayBuffer(), { storage: f.storage }), /グループID.*一致しません/);
-  assert.deepEqual(f.calls.map(call => call[0]), ['path']);
+  assert.deepEqual(f.calls.map(call => call[0]), ['raster', 'path', 'cleanup']);
   assert.equal(JSON.stringify(f.project), before);
 });
 
@@ -74,8 +80,8 @@ test('cloud import applies current folder/binding before an obsolete bundle can 
   const restored = await c.ZipIO.importZip(await zip.arrayBuffer(), { storage: f.storage,
     folderPath: ['Marmoset', 'Sagittal', 'New section'], state: { normalizationBinding: binding }, displayName: 'Current cloud name',
   });
-  assert.equal(JSON.stringify(f.calls[0][1]), JSON.stringify(['Marmoset', 'Sagittal', 'New section']));
-  assert.deepEqual(f.calls[1], ['group', 'new-leaf-folder', 'group-sagittal']);
+  assert.equal(JSON.stringify(f.calls[1][1]), JSON.stringify(['Marmoset', 'Sagittal', 'New section']));
+  assert.deepEqual(f.calls[2], ['group', 'new-leaf-folder', 'group-sagittal']);
   assert.equal(restored.project.displayName, 'Current cloud name');
   assert.equal(restored.project.normalizationBinding.groupId, 'group-sagittal');
   assert.equal(restored.project.normalization.scope.groupId, 'group-coronal');
@@ -96,4 +102,17 @@ test('cloud round trip preserves current binding separately from calculation pro
   assert.equal(meta.normalizationBinding.groupId, 'group-sagittal');
   assert.equal(meta.normalization.status, 'GROUP_MEMBERSHIP_CHANGED');
   assert.equal(restored.normalization.section.k, 1.5);
+});
+
+test('authoritative cloud state omitting a profile does not resurrect archived normalization', async () => {
+  const c = app(), f = fixture();
+  const archive = await c.ZipIO.exportProject(f.project, { storage: f.storage });
+  const restored = await c.ZipIO.importZip(await archive.arrayBuffer(), { storage: f.storage,
+    state: { valueDisplay: { mode: 'raw' } }, folderPath: ['Marmoset', 'Coronal'],
+    cloudMetadata: { cloudUpdatedAt: 'remote-current', cloudStateHash: 'current-state' },
+  });
+  assert.equal(restored.project.normalization, null);
+  assert.equal(restored.project.normalizationBinding, undefined);
+  assert.equal(restored.project.valueDisplay.mode, 'raw');
+  assert.equal(restored.project.cloudUpdatedAt, 'remote-current');
 });

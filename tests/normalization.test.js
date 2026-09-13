@@ -104,7 +104,7 @@ test('no profile, missing D4 and ambiguous D4 have explicit scoped failures with
   const a = entry('a', { ht: [0, 4], da: [2, 3] });
   let ev = N.evaluate(a.project, a.rasters);
   assert.ok(ev.channels[keys.ht].reasonCodes.includes('NORMALIZATION_PROFILE_MISSING'));
-  assert.ok(ev.channels[keys.ht].reasonCodes.includes('D4_MISSING'));
+  assert.ok(!ev.channels[keys.ht].reasonCodes.includes('D4_MISSING'), 'no configured mapping means no asserted D4 failure');
   assert.equal(quantify(a)[0].raw.mean, 2);
   apply([a]); ev = N.evaluate(a.project, a.rasters);
   assert.ok(ev.channels[keys.ht].reasonCodes.includes('D4_MISSING'));
@@ -113,6 +113,27 @@ test('no profile, missing D4 and ambiguous D4 have explicit scoped failures with
   b.project.molecules.push({ key: 'dup', name: 'D4-5HT' }); b.rasters.dup = { W: 1, H: 1, values: new Float32Array([1]) };
   delete b.mapping; apply([b]);
   assert.ok(N.evaluate(b.project, b.rasters).channels[keys.ht].reasonCodes.includes('D4_AMBIGUOUS'));
+});
+
+test('unconfigured 418-pixel ROI reports setup only, while raw statistics remain valid and unchanged', () => {
+  const a = entry('screenshot', { ht: Array(418).fill(10), d4: Array(418).fill(2), da: Array(418).fill(3), ne: Array(418).fill(4) });
+  const before = Object.fromEntries(Object.entries(a.rasters).map(([key, raster]) => [key, Buffer.from(raster.values.buffer).toString('hex')]));
+  const ev = N.evaluate(a.project, a.rasters), result = quantify(a);
+  assert.deepEqual(Array.from(ev.reasonCodes), ['NORMALIZATION_PROFILE_MISSING']);
+  for (const row of result) {
+    assert.equal(row.rawStatus, 'VALID'); assert.deepEqual(Array.from(row.rawReasonCodes), []);
+    assert.equal(row.raw.n, 418); assert.equal(row.nGeometry, 418);
+    if (row.role === 'd4') continue;
+    assert.equal(row.status, 'UNAVAILABLE'); assert.equal(row.nValid, 0);
+    assert.deepEqual(Array.from(row.reasonCodes), ['NORMALIZATION_PROFILE_MISSING']);
+    assert.equal(row.reasonCounts.NORMALIZATION_PROFILE_MISSING, 418);
+  }
+  assert.deepEqual(Array.from(result[0].absolute.reasonCodes), ['NORMALIZATION_PROFILE_MISSING']);
+  for (const [key, raster] of Object.entries(a.rasters)) assert.equal(Buffer.from(raster.values.buffer).toString('hex'), before[key]);
+  a.rasters[keys.ht].values[0] = NaN;
+  const partial = quantify(a)[0];
+  assert.equal(partial.rawStatus, 'PARTIAL'); assert.equal(partial.raw.n, 417);
+  assert.deepEqual(Array.from(partial.rawReasonCodes), ['RAW_NOT_MEASURED']);
 });
 
 test('D4 QC and unconfigured molecules never masquerade as derived values', () => {

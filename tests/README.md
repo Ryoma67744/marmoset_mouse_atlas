@@ -46,6 +46,32 @@ old derived channels, and subset ZIP restoration preserves the saved reference
 and range without recomputing from the restored subset. Viewer and Excel expose
 the calculation group, path and profile revision for traceability.
 
+The v2.10.1 regression coverage adds missing-profile raw display, settings saved
+while a Viewer remains open, stale Master rename/open paths, and imports
+that race another tab's save. Ordinary metadata changes preserve newer profile
+fields, cloud state saves verify their actual baseline, and ZIP restoration
+checks project/folder revisions at the final commit. Tests also compare Viewer
+and Excel decisions against current folder membership, distinguish explicit null
+bindings from unknown standalone context, and exercise repaired group IDs on
+another local folder tree. Generic CSV/Excel imports keep missing cells distinct
+from real zero; previously imported zero values are not reclassified.
+
+Previews report finite derived output by target role, including valid 5-HT ratios
+when a DA/NE factor is unavailable. A wholly unavailable profile cannot be saved,
+including as a replacement for existing usable settings. These scenarios use synthetic data and mock cloud
+responses; they do not recover or alter any lost real-study profile.
+
+Viewer refresh tests cover same-browser storage notifications and cloud checks on
+load/focus, preserving drafts that begin during network requests. A profile
+refresh disables the active Otsu display mask without writing that transient
+change back on refresh alone. Storage/import tests cover atomic project/folder
+commit, staged-blob cleanup, failed acknowledgements, and guarded source merges.
+Merge regressions retain a remotely updated source, and stale-list regressions
+prevent an older folder listing from moving a project back. Offline name changes
+remain distinct from acknowledged cloud metadata and can be retried safely.
+Tests use synthetic data and simulated cloud responses; live cross-PC network
+propagation and the production deployment are outside this local test harness.
+
 These checks verify software behavior, **not scientific validation** of an assay,
 spray uniformity, cross-analyte normalization, saturation thresholds, calibration,
 or the completeness of any real study. Such validation requires the experimental

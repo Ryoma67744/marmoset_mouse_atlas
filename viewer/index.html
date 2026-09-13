@@ -23,6 +23,7 @@
     <script src="../lib/zipio.js"></script>
     <script src="../lib/cloud-config.js"></script>
     <script src="../lib/cloud.js"></script>
+    <script src="../lib/project-sync.js"></script>
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -420,10 +421,20 @@
         let viewerStoredUpdatedAt = null;
         let viewerSaveQueue = Promise.resolve();
         let viewerSaveConflict = false;
+        let viewerStoredProject = null;
+        let viewerSaving = 0;
+        let viewerReady = false;
+        let viewerRefreshTask = null;
+        let viewerRefreshNotice = '';
+        let viewerScopePath = null;
+        const viewerEditableFields = ['valueDisplay', 'visibleLayers', 'viewerTransform', 'rotation', 'otsu',
+            'roi', 'world_coords', 'alignment', 'layerDisplay'];
+        const sameViewerField = (left, right) => JSON.stringify(left) === JSON.stringify(right);
         // 大津法の状態
         let otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
         // Numerical data and presentation state must never share mutable rasters.
         let normalizationEvaluation = null;
+        let viewerEvaluatedProfile = null;
         let viewerNormalizationGroup = null;
         let viewerScopeAssessment = null;
         let viewerEffectiveNormalizationBinding = null;
@@ -442,23 +453,15 @@
             viewerNormalizationGroup = null;
             viewerScopeAssessment = null;
             viewerEffectiveNormalizationBinding = null;
-            if (!project?.normalization?.scope || !window.NormalizationScope) return;
+            viewerScopePath = null;
+            if (!project || !window.NormalizationScope) return;
             try {
                 const [projects, folders] = await Promise.all([ProjectStorage.listProjects(), ProjectStorage.listFolders()]);
-                const owner = NormalizationScope.groupForFolder(project.folderId, folders);
-                const result = NormalizationScope.buildGroups(projects, folders);
-                viewerNormalizationGroup = owner ? result.groups.find(group => group.folderId === owner.folderId) || owner : null;
-                // A folder moved by an older tab may precede binding sync. Use
-                // actual resolved membership for this read only calculation;
-                // leave the saved profile and project untouched for provenance.
-                if (viewerNormalizationGroup && viewerNormalizationGroup.groupId !== project.normalization.scope.groupId) {
-                    viewerEffectiveNormalizationBinding = {
-                        groupId: viewerNormalizationGroup.groupId || null,
-                        folderPath: viewerNormalizationGroup.path,
-                        memberId: NormalizationScope.memberId(project),
-                    };
-                }
-                viewerScopeAssessment = NormalizationScope.assess(normalizationProjectForEvaluation(project), viewerNormalizationGroup);
+                const context = NormalizationScope.resolveContext(project, folders, projects);
+                viewerNormalizationGroup = context.group;
+                viewerScopeAssessment = context.assessment;
+                viewerEffectiveNormalizationBinding = context.project.normalizationBinding;
+                viewerScopePath = context.currentFolderPath;
             } catch (error) {
                 viewerScopeAssessment = { status: 'UNKNOWN', reason: '現在のフォルダー構成を確認できません。Master を再読み込みして確認してください。' };
                 console.warn('[normalization scope] フォルダー構成を確認できません', error);
@@ -473,7 +476,7 @@
             if (!scope) return ['補正グループ：従来設定（第2階層フォルダー未指定）'];
             const path = Array.isArray(scope.folderPath) ? scope.folderPath.join(' / ') : '記録なし';
             const binding = currentProject.normalizationBinding;
-            const currentPath = viewerNormalizationGroup?.label || (viewerScopeAssessment && viewerScopeAssessment.status !== 'UNKNOWN'
+            const currentPath = (Array.isArray(viewerScopePath) ? viewerScopePath.join(' / ') || '第2階層への所属なし' : null) || viewerNormalizationGroup?.label || (viewerScopeAssessment && viewerScopeAssessment.status !== 'UNKNOWN'
                 ? '第2階層への所属なし' : Array.isArray(binding?.folderPath) ? binding.folderPath.join(' / ') : '未確認');
             const labels = { CURRENT: '適用済み', COMPOSITION_CHANGED: '構成変更あり（保存済みの基準・係数を保持）',
                 MIXED: '設定混在／同期未完了', MOVED: '所属変更・現在のグループには未適用',
@@ -560,16 +563,21 @@
                 if (!button) continue;
                 button.setAttribute('aria-pressed', String(valueDisplay.mode === mode));
                 button.classList.toggle('bg-blue-100', valueDisplay.mode === mode);
+                if (mode === 'normalized' && !otsuPending && !otsuDraft) {
+                    button.disabled = !currentProject?.normalization;
+                    button.title = currentProject?.normalization ? '保存済みの補正設定で表示' : 'Master で補正設定を保存すると使用できます';
+                }
             }
             const scale = document.getElementById('value-scale');
             if (scale) scale.value = valueDisplay.scale;
             const status = document.getElementById('value-display-status');
             if (!status) return;
             const lines = [valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではありません）' : '生値表示'];
+            if (viewerRefreshNotice) lines.unshift(viewerRefreshNotice);
             if (viewerSaveConflict) lines.unshift('⚠ 保存を停止しました：別タブの更新または保存エラーを検出しました。現在の変更は保存されていません。Master／このページを再読み込みして新しい版を確認してください。');
             const profile = currentProject?.normalization;
             if (profile) lines.push(`Batch ${profile.batchId || '未設定'} / Profile ${profile.id} rev.${profile.revision} / ${profile.quality === 'validated' ? '検証済み設定' : '暫定設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
-            else lines.push('補正設定なし。Master で基準・分子対応を設定してください。');
+            else lines.push('補正設定なし：生値を表示しています。Master の「補正・正規化設定」で基準・分子対応を設定し、保存してください。表示切替だけでは補正設定は作成されません。');
             lines.push(...normalizationScopeLines());
             if (valueDisplay.scale === 'individual') lines.push('⚠ 個別レンジ：色の明るさを切片間で直接比較できません。');
             else if (valueDisplay.mode === 'raw') lines.push('生値は各分子の保存レンジ。切片間共通レンジは補正表示にのみ適用します。');
@@ -609,6 +617,7 @@
         }
         async function changeValueMode(mode) {
             if (mode === valueDisplay.mode || otsuPending || otsuDraft) return;
+            if (mode === 'normalized' && !currentProject?.normalization) { refreshValueDisplayUi(); return; }
             if (otsuState.applied && !(await confirmOtsuAction('表示値の切替'))) return;
             const before = valueDisplay.mode;
             const previousSettings = structuredClone(imageSettings);
@@ -972,8 +981,9 @@
 
         async function initializeViewer() {
             normalizationEvaluation = window.Normalization && currentProject ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
+            viewerEvaluatedProfile = JSON.stringify(currentProject?.normalization || null);
             const savedMode = currentProject?.valueDisplay?.mode;
-            valueDisplay.mode = ['normalized', 'raw'].includes(savedMode) ? savedMode
+            valueDisplay.mode = !currentProject?.normalization ? 'raw' : ['normalized', 'raw'].includes(savedMode) ? savedMode
                 : normalizationEvaluation && ['VALID', 'PROVISIONAL', 'PARTIAL'].includes(normalizationEvaluation.status) ? 'normalized' : 'raw';
             valueDisplay.scale = currentProject?.valueDisplay?.scale === 'individual' ? 'individual' : 'common';
             populateRoiList();
@@ -1678,20 +1688,53 @@ function loadAllImages() {
         }
 
         let saveTimer = 0;
-        // Serialize this Viewer's writes and CAS the exact version it last read/saved.
-        // A stale Viewer must never erase a newer Master normalization profile.
+        // Only locally changed Viewer fields are written. Latest normalization,
+        // folder membership and other untouched fields are never sent by this path.
+        function viewerChanges(project = currentProject, baseline = viewerStoredProject) {
+            const fields = {};
+            for (const key of viewerEditableFields) if (!sameViewerField(project?.[key], baseline?.[key])) fields[key] = structuredClone(project?.[key]);
+            return fields;
+        }
         function saveViewerProject() {
             const projectId = currentProject?.id, contextRevision = viewerContextRevision;
             const operation = viewerSaveQueue.catch(() => {}).then(async () => {
                 if (!currentProject || currentProject.id !== projectId || viewerContextRevision !== contextRevision) throw new Error('保存対象が切り替わりました。再読み込みしてください。');
                 if (viewerSaveConflict) throw new Error('保存停止中です。新しい版を再読み込みしてください。');
-                const snapshot = structuredClone(currentProject);
-                await ProjectStorage.putProjectsIfUnchanged([{ project: snapshot, expectedUpdatedAt: viewerStoredUpdatedAt }]);
-                if (currentProject.id === projectId && viewerContextRevision === contextRevision) {
-                    viewerStoredUpdatedAt = snapshot.updatedAt;
-                    currentProject.updatedAt = snapshot.updatedAt;
-                }
-                return snapshot;
+                viewerSaving++;
+                try {
+                    const snapshot = structuredClone(currentProject), baseline = viewerStoredProject;
+                    const fields = viewerChanges(snapshot, baseline);
+                    const latest = await ProjectStorage.getProject(projectId);
+                    if (!latest) throw new Error('保存先のデータが削除されています。');
+                    // An unrelated Master update can be adopted, but two edits of
+                    // the same Viewer field must not overwrite one another.
+                    for (const key of Object.keys(fields)) if (!sameViewerField(latest[key], baseline?.[key]) && !sameViewerField(latest[key], fields[key])) {
+                        throw new Error('別タブで ' + key + ' が変更されています。現在の編集を保持して保存を停止しました。');
+                    }
+                    // Do not adopt an unseen ROI/alignment/display baseline while
+                    // atlasData still displays the old version. A later gesture
+                    // would otherwise be able to overwrite edits never shown here.
+                    for (const key of viewerEditableFields) if (key !== 'valueDisplay' && !Object.prototype.hasOwnProperty.call(fields, key) && !sameViewerField(latest[key], baseline?.[key])) {
+                        throw new Error('別タブで画面の ' + key + ' が更新されています。現在の編集を保持して保存を停止しました。');
+                    }
+                    // ROI/alignment coordinates must not be applied to a replaced raster.
+                    for (const key of ['grid', 'molecules', 'images']) if (!sameViewerField(latest[key], baseline?.[key])) {
+                        throw new Error('元データが更新されています。新しい版を確認してください。');
+                    }
+                    const saved = Object.keys(fields).length
+                        ? await ProjectStorage.patchProjectFields(projectId, fields, { expectedUpdatedAt: latest.updatedAt }) : latest;
+                    if (currentProject.id === projectId && viewerContextRevision === contextRevision) {
+                        const subsequent = viewerChanges(currentProject, snapshot);
+                        const normalizationChanged = !sameViewerField(currentProject.normalization, saved.normalization)
+                            || !sameViewerField(currentProject.normalizationBinding, saved.normalizationBinding);
+                        currentProject = { ...saved, ...subsequent };
+                        viewerStoredProject = structuredClone(saved);
+                        viewerStoredUpdatedAt = saved.updatedAt;
+                        if (normalizationChanged) await refreshViewerEvaluation();
+                    }
+                    refreshCloudSaveState();
+                    return saved;
+                } finally { viewerSaving--; }
             });
             viewerSaveQueue = operation.catch(error => {
                 if (currentProject?.id === projectId && viewerContextRevision === contextRevision && !viewerSaveConflict) {
@@ -1706,6 +1749,7 @@ function loadAllImages() {
             });
             return viewerSaveQueue;
         }
+
         function queueSaveProject() {
             if (!currentProject || viewerSaveConflict) return;
             if (saveTimer) clearTimeout(saveTimer);
@@ -2446,7 +2490,7 @@ function loadAllImages() {
                 if (!analysisRoiCache.has(cacheKey)) {
                     const mask = new Uint8Array(ref.W * ref.H);
                     for (const poly of roiItems[roiKey] || []) if (poly?.poly_msi?.length >= 3) MSIRaster.markRoiMask(mask, ref.W, ref.H, poly.poly_msi);
-                    const project = { ...currentProject, roi: atlasData.roi };
+                    const project = { ...normalizationProjectForEvaluation(), roi: atlasData.roi };
                     analysisRoiCache.set(cacheKey, { mask, values: Normalization.quantifyRoi(project, valueRasters, normalizationEvaluation, mask) });
                 }
                 roiResults[roiKey] = analysisRoiCache.get(cacheKey);
@@ -2471,17 +2515,18 @@ function loadAllImages() {
                 const table = document.createElement('table');
                 table.className = 'text-xs w-full border-collapse mb-3';
                 const header = document.createElement('tr');
-                for (const title of ['ROI', '平均 ± SD', '表示値有効 / 測定 / ROI', '状態・絶対定量']) {
+                for (const title of ['ROI', '平均 ± SD', '表示値有効 / 測定 / ROI', valueDisplay.mode === 'normalized' ? '状態・絶対定量' : '生値の状態']) {
                     const th = document.createElement('th'); th.textContent = title; th.className = 'border p-1 text-left'; header.appendChild(th);
                 }
                 table.appendChild(header);
                 for (const roiKey of roiKeys) {
                     const result = roiResults[roiKey]?.values.find(row => row.key === key);
                     const stat = stats[roiKey];
-                    let reason = result ? normalizationReasons(result.reasonCodes) : '生値ラスタなし：MSI 定量は算出不可';
+                    const corrected = valueDisplay.mode === 'normalized' && ['ht', 'da', 'ne'].includes(result?.role);
+                    let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : '生値ラスタなし：MSI 定量は算出不可';
                     const abs = result?.absolute;
-                    if (result?.role === 'ht') reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
-                    if (result?.reasonCounts) reason += '\n' + Object.entries(result.reasonCounts).filter(([, n]) => n > 0).map(([code, n]) => normalizationReasons([code]) + ': ' + n).join(' / ');
+                    if (corrected && result?.role === 'ht') reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
+                    if (corrected && result?.reasonCounts) reason += '\n' + Object.entries(result.reasonCounts).filter(([, n]) => n > 0).map(([code, n]) => normalizationReasons([code]) + ': ' + n).join(' / ');
                     const mask = roiResults[roiKey]?.mask;
                     if (otsuState.applied && mask) {
                         let visible = 0, unknown = 0;
@@ -2494,7 +2539,7 @@ function loadAllImages() {
                     }
                     const row = document.createElement('tr');
                     const coverage = ['d4', 'other'].includes(result?.role) ? '対象外' : result?.coverage == null ? '—' : fmt(result.coverage * 100) + '%';
-                    const cells = [roiNames[roiKey] || roiKey, stat.n && Number.isFinite(stat.mean) ? fmt(stat.mean) + ' ± ' + fmt(stat.sd) : '算出不可', result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry} (補正 coverage ${coverage})` : String(stat.n), (result?.status || 'UNAVAILABLE') + (reason ? '\n' + reason : '')];
+                    const cells = [roiNames[roiKey] || roiKey, stat.n && Number.isFinite(stat.mean) ? fmt(stat.mean) + ' ± ' + fmt(stat.sd) : '算出不可', result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry}` + (corrected ? ` (補正 coverage ${coverage})` : '') : String(stat.n), (corrected ? result?.status || 'UNAVAILABLE' : result?.rawStatus || (stat.n ? 'RAW' : 'UNAVAILABLE')) + (reason ? '\n' + reason : '')];
                     for (const text of cells) { const td = document.createElement('td'); td.textContent = text; td.className = 'border p-1 align-top'; td.style.whiteSpace = 'pre-line'; row.appendChild(td); }
                     table.appendChild(row);
                 }
@@ -3127,28 +3172,15 @@ function loadAllImages() {
             try {
                 syncProjectFromViewer();
                 const saved = await saveViewerProject();
-                const state = Cloud.stateOf(saved);
-                // ★ 見ていた版と一致するときだけ書き換える。一致しなければ 0 行返る。
-                //   これが無いと、2 台で開いていたとき後に押したほうが黙って全部を上書きする。
-                let row = await Cloud.patchRowIfUnchanged(saved.id, { state: state }, saved.cloudUpdatedAt);
-                if (!row) {
-                    const cur = await Cloud.getProject(saved.id);
-                    if (!cur) throw new Error('このデータはクラウド側で削除されています。');
-                    const whoTxt = cur.updated_by ? `${cur.updated_by} さんが` : '別の PC で';
-                    const when = String(cur.updated_at || '').slice(0, 19).replace('T', ' ');
-                    if (!confirm(`${whoTxt} ${when} に更新しています。\n` +
-                                 'この PC の内容で上書きしますか? (相手の変更は失われます)')) {
-                        if (label) label.textContent = 'クラウドに保存';
-                        return;
-                    }
-                    // Recheck local CAS before an explicitly confirmed remote overwrite.
-                    await saveViewerProject();
-                    row = await Cloud.patchRow(saved.id, { state: state });
-                }
-                if (currentProject?.id !== saved.id) throw new Error('保存中に表示対象が変わりました。再読み込みしてください。');
-                currentProject.cloudUpdatedAt = row.updated_at;
-                currentProject.cloudStateHash = Cloud.hashState(state);
-                await saveViewerProject();
+                viewerSaving++;
+                try {
+                    const acknowledged = await ProjectSync.saveState(saved, { storage: ProjectStorage, cloud: Cloud });
+                    if (currentProject?.id !== saved.id) throw new Error('保存中に表示対象が変わりました。再読み込みしてください。');
+                    const subsequent = viewerChanges(currentProject, saved);
+                    currentProject = { ...acknowledged, ...subsequent };
+                    viewerStoredProject = structuredClone(acknowledged);
+                    viewerStoredUpdatedAt = acknowledged.updatedAt;
+                } finally { viewerSaving--; }
             } catch (e) {
                 console.error('[cloud-save]', e);
                 alert('クラウドへの保存に失敗しました: ' + e.message);
@@ -4073,34 +4105,86 @@ function loadAllImages() {
     // =====================================================================
     // データ読み込み
     // =====================================================================
-    /**
-     * この PC に無いデータをクラウドから落として取り込む。
-     * 取れなければ null を返す (呼ぶ側が今までどおりのエラーを出す)。
-     */
-    async function fetchProjectFromCloud(projectId) {
-      if (!(window.Cloud && Cloud.configured() && Cloud.signedIn())) return null;
-      try {
-        const row = await Cloud.getProject(projectId);
-        if (!row || !row.bundle_path) return null;
-        const blob = await Cloud.downloadBundle(row.bundle_path);
-        // id を渡して同じ id で取り込む (渡さないと別データとして増える)
-        const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id,
-          state: row.state, folderPath: row.folder_path || [], displayName: row.display_name });
-        const project = res.project;
-        Cloud.applyState(project, row.state);
-        if (row.display_name) project.displayName = row.display_name;
-        project.folderId = await ProjectStorage.ensureFolderPath(row.folder_path || []);
-        project.cloudRev = row.bundle_rev | 0;
-        project.cloudBundlePath = row.bundle_path;
-        project.cloudUpdatedAt = row.updated_at;
-        project.cloudStateHash = Cloud.hashState(Cloud.stateOf(project));
-        project.cloudPending = false;
-        await ProjectStorage.putProject(project);
-        return project;
-      } catch (e) {
-        console.warn('[cloud] 取得できません', e);
-        return null;
+    async function ensureViewerProject(projectId) {
+      const project = await ProjectSync.ensureLocal(projectId, { storage: ProjectStorage, cloud: window.Cloud, zip: ZipIO,
+        canApplyRemote: () => !viewerReady || !viewerHasPendingEdits(),
+        pendingFolderChanges: () => {
+          const pending = {};
+          try { if (localStorage.getItem('marmoset:pendingFolderChange:' + encodeURIComponent(projectId))) pending[projectId] = true; } catch (_) {}
+          return pending;
+        } });
+      const status = ProjectSync.statusOf(project);
+      viewerRefreshNotice = ['conflict', 'offline', 'pending', 'missing-remote'].includes(status?.status)
+        ? status.reason + '。この PC のデータを表示しています。Master で確認してください。' : '';
+      return project;
+    }
+
+    async function refreshViewerEvaluation() {
+      const profileKey = JSON.stringify(currentProject?.normalization || null);
+      if (viewerEvaluatedProfile !== profileKey && otsuState.applied) {
+        otsuState.applied = false;
+        otsuState.record = null;
+        viewerRefreshNotice = '補正設定を更新しました。Otsu は OFF に戻しています。必要に応じて表示マスクを再適用してください。';
+        const toggle = document.getElementById('otsu-toggle');
+        if (toggle) toggle.checked = false;
+        refreshOtsuUi();
       }
+      viewerEvaluatedProfile = profileKey;
+      await loadViewerScopeContext(currentProject);
+      normalizationEvaluation = window.Normalization ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
+      analysisRoiCache.clear();
+      if (!currentProject.normalization) valueDisplay.mode = 'raw';
+      else if (['raw', 'normalized'].includes(currentProject.valueDisplay?.mode)) valueDisplay.mode = currentProject.valueDisplay.mode;
+      valueDisplay.scale = currentProject.valueDisplay?.scale === 'individual' ? 'individual' : 'common';
+      useModeRanges();
+      redrawValueViews();
+      const active = document.querySelector('.roi-item.active');
+      const roiKey = active?.dataset.roiKey || Object.keys(atlasData.roi?.roi_items || {})[0];
+      if (roiKey) displayGraphForRoi(roiKey);
+      const title = document.getElementById('atlas-title');
+      if (title) title.textContent = currentProject.displayName;
+    }
+    function viewerHasPendingEdits() {
+      return !!(saveTimer || viewerSaving || viewerSaveConflict || Object.keys(viewerChanges()).length ||
+        drawingMode || drawingVertices.length || document.querySelector('.modal-backdrop') || otsuPending || otsuDraft);
+    }
+    function refreshViewerProject({ remote = false } = {}) {
+      if (!viewerReady || !currentProject || viewerRefreshTask) return viewerRefreshTask;
+      viewerRefreshTask = (async () => {
+        if (viewerHasPendingEdits()) {
+          viewerRefreshNotice = '更新の確認を保留しています。編集中の ROI・位置合わせを保持しています。編集を保存してから画面に戻ると確認できます。';
+          refreshValueDisplayUi(); return;
+        }
+        const id = currentProject.id, revision = viewerContextRevision;
+        const latest = remote ? await ensureViewerProject(id) : await ProjectStorage.getProject(id);
+        // A local gesture can start while the network is in flight.
+        if (!latest || currentProject?.id !== id || viewerContextRevision !== revision) return;
+        if (viewerHasPendingEdits()) { refreshValueDisplayUi(); return; }
+        const mustReload = ['grid', 'molecules', 'images', 'roi', 'world_coords', 'alignment', 'rotation', 'viewerTransform', 'otsu', 'visibleLayers', 'layerDisplay']
+          .some(key => !sameViewerField(latest[key], viewerStoredProject?.[key]));
+        if (mustReload) { location.reload(); return; }
+        currentProject = latest;
+        viewerStoredProject = structuredClone(latest);
+        viewerStoredUpdatedAt = latest.updatedAt;
+        if (!remote) viewerRefreshNotice = '';
+        await refreshViewerEvaluation();
+        refreshCloudSaveState();
+      })().catch(error => {
+        viewerRefreshNotice = '最新設定を確認できませんでした。現在のデータと編集は保持しています。' + (error?.message ? ' ' + error.message : '');
+        refreshValueDisplayUi();
+      }).finally(() => { viewerRefreshTask = null; });
+      return viewerRefreshTask;
+    }
+    function setupViewerRefresh() {
+      viewerReady = true;
+      ProjectStorage.subscribeChanges?.(event => {
+        if (viewerSaving || !currentProject) return;
+        if (event.projectIds?.length || event.folderIds?.length) refreshViewerProject();
+      });
+      window.addEventListener('focus', () => refreshViewerProject({ remote: true }));
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) refreshViewerProject({ remote: true });
+      });
     }
 
     /** 登録済みプロジェクト (?project=) を IndexedDB から読む。 */
@@ -4109,13 +4193,11 @@ function loadAllImages() {
       valueRasters = {}; imageSettings = {}; analysisRoiCache.clear();
       otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
       savedOtsuRequested = false;
-      let p = await ProjectStorage.getProject(projectId);
-      // ★ この PC にまだ落としていないだけ、ということがある。ビューアの URL を
-      //   そのまま別の PC で開けるように、無ければクラウドから取ってくる。
-      if (!p) p = await fetchProjectFromCloud(projectId);
+      const p = await ensureViewerProject(projectId);
       if (!p) throw new Error('登録データが見つかりません (id=' + projectId + ')');
       currentProject = p;
       viewerStoredUpdatedAt = p.updatedAt;
+      viewerStoredProject = structuredClone(p);
       viewerSaveConflict = false;
       await loadViewerScopeContext(p);
 
@@ -4201,6 +4283,7 @@ function loadAllImages() {
         await loadProject(projectId);
         await domReady;
         await initializeViewer();
+        setupViewerRefresh();
         // 「クラウドに保存」の表示は、開いたデータが決まってからでないと出せない
         if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
       } catch (e) {

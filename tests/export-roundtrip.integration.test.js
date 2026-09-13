@@ -87,6 +87,11 @@ function fixture(c, withCalibration, withScope = false) {
       folder.normalizationGroupId = groupId;
     },
     uid: prefix => prefix + '_new', putProject: async () => {},
+    commitImportedProject: async (p, options) => {
+      p.folderId = await storage.ensureFolderPath(options.folderPath);
+      if (p.normalizationBinding && p.normalizationBinding.groupId) await storage.restoreNormalizationGroup(p.folderId, p.normalizationBinding.groupId);
+      return p;
+    },
   };
   return { project, rasters, storage, data, folders };
 }
@@ -242,10 +247,56 @@ test('real missing D4/profile and stale-profile workbooks keep raw Data and expl
   delete f.project.normalization;
   result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
   assert.equal(result.rowCount, 7);
-  assert.ok(result.normalization.reasonCodes.includes('D4_MISSING'));
+  assert.ok(!result.normalization.reasonCodes.includes('D4_MISSING'));
   assert.ok(result.normalization.reasonCodes.includes('NORMALIZATION_PROFILE_MISSING'));
   normalized = rows(read(result), 'Normalized_Data');
   assert.equal(normalized[1][2], null);
+});
+
+test('real XLSX uses authoritative current folders and the same moved evaluation as Viewer', requiresDependencies, async () => {
+  const c = app(), f = fixture(c, true, true);
+  const folders = [
+    { id: 'm', name: 'Marmoset', parentId: null },
+    { id: 'c', name: 'Coronal renamed', parentId: 'm', normalizationGroupId: 'group-1' },
+    { id: 's', name: 'Sagittal', parentId: 'm', normalizationGroupId: 'group-2' },
+    { id: 'deep', name: 'Nested', parentId: 's' },
+  ];
+  f.project.folderId = 'c';
+  f.storage.listFolders = async () => folders;
+  f.storage.listProjects = async () => [f.project];
+  const before = read(await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage }));
+  f.project.folderId = 'deep'; // Keep the obsolete binding exactly as the reported failure did.
+  const saved = JSON.stringify(f.project);
+  const viewContext = c.NormalizationScope.resolveContext(f.project, folders, [f.project]);
+  const viewEvaluation = c.Normalization.evaluate(viewContext.project, f.rasters);
+  const result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  const workbook = read(result), normalized = rows(workbook, 'Normalized_Data');
+  assert.equal(result.normalization.status, viewEvaluation.status);
+  assert.equal(result.normalization.groupStatus, viewContext.assessment.status);
+  assert.equal(result.normalization.currentPath, 'Marmoset / Sagittal');
+  assert.deepEqual(rows(workbook, 'Data'), rows(before, 'Data'));
+  for (const row of normalized.slice(1)) {
+    assert.equal(row[2], null); assert.equal(row[4], null);
+    assert.match(row[7], /GROUP_MEMBERSHIP_CHANGED/);
+    assert.doesNotMatch(row[7], /INSUFFICIENT_VALID_COVERAGE/);
+  }
+  const meta = new Map(rows(workbook, 'Metadata').map(row => [row[0], row[1]]));
+  assert.equal(meta.get('Folder'), 'Marmoset / Sagittal / Nested');
+  const roi = rows(workbook, 'ROI_Quantification'), headers = roi[0];
+  const ht = roi.find(row => row[2] === 'h');
+  assert.equal(ht[headers.indexOf('Raw mean')], c.Normalization.quantifyRoi(viewContext.project, f.rasters, viewEvaluation, new Uint8Array(8).fill(1))[0].raw.mean);
+  assert.equal(ht[headers.indexOf('Absolute reason codes')], 'GROUP_MEMBERSHIP_CHANGED');
+  assert.equal(JSON.stringify(f.project), saved);
+});
+
+test('real XLSX explicit null binding consistently blocks derived values and describes moved membership', requiresDependencies, async () => {
+  const c = app(), f = fixture(c, false, true);
+  f.project.normalizationBinding = null;
+  const result = await c.ExcelIO.buildProjectXlsx(f.project, { storage: f.storage });
+  assert.equal(c.NormalizationScope.assess(f.project, null).status, 'MOVED');
+  assert.equal(result.normalization.groupStatus, 'MOVED');
+  assert.equal(result.normalization.status, 'UNAVAILABLE');
+  assert.equal(rows(read(result), 'Normalized_Data')[1][2], null);
 });
 
 test('real Otsu unevaluable pixel has a local missing-input explanation, while a valid neighbor does not', requiresDependencies, async () => {
