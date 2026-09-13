@@ -233,6 +233,7 @@
     <script src="lib/excelio.js"></script>
     <script src="lib/cloud-config.js"></script>
     <script src="lib/cloud.js"></script>
+    <script src="lib/project-sync.js"></script>
     <script>
     (function () {
         'use strict';
@@ -598,7 +599,7 @@
             }
 
             report(1, '保存中…');
-            await ProjectStorage.putProject(project);
+            await ProjectStorage.saveProjectIfUnchanged(project, null);
             if (warnings.length) console.warn('[register] 警告:', warnings);
             return project;
         }
@@ -626,11 +627,12 @@
          *   届かないので、必ず本体を送り直す。
          */
         async function commitProjectEdit(project, beforeBlobIds) {
-            await ProjectStorage.putProject(project);
+            if (project.cloudUpdatedAt) project.cloudPending = true;
+            await ProjectStorage.saveProjectIfUnchanged(project, project.updatedAt);
             const after = new Set(ProjectStorage.collectBlobIds(project));
             for (const bid of beforeBlobIds) {
                 if (after.has(bid)) continue;
-                try { await ProjectStorage.deleteBlob(bid); }
+                try { await ProjectStorage.deleteUnreferencedBlobs([bid]); }
                 catch (e) { console.warn('[edit] 使われなくなった blob を消せません', bid, e); }
             }
             if (!(cloudOn() && Cloud.signedIn())) return null;
@@ -720,7 +722,8 @@
                     try {
                         if (project.normalization) Normalization.invalidate(project, 'NORMALIZATION_PROFILE_STALE');
                         if (project.otsu) project.otsu.applied = false;
-                        await ProjectStorage.putProject(project);
+                        if (project.cloudUpdatedAt) project.cloudPending = true;
+                        await ProjectStorage.saveProjectIfUnchanged(project, project.updatedAt);
                     } catch (e) {
                         // 保存できなかったぶんはメモリ上からも戻す (次の分子に持ち越さない)
                         project.molecules.pop();
@@ -994,13 +997,17 @@
         }
 
         /** 保存層から読み直してツリーを組み直す */
+        let reloadGeneration = 0;
         async function reload() {
+            const generation = ++reloadGeneration;
             pendingFolderChanges = readFolderChanges();
             // ---- クラウドの行を先に取る -------------------------------------
             const pathToFolderId = new Map();
             if (cloudOn() && Cloud.signedIn()) {
                 try {
-                    cloudRows = await Cloud.listProjects();
+                    const rows = await Cloud.listProjects();
+                    if (generation !== reloadGeneration) return;
+                    cloudRows = rows;
                     cloudOffline = false;
                     cloudErrorText = '';
                     // 別の PC で作られたフォルダを、名前の列からこちらにも作る。
@@ -1016,6 +1023,7 @@
                         if (!pathToFolderId.has(key)) pathToFolderId.set(key, pending.path.length ? await ProjectStorage.ensureFolderPath(pending.path) : null);
                     }
                 } catch (e) {
+                    if (generation !== reloadGeneration) return;
                     console.warn('[cloud] 一覧を取得できません', e);
                     cloudRows = null;
                     cloudOffline = true;
@@ -1028,20 +1036,23 @@
             const [folders, projects] = await Promise.all([
                 ProjectStorage.listFolders(), ProjectStorage.listProjects(),
             ]);
+            if (generation !== reloadGeneration) return;
+            pendingFolderChanges = readFolderChanges();
             const remoteById = new Map((cloudRows || []).map(row => [row.id, row]));
             for (const p of projects) {
                 const row = remoteById.get(p.id);
                 if (!row || pendingFolderChanges[p.id] || row.updated_at === p.cloudUpdatedAt) continue;
+                // An older delayed listing cannot move a project whose newer
+                // cloud snapshot has already been read into this browser.
+                if (p.cloudUpdatedAt && !(Date.parse(row.updated_at) > Date.parse(p.cloudUpdatedAt))) continue;
                 const remoteFolder = pathToFolderId.get(JSON.stringify(row.folder_path || [])) || null;
-                const remoteBinding = row.state && row.state.normalizationBinding;
-                if ((p.folderId || null) !== remoteFolder || remoteBinding && JSON.stringify(remoteBinding) !== JSON.stringify(p.normalizationBinding)) {
+                if ((p.folderId || null) !== remoteFolder) {
                     const expected = p.updatedAt;
-                    const clean = Cloud.hashState(Cloud.stateOf(p)) === p.cloudStateHash;
                     p.folderId = remoteFolder;
-                    if (remoteBinding) p.normalizationBinding = remoteBinding;
-                    // A remote location-only refresh is not an unsaved scientific edit.
-                    // Keep the old cloud revision so ensureLocal still retrieves newer content.
-                    if (clean) p.cloudStateHash = Cloud.hashState(Cloud.stateOf(p));
+                    // The folder tree may reflect current remote location, but
+                    // binding/profile and their cloud baseline stay the exact
+                    // snapshot previously read until ensureLocal imports them.
+                    // Viewer/Excel derive effective membership from this tree.
                     await ProjectStorage.putProjectsIfUnchanged([{project:p,expectedUpdatedAt:expected}]);
                 }
             }
@@ -1049,16 +1060,17 @@
             // 壊れていた親子関係はルートに拾い上げたので、保存し直す
             for (const f of tree.repaired) {
                 console.warn('[folders] 親が見つからないためルートに移しました:', f.name);
-                await ProjectStorage.putFolder(f);
+                await ProjectStorage.patchFolderFields(f.id, {parentId:f.parentId || null}, {expectedUpdatedAt:f.updatedAt});
             }
             // 消えたフォルダを指している登録データもルートに戻す
             for (const p of projects) {
                 if (p.folderId && !tree.byId.has(p.folderId)) {
                     console.warn('[folders] 親フォルダが無いためルートに移しました:', p.displayName);
-                    p.folderId = null;
-                    await ProjectStorage.putProject(p);
+                    const repaired = await ProjectStorage.patchProjectFields(p.id, {folderId:null}, {expectedUpdatedAt:p.updatedAt});
+                    Object.assign(p, repaired);
                 }
             }
+            if (generation !== reloadGeneration) return;
             if (currentFolderId && !tree.byId.has(currentFolderId)) currentFolderId = null;
             cache = {
                 folders: folders,
@@ -1335,8 +1347,7 @@
                 }
                 const f = await ProjectStorage.getFolder(id);
                 if (!f) continue;
-                f.parentId = targetId || null;
-                await ProjectStorage.putFolder(f);
+                await ProjectStorage.patchFolderFields(f.id, {parentId:targetId || null}, {expectedUpdatedAt:f.updatedAt});
             }
             await finishFolderOperation(before);
         }
@@ -1420,7 +1431,7 @@
                 if (!name || name === f.name) return;
                 const before = captureFolderLocations([f.id],[]);
                 await runFolderOperation(async () => {
-                    await ProjectStorage.putFolder(Object.assign({}, f, {name}));
+                    await ProjectStorage.patchFolderFields(f.id, {name});
                     await finishFolderOperation(before);
                 });
             });
@@ -1546,11 +1557,13 @@
             row.querySelector('[data-act="rename"]').addEventListener('click', async () => {
                 const name = (prompt('新しい名前', p.displayName) || '').trim();
                 if (!name) return;
-                p.displayName = name;
-                // 名前だけなら ZIP は送り直さない (中身は何も変わっていない)
-                if (!p.__cloudOnly) await ProjectStorage.putProject(p);
-                await patchCloudMeta(p, { display_name: name });
-                await refreshProjectList();
+                try {
+                    // The list may predate a normalization saved in another tab.
+                    // Merge only the name into the current stored record.
+                    if (!p.__cloudOnly) await ProjectStorage.patchProjectFields(p.id, {displayName:name});
+                    await patchCloudMeta(p, {display_name:name});
+                    await refreshProjectList();
+                } catch (e) { showError('名前変更を完了できませんでした: ' + e.message); }
             });
             row.querySelector('[data-act="move"]').addEventListener('click', () => {
                 openFolderPicker('「' + p.displayName + '」の移動先', (target) => moveProjects([p.id], target), null);
@@ -1891,15 +1904,21 @@
         // 分子(レイヤ)を 1 つのプロジェクトに集約する。
         async function mergeProjects(ids) {
             const list = [];
+            const sourceRows = new Map();
             for (const id of ids) {
-                // 統合は中身を触るので、未取得のものは先に落としてくる
+                // Reconcile every input, including cached ones, before taking
+                // the local and remote revisions that this merge may consume.
                 const stub = cache.projects.find(x => x.id === id);
-                if (stub && stub.__cloudOnly) {
-                    try { await ensureLocal(stub); }
-                    catch (e) { showError('「' + stub.displayName + '」を取得できませんでした: ' + e.message); return; }
+                const p = await ensureLocal(stub || {id});
+                if (!p) throw new Error('統合対象が見つかりません: ' + id);
+                assertLatestCloudProject(stub, p);
+                const remote = ProjectSync.statusOf(p).remoteRow;
+                if (remote && p.cloudBundlePath === remote.bundle_path &&
+                    (p.cloudRev | 0) === (remote.bundle_rev | 0) && !p.cloudPending &&
+                    Cloud.hashState(Cloud.stateOf(p)) === Cloud.hashState(remote.state || {})) {
+                    sourceRows.set(id, remote);
                 }
-                const p = await ProjectStorage.getProject(id);
-                if (p) list.push(p);
+                list.push(p);
             }
             if (list.length < 2) return;
 
@@ -1963,9 +1982,10 @@
             if (!target.visibleLayers || !target.visibleLayers.length) {
                 target.visibleLayers = target.molecules.length ? [target.molecules[0].key] : [];
             }
-            await ProjectStorage.putProject(target);
-            // ★ blob は target が参照しているので、レコードだけ消す
-            for (const src of rest) await ProjectStorage.deleteProjectRecord(src.id);
+            if (target.cloudUpdatedAt) target.cloudPending = true;
+            await ProjectStorage.commitProjectMerge(target, {
+                expectedRevisions:list.map(p => ({id:p.id,updatedAt:p.updatedAt}))
+            });
             // クラウド側も 1 つにする。まとめた本体を送り直してから、元の行を消す。
             if (cloudOn() && Cloud.signedIn()) {
                 setStatus('クラウドへ送信中…');
@@ -1977,9 +1997,16 @@
                     showError('統合はできましたが、クラウドへ送れませんでした ' +
                         '(一覧の「アップロード」から送り直せます): ' + r.__error);
                 } else {
+                    const retained = [];
                     for (const src of rest) {
-                        await deleteFromCloud(cache.projects.find(x => x.id === src.id) || src);
+                        const row = sourceRows.get(src.id);
+                        if (!row) {
+                            if (src.cloudUpdatedAt) retained.push(src.displayName);
+                            continue;
+                        }
+                        if (!await deleteFromCloud(src, row)) retained.push(src.displayName);
                     }
+                    if (retained.length) showError('統合結果は送信しました。更新または未同期の内容があるため、クラウドの元データを保持しています: ' + retained.join(' / '));
                 }
             }
             await refreshProjectList();
@@ -1987,6 +2014,7 @@
         }
 
         document.getElementById('bulk-merge').addEventListener('click', async () => {
+          try {
             const ids = selectedIds();
             if (ids.length < 2) return;
             const names = ids.map(id => (cache.projects.find(p => p.id === id) || {}).displayName).filter(Boolean);
@@ -1996,13 +2024,16 @@
             if (merged) {
                 const name = (prompt('統合後の名前', merged.displayName) || '').trim();
                 if (name && name !== merged.displayName) {
-                    merged.displayName = name;
-                    await ProjectStorage.putProject(merged);
+                    Object.assign(merged, await ProjectStorage.patchProjectFields(merged.id, {displayName:name}));
                     await patchCloudMeta(cache.projects.find(x => x.id === merged.id) || merged,
                         { display_name: name });
                     await refreshProjectList();
                 }
             }
+          } catch (error) {
+            setProgress(null); setStatus('');
+            showError('統合を完了できませんでした。新しい内容を保持しています: ' + error.message);
+          }
         });
 
         document.getElementById('bulk-move').addEventListener('click', () => {
@@ -2075,7 +2106,6 @@
                 },
                 folderName:p=>projectFolderNames(p).join(' / '),
                 loadProject:async row => {
-                    assertNoPendingCloudConflict(row);
                     const project = await ensureLocal(row);
                     assertLatestCloudProject(row, project);
                     return project;
@@ -2092,18 +2122,10 @@
                     if (current.cloudPending || !current.cloudUpdatedAt || !current.cloudBundlePath) {
                         throw new Error('本体が未アップロードです。一覧の「アップロード」で本体と設定を保存してください。');
                     }
-                    const state = Cloud.stateOf(current);
-                    const row = await Cloud.patchRowIfUnchanged(current.id,
-                        {state:state,meta:Cloud.metaOf(current)},current.cloudUpdatedAt);
-                    if (!row) throw new Error('クラウド更新が競合しています。別 PC の内容を確認してください。');
-                    // Keep subsequent local changes; only acknowledge the exact version sent.
-                    const latest = await ProjectStorage.getProject(current.id);
-                    if (!latest || latest.updatedAt !== current.updatedAt) {
-                        throw new Error('クラウドへ送信しましたが、その間にこの PC のデータが変わりました。再確認してください。');
-                    }
-                    latest.cloudUpdatedAt = row.updated_at;
-                    latest.cloudStateHash = Cloud.hashState(state);
-                    await ProjectStorage.putProjectsIfUnchanged([{project:latest,expectedUpdatedAt:current.updatedAt}]);
+                    const latest = await ProjectSync.saveState(current, {
+                        storage:ProjectStorage,cloud:Cloud,allowNormalizationChange:true,
+                        expectedCloudUpdatedAt:current.cloudUpdatedAt
+                    });
                     Object.assign(saved, latest);
                 } : null,
                 onSaved:async () => { await reload(); render(); setExcelExportControlsDisabled(true); },
@@ -2169,23 +2191,16 @@
         }
 
         function assertLatestCloudProject(listRow, project) {
-            const latest = listRow && listRow.__row;
+            const freshness = ProjectSync.statusOf(project);
+            if (cloudOn() && ['offline','conflict','missing-remote','pending'].includes(freshness.status)) {
+                throw new Error(freshness.reason || '最新の設定を確認できませんでした。同期状況を確認してください。');
+            }
+            const latest = freshness.remoteRow || listRow && listRow.__row;
             if (!cloudOn() || !latest) return;
             const timestampMatches = project.cloudUpdatedAt === latest.updated_at;
             const bundleMatches = !latest.bundle_path || project.cloudBundlePath === latest.bundle_path;
             if (!timestampMatches || !bundleMatches) {
                 throw new Error('クラウド最新版への置き換えが選択されなかったため未出力');
-            }
-        }
-
-        function assertNoPendingCloudConflict(listRow) {
-            const latest = listRow && listRow.__row;
-            if (!cloudOn() || !latest || listRow.__cloudOnly || !listRow.cloudPending) return;
-            if (latest.updated_at !== listRow.cloudUpdatedAt) {
-                // ensureLocal() を呼ぶと、状態ハッシュに含まれない未送信ラスタまで
-                // クラウド版で上書きされ得る。データを守るため、この 1 件だけ除外する。
-                throw new Error('未アップロードの変更とクラウド更新が競合しているため未出力です。' +
-                    '先に一覧の「アップロード」または「中身」で内容を確認し、競合を解決してください');
             }
         }
 
@@ -2316,7 +2331,6 @@
                     try {
                         // reload() で得た最新クラウド行を渡すことで、必要なデータだけ
                         // ensureLocal() が ZIP を取得し、ローカルキャッシュへ展開する。
-                        assertNoPendingCloudConflict(row);
                         const project = await ensureLocal(row);
                         if (cloudOn()) { setStatus(''); setProgress(null); }
                         if (!project || !project.molecules) throw new Error('データ本体が見つかりません');
@@ -2616,6 +2630,10 @@
             //   「同期済み」に見えてしまう。中身 (molecules / images) は状態ハッシュに
             //   入っていないので、ここで見ないと送れていないことが画面に出ない。
             if (p.cloudPending) return pill('未アップロード', 'bg-amber-50 text-amber-700 border-amber-200');
+            if (p.displayName !== r.display_name &&
+                (!Object.prototype.hasOwnProperty.call(p, 'cloudDisplayName') || p.displayName !== p.cloudDisplayName)) {
+                return pill('名前が未同期', 'bg-amber-50 text-amber-700 border-amber-200');
+            }
             if (r.updated_at !== p.cloudUpdatedAt) return pill('クラウドが新しい', 'bg-blue-50 text-blue-700 border-blue-200');
             if (Cloud.hashState(Cloud.stateOf(p)) !== p.cloudStateHash) {
                 return pill('未保存の変更', 'bg-amber-50 text-amber-700 border-amber-200');
@@ -2626,88 +2644,67 @@
         // ---- 上りと下り ------------------------------------------------------
         /** 手元のプロジェクトをクラウドへ送る (ZIP 本体 + 行)。 */
         async function uploadProject(p, onProgress) {
-            p.folderPath = ProjectStorage.folderPathNames(p.folderId, cache.tree.byId);
-            const blob = await ZipIO.exportProject(p);
-            // ★ 同じパスに上書きしない。CDN が古いほうを返して
-            //   「保存したのに別の PC では前のまま」になるのが一番わかりにくい。
-            const rev = (p.cloudRev | 0) + 1;
-            const path = Cloud.bundlePath(p.id, rev);
-            await Cloud.uploadBundle(path, blob, onProgress);
-            const state = Cloud.stateOf(p);
-            const row = await Cloud.putRow({
-                id: p.id,
-                display_name: p.displayName,
-                folder_path: p.folderPath,
-                meta: Cloud.metaOf(p),
-                state: state,
-                bundle_path: path,
-                bundle_rev: rev,
+            const current = await ProjectStorage.getProject(p.id);
+            if (!current || current.updatedAt !== p.updatedAt) throw new Error('送信前にデータが変更されました。再読み込みしてください。');
+            const folders = await ProjectStorage.listFolders();
+            const tree = ProjectStorage.buildFolderTree(folders);
+            current.folderPath = ProjectStorage.folderPathNames(current.folderId, tree.byId);
+            const remote = await Cloud.getProject(current.id);
+            // Explicit full-bundle uploads also carry intentionally configured
+            // local profiles. The prior bundle, state hash and cloud revision
+            // must all match; ordinary Viewer state saves remain profile-guarded.
+            if (remote) ProjectSync.assertStateWrite(current, remote, {
+                cloud:Cloud,allowNormalizationChange:!!current.normalization,
+                allowPendingBundle:true,expectedCloudUpdatedAt:current.cloudUpdatedAt
             });
-            const old = p.cloudBundlePath;
-            p.cloudRev = rev;
-            p.cloudBundlePath = path;
-            p.cloudUpdatedAt = row.updated_at;
-            p.cloudStateHash = Cloud.hashState(state);
-            p.cloudPending = false;
-            await ProjectStorage.putProject(p);
-            // 古い版は残しても意味が無いので片付ける。消せなくても致命傷ではない。
-            if (old && old !== path) {
-                try { await Cloud.removeBundle(old); } catch (e) { console.warn('[cloud] 旧 ZIP を消せません', old, e); }
-            }
-            return row;
-        }
-
-        /** クラウドから落として、同じ id で取り込む。 */
-        async function downloadProject(row, onProgress) {
-            if (!row.bundle_path) {
-                throw new Error('クラウドに本体がありません (アップロードが途中で終わっています)');
-            }
-            const blob = await Cloud.downloadBundle(row.bundle_path, onProgress);
-            // ★ id を渡すのが要点。渡さないと取り込むたびに別データとして増える。
-            const res = await ZipIO.importZip(blob, { storage: ProjectStorage, id: row.id,
-                state:row.state,folderPath:row.folder_path || [],displayName:row.display_name });
-            const project = res.project;
-            Cloud.applyState(project, row.state);
-            if (row.display_name) project.displayName = row.display_name;
-            project.folderId = await ProjectStorage.ensureFolderPath(row.folder_path || []);
-            if (project.normalizationBinding && project.normalizationBinding.groupId) {
-                await ProjectStorage.restoreNormalizationGroup(project.folderId, project.normalizationBinding.groupId);
-            }
-            project.cloudRev = row.bundle_rev | 0;
-            project.cloudBundlePath = row.bundle_path;
-            project.cloudUpdatedAt = row.updated_at;
-            project.cloudStateHash = Cloud.hashState(Cloud.stateOf(project));
-            project.cloudPending = false;
-            await ProjectStorage.putProject(project);
-            return { project: project, warnings: res.warnings };
-        }
-
-        /** 開く / Export のように、実体が手元に要る操作の前に呼ぶ。 */
-        async function ensureLocal(p) {
-            if (!cloudOn() || !p.__row) return await ProjectStorage.getProject(p.id) || p;
-            const fresh = p.__cloudOnly || p.__row.updated_at !== p.cloudUpdatedAt;
-            if (!fresh) return await ProjectStorage.getProject(p.id) || p;
-            if (!p.__cloudOnly &&
-                Cloud.hashState(Cloud.stateOf(p)) !== p.cloudStateHash &&
-                !confirm(`「${p.displayName}」はクラウドのほうが新しく、この PC にも未保存の変更があります。\n` +
-                         'クラウドの内容で置き換えますか? (この PC の変更は失われます)')) {
-                return await ProjectStorage.getProject(p.id) || p;
-            }
-            setStatus(`「${p.displayName}」をクラウドから取得中…`);
-            setProgress(0);
+            const expectedLocal = current.updatedAt;
+            const rev = Math.max(current.cloudRev | 0, remote && remote.bundle_rev | 0) + 1;
+            // A different path for every attempt prevents two uploads of the same
+            // revision from overwriting each other's bytes before the row CAS.
+            const path = Cloud.bundlePath(current.id, rev).replace(/\.zip$/, '-' + ProjectStorage.uid('upload') + '.zip');
+            let published = false;
             try {
-                const out = await downloadProject(p.__row, (f) => setProgress(f));
-                setProgress(null);
-                setStatus(`「${out.project.displayName}」を取得しました。`);
-                if (out.warnings && out.warnings.length) {
-                    console.warn('[cloud] 取得時の警告:', out.warnings);
+                const blob = await ZipIO.exportProject(current);
+                await Cloud.uploadBundle(path, blob, onProgress);
+                const fresh = await ProjectStorage.getProject(current.id);
+                if (!fresh || fresh.updatedAt !== expectedLocal) throw new Error('送信中にこの PC のデータが変更されました。新しい内容を保持して中止しました。');
+                const state = Cloud.stateOf(current);
+                const patch = {display_name:current.displayName,folder_path:current.folderPath,
+                    meta:Cloud.metaOf(current),state,bundle_path:path,bundle_rev:rev};
+                const row = remote ? await Cloud.patchRowIfUnchanged(current.id,patch,remote.updated_at)
+                    : await Cloud.insertRowIfAbsent(Object.assign({id:current.id},patch));
+                if (!row) throw new Error('クラウドで更新されています。新しい内容を確認してから送信してください。');
+                published = true;
+                const saved = await ProjectStorage.patchProjectFields(current.id, {
+                    cloudRev:rev,cloudBundlePath:path,cloudUpdatedAt:row.updated_at,
+                    cloudStateHash:Cloud.hashState(state),cloudDisplayName:row.display_name,cloudPending:false
+                }, {expectedUpdatedAt:expectedLocal});
+                Object.assign(p, saved);
+                // Keep previous bundles available for readers whose download is
+                // already in progress. A failed local acknowledgement never removes
+                // a successfully published bundle or rewrites newer local content.
+                return row;
+            } catch (error) {
+                if (!published) {
+                    try { await Cloud.removeBundle(path); } catch (_) {}
                 }
-                return out.project;
-            } catch (e) {
-                setProgress(null);
-                setStatus('');
-                throw e;
+                throw error;
             }
+        }
+
+        /** The listing is only an identity hint; all overwrite decisions use fresh storage. */
+        async function ensureLocal(p) {
+            const id = typeof p === 'string' ? p : p.id;
+            const project = await ProjectSync.ensureLocal(id, {
+                storage:ProjectStorage,cloud:cloudOn() ? Cloud : null,zip:ZipIO,
+                pendingFolderChanges:readFolderChanges,
+                onProgress:f => setProgress(f),
+                confirmReplace:async (local, row) => confirm('「' + (local.displayName || row.display_name || id) +
+                    '」にはこの PC の未同期の変更があります。\nクラウドの最新内容に置き換えますか？ この PC の未同期の変更は失われます。')
+            });
+            setProgress(null);
+            if (!project) throw new Error('登録データが見つかりません。');
+            return project;
         }
 
         /**
@@ -2721,40 +2718,47 @@
                 return await uploadProject(project, onProgress);
             } catch (e) {
                 console.error('[cloud] アップロードに失敗', e);
-                project.cloudPending = true;
-                await ProjectStorage.putProject(project);
+                const latest = await ProjectStorage.getProject(project.id);
+                if (latest && latest.updatedAt === project.updatedAt) {
+                    Object.assign(project, await ProjectStorage.patchProjectFields(project.id, {cloudPending:true}, {expectedUpdatedAt:latest.updatedAt}));
+                }
                 return { __error: e.message };
             }
         }
 
         /** 行のメタだけ直す (ZIP は送り直さない)。 */
         async function patchCloudMeta(p, patch) {
-            if (!cloudReady() || !p.__row) return;
+            if (!cloudReady()) return;
             try {
-                const row = await Cloud.patchRow(p.id, patch);
-                if (row) {
-                    p.__row = row;
-                    p.cloudUpdatedAt = row.updated_at;
-                    // ★ 未取得のものは書き戻さない。一覧に出すためだけの見かけなので、
-                    //   保存すると中身の無いデータが手元にできてしまう。
-                    if (!p.__cloudOnly) await ProjectStorage.putProject(p);
-                }
+                await ProjectSync.patchMetadata(p.id, patch, {storage:ProjectStorage,cloud:Cloud});
             } catch (e) {
                 console.warn('[cloud] メタの更新に失敗', p.id, e);
-                showError('クラウド側の更新に失敗しました: ' + e.message);
+                showError('クラウド側の更新に失敗しました。ローカルの変更は保持しています: ' + e.message +
+                    (Object.prototype.hasOwnProperty.call(patch, 'display_name') ? ' 接続後に「名前変更」で同じ名前を確定すると再試行できます。' : ''));
             }
         }
 
-        async function deleteFromCloud(p) {
-            if (!cloudOn() || !Cloud.signedIn()) return;
-            const path = (p.__row && p.__row.bundle_path) || p.cloudBundlePath;
-            // ★ 実体 → 行 の順。逆にすると、行だけ残って「どの PC でも開けない
-            //   データ」になる。実体だけ残るのは次の登録で上書きされるので害が小さい。
-            if (path) { try { await Cloud.removeBundle(path); } catch (e) { console.warn('[cloud] ZIP を消せません', e); } }
+        async function deleteFromCloud(p, expectedRow) {
+            if (!cloudOn() || !Cloud.signedIn()) return false;
+            const source = expectedRow || p.__row;
+            const expected = source && source.updated_at || p.cloudUpdatedAt;
             try {
-                await Cloud.removeRow(p.id);
+                // Delete only the version the operation actually consumed. The
+                // bundle is kept if a newer row exists or deletion fails.
+                if (!expected) throw new Error('削除元のクラウド版を確認できません');
+                const deleted = await Cloud.removeRowIfUnchanged(p.id, expected);
+                if (!deleted) throw new Error('別の画面で更新されたため、クラウドのデータを保持しました');
                 await changeFolderQueue(p.id, null);
-            } catch (e) { console.warn('[cloud] 行を消せません', e); }
+                if (deleted.bundle_path) {
+                    try { await Cloud.removeBundle(deleted.bundle_path); }
+                    catch (error) { console.warn('[cloud] 未参照の ZIP を消せません', error); }
+                }
+                return true;
+            } catch (error) {
+                console.warn('[cloud] 行を消せません', error);
+                showError('クラウドの削除を完了できませんでした: ' + error.message);
+                return false;
+            }
         }
 
         /**
@@ -2796,11 +2800,11 @@
                             const folders = await ProjectStorage.listFolders();
                             const path = ProjectStorage.folderPathNames(latest.folderId, ProjectStorage.buildFolderTree(folders).byId);
                             if (JSON.stringify(path) === JSON.stringify(pending.path)) {
-                                const expected = latest.updatedAt;
-                                latest.cloudUpdatedAt = row.updated_at;
-                                latest.cloudStateHash = Cloud.hashState(row.state || {});
-                                try { await ProjectStorage.putProjectsIfUnchanged([{project:latest,expectedUpdatedAt:expected}]); }
-                                catch (e) { console.warn('[cloud] 所属は同期済みです。新しいローカル編集は保持しました:', id, e); }
+                                const acknowledgement = ProjectSync.cloudAcknowledgement(latest, row, {cloud:Cloud});
+                                if (acknowledgement) {
+                                    try { await ProjectStorage.patchProjectFields(id, acknowledgement, {expectedUpdatedAt:latest.updatedAt}); }
+                                    catch (e) { console.warn('[cloud] 所属は同期済みです。新しいローカル編集は保持しました:', id, e); }
+                                }
                             }
                         }
                     } catch (e) { failures.push((pending.name || id) + ': ' + e.message); }

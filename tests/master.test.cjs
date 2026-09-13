@@ -178,6 +178,7 @@ test('Master cloud batch reports partial synchronization and can retry without a
       }
       Cloud.configured=()=>true; Cloud.signedIn=()=>true;
       Cloud.listProjects=async()=>structuredClone(Object.values(window.__cloudRows));
+      Cloud.getProject=async id=>structuredClone(window.__cloudRows[id]||null);
       Cloud.patchRowIfUnchanged=async(id,patch,expected)=>{
         if(id==='master-b' && window.__cloudFailures>0) {window.__cloudFailures--;throw new Error('synthetic offline failure');}
         const row=window.__cloudRows[id];

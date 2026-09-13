@@ -124,3 +124,40 @@ test('changed fixed-reference data require group review without invalidating the
   delete f.projects[1].normalization.invalidated; f.projects[1].normalization.rawFingerprint = 'raw-changed';
   assert.equal(S.assess(f.projects[0], group()).referenceReviewRequired, true);
 });
+
+test('shared evaluation context follows actual folders without changing a saved scope or stale binding', () => {
+  const f = fixture(); profile(f.projects[0]); profile(f.projects[1]);
+  f.folders.find(folder => folder.id === 'c').normalizationGroupId = 'uuid-c';
+  f.folders.find(folder => folder.id === 's').normalizationGroupId = 'uuid-s';
+  const p = f.projects[0], saved = JSON.stringify(p);
+  let context = S.resolveContext(p, f.folders, f.projects);
+  assert.equal(context.assessment.status, 'CURRENT'); assert.equal(context.assessment.membershipVerified, true);
+  p.folderId = 's';
+  const moved = JSON.stringify(p);
+  context = S.resolveContext(p, f.folders, f.projects);
+  assert.equal(context.assessment.status, 'MOVED'); assert.equal(context.project.normalizationBinding.groupId, 'uuid-s');
+  assert.deepEqual(json(context.currentFolderPath), ['Marmoset', 'Sagittal']);
+  assert.equal(JSON.stringify(p), moved); assert.equal(context.project.normalization, p.normalization);
+  p.folderId = 'deep'; f.folders.find(folder => folder.id === 'c').name = 'Coronal renamed';
+  context = S.resolveContext(p, f.folders, f.projects);
+  assert.equal(context.assessment.status, 'CURRENT');
+  assert.deepEqual(json(context.currentFolderPath), ['Marmoset', 'Coronal renamed', 'Nested']);
+  assert.equal(context.project.normalization.scope.folderPath[1], 'Coronal');
+  p.folderId = 'm'; context = S.resolveContext(p, f.folders, f.projects);
+  assert.equal(context.assessment.status, 'MOVED'); assert.equal(context.project.normalizationBinding.groupId, null);
+  assert.equal(saved.includes('uuid-c'), true);
+});
+
+test('null binding is moved; unavailable hierarchy preserves an unbound standalone snapshot', () => {
+  const f = fixture(); const p = f.projects[0]; profile(p);
+  p.normalizationBinding = null;
+  assert.equal(S.assess(p, null).status, 'MOVED');
+  assert.equal(S.resolveContext(p).assessment.status, 'MOVED');
+  delete p.normalizationBinding;
+  let context = S.resolveContext(p);
+  assert.equal(context.assessment.status, 'CURRENT'); assert.equal(context.assessment.membershipVerified, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(context.project, 'normalizationBinding'), false);
+  context = S.resolveContext(p, []);
+  assert.equal(context.assessment.status, 'MOVED', 'an available empty hierarchy proves the group is absent');
+  assert.equal(context.project.normalizationBinding.groupId, null);
+});

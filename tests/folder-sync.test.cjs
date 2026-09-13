@@ -171,7 +171,7 @@ test('remote folder refresh preserves a clean local state baseline and does not 
         cloudUpdatedAt: p.cloudUpdatedAt, source: p.normalization.scope.folderPath,
         patches: Number(localStorage.getItem('synthetic-folder-sync-patches') || 0) };
     });
-    assert.equal(current.group, 'group-sagittal');
+    assert.equal(current.group, 'group-coronal', 'listing location alone cannot rewrite the scientific state associated with the old cloud baseline');
     assert.equal(current.clean, true, 'a remote location change is not an unsaved local scientific edit');
     assert.equal(current.cloudUpdatedAt, '2026-01-01T00:00:00.000Z', 'newer cloud content must still be fetched before opening');
     assert.deepEqual(current.source, ['Marmoset', 'Coronal']);
@@ -203,6 +203,34 @@ test('discarding the pending intent for a remotely deleted record unblocks anoth
     await h.page.locator('#normalization-load').click();
     await h.page.locator('#normalization-form').waitFor();
     assert.match(await h.page.locator('#normalization-body').innerText(), /Sagittal/);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('an older remote listing cannot move a project whose newer cloud location has already been read', { timeout: 60000 }, async () => {
+  const h = await startBrowserHarness();
+  try {
+    await fixture(h, { offline: false });
+    // A newer ensureLocal operation completed while an older list response was
+    // still in flight. Keep the mock listing at rev1 and store the read rev2.
+    const before = await h.page.evaluate(async () => {
+      const project = await ProjectStorage.getProject('p');
+      project.folderId = 'sagittal';
+      project.normalizationBinding = { groupId: 'group-sagittal', folderPath: ['Marmoset', 'Sagittal'], memberId: 'p' };
+      project.cloudUpdatedAt = '2026-01-01T00:02:00.000Z';
+      project.cloudStateHash = Cloud.hashState(Cloud.stateOf(project));
+      return await ProjectStorage.saveProjectIfUnchanged(project, project.updatedAt);
+    });
+    await h.page.reload();
+    await h.page.locator('.tree-node[title="Marmoset"]').waitFor();
+    const after = await h.page.evaluate(async () => ({
+      project: await ProjectStorage.getProject('p'),
+      patches: Number(localStorage.getItem('synthetic-folder-sync-patches') || 0),
+    }));
+    assert.equal(after.project.folderId, 'sagittal');
+    assert.equal(after.project.cloudUpdatedAt, '2026-01-01T00:02:00.000Z');
+    assert.deepEqual(after.project, before, 'a stale listing must not write over the newer local location or advance its revision');
+    assert.equal(after.patches, 0);
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });

@@ -145,36 +145,110 @@ test('Viewer distinguishes invalid ratios, missing pixels, and Otsu-unknown pixe
   } finally { await harness.close(); }
 });
 
-test('Stale Viewer saves cannot overwrite a newer Master profile in the same browser', { timeout: 90000 }, async () => {
+test('Viewer protects concurrent ROI edits while preserving a newer Master normalization', { timeout: 90000 }, async () => {
   const harness = await startBrowserHarness();
   const { page, context, baseURL, errors } = harness;
   page.on('dialog', dialog => dialog.dismiss());
   try {
     const id = await seedViewerProject(page, baseURL, { id: 'viewer-conflict' });
     await page.goto(baseURL + '/viewer/index.html?project=' + id);
-    await page.waitForFunction(() => normalizationEvaluation && Object.keys(imageSettings).length > 0);
+    await page.waitForFunction(() => viewerReady && Object.keys(imageSettings).length > 0);
     await page.evaluate(() => Promise.all([saveViewerProject(), saveViewerProject()]));
     assert.equal(await page.evaluate(() => viewerSaveConflict), false, 'serialized own writes must not self-conflict');
+    // Keep a draft ROI in this Viewer while Master changes that same field.
+    await page.evaluate(() => { currentProject.roi.roi_names.all = 'unsaved Viewer ROI'; });
     const master = await context.newPage();
     await master.goto(baseURL + '/__test_seed');
     await master.evaluate(async id => {
       const newer = await ProjectStorage.getProject(id);
       newer.normalization.revision++;
+      newer.roi.roi_names.all = 'newer Master ROI';
       newer.masterMarker = 'newer-profile-must-survive';
       await ProjectStorage.putProject(newer);
     }, id);
-    await page.evaluate(() => {
-      currentProject.viewerMarker = 'stale-autosave';
-      queueSaveProject();
-    });
-    await page.waitForFunction(() => viewerSaveConflict);
+    const rejected = await page.evaluate(() => saveViewerProject().then(() => false, () => true));
+    assert.equal(rejected, true, 'two edits of the same ROI cannot overwrite each other');
+    assert.equal(await page.evaluate(() => currentProject.roi.roi_names.all), 'unsaved Viewer ROI', 'in-memory ROI is retained on conflict');
     assert.match(await page.locator('#value-display-status').innerText(), /保存を停止しました/);
     const stored = await master.evaluate(id => ProjectStorage.getProject(id), id);
     assert.equal(stored.masterMarker, 'newer-profile-must-survive');
     assert.equal(stored.normalization.revision, 2);
-    assert.equal(stored.viewerMarker, undefined);
-    const rejected = await page.evaluate(() => saveViewerProject().then(() => false, () => true));
-    assert.equal(rejected, true, 'conflict pauses further writes until reload');
+    assert.equal(stored.roi.roi_names.all, 'newer Master ROI');
+    assert.deepEqual(errors, []);
+    await master.close();
+  } finally { await harness.close(); }
+});
+
+test('Missing normalization opens in effective raw mode without changing the saved project', { timeout: 90000 }, async () => {
+  const harness = await startBrowserHarness();
+  const { page, baseURL, errors } = harness;
+  page.on('dialog', dialog => dialog.dismiss());
+  try {
+    const id = await seedViewerProject(page, baseURL, { id: 'viewer-unconfigured' });
+    const before = await page.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id);
+      delete p.normalization;
+      await ProjectStorage.putProject(p);
+      return JSON.stringify(await ProjectStorage.getProject(id));
+    }, id);
+    await page.goto(baseURL + '/viewer/index.html?project=' + id);
+    await page.waitForFunction(() => viewerReady && Object.keys(imageSettings).length > 0);
+    await page.evaluate(() => displayGraphForRoi('all'));
+    assert.equal(await page.evaluate(() => valueDisplay.mode), 'raw');
+    assert.equal(await page.locator('#value-normalized').isDisabled(), true);
+    assert.match(await page.locator('#value-display-status').innerText(), /補正設定なし：生値を表示/);
+    assert.doesNotMatch(await page.locator('#graph-container').innerText(), /UNAVAILABLE|補正 coverage|最低有効率|絶対定量/);
+    assert.ok(await page.evaluate(() => calcStats(extractRoiPixels('MSI_5-HT', 'all')).mean > 0));
+    assert.equal(await page.evaluate(id => ProjectStorage.getProject(id).then(p => JSON.stringify(p)), id), before, 'opening alone must not rewrite valueDisplay or any saved field');
+    await page.evaluate(() => changeValueMode('normalized'));
+    assert.equal(await page.evaluate(() => valueDisplay.mode), 'raw');
+    assert.deepEqual(errors, []);
+  } finally { await harness.close(); }
+});
+
+test('Open Viewer receives a Master normalization update, and narrow saves retain unrelated updates', { timeout: 90000 }, async () => {
+  const harness = await startBrowserHarness();
+  const { page, context, baseURL, errors } = harness;
+  page.on('dialog', dialog => dialog.dismiss());
+  try {
+    const id = await seedViewerProject(page, baseURL, { id: 'viewer-profile-refresh' });
+    await page.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id);
+      delete p.normalization;
+      await ProjectStorage.putProject(p);
+    }, id);
+    await page.goto(baseURL + '/viewer/index.html?project=' + id);
+    await page.waitForFunction(() => viewerReady && valueDisplay.mode === 'raw');
+    const bits = await page.evaluate(() => Array.from(new Uint32Array(valueRasters['MSI_5-HT'].values.buffer)));
+    const master = await context.newPage();
+    await master.goto(baseURL + '/__test_seed');
+    await master.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id), rasters = await Normalization.loadRasters(p, {storage:ProjectStorage});
+      const result = Normalization.createProfiles([{project:p,rasters,mapping:Normalization.suggestMapping(p.molecules)}], {
+        id:'new-master-profile',revision:1,batchId:'synthetic',prepId:'synthetic-prep',quality:'provisional',coordinateMatchConfirmed:true,comparabilityConfirmed:true,
+        qc:{minD4:0,saturationD4:1000,minCoverage:0.8},reference:{kind:'whole_tissue',projectIds:[id],roiNames:[]},otsuSourceRoles:['ht','da']
+      });
+      p.normalization = result.profiles[0].normalization;
+      await ProjectStorage.putProject(p);
+    }, id);
+    await page.waitForFunction(() => currentProject.normalization?.id === 'new-master-profile' && valueDisplay.mode === 'normalized');
+    assert.equal(await page.locator('#value-normalized').isDisabled(), false);
+    assert.ok(await page.evaluate(() => Array.from(displayRaster('MSI_5-HT').values).some(Number.isFinite)));
+    assert.deepEqual(await page.evaluate(() => Array.from(new Uint32Array(valueRasters['MSI_5-HT'].values.buffer))), bits);
+    // A queued local appearance edit and a newer unrelated Master field are merged narrowly.
+    await page.evaluate(() => { currentProject.rotation = {all:90,he:0,msi:0}; });
+    await master.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id);
+      p.displayName = 'Updated in Master';
+      p.normalization.revision++;
+      await ProjectStorage.putProject(p);
+    }, id);
+    await page.evaluate(() => saveViewerProject());
+    const stored = await page.evaluate(id => ProjectStorage.getProject(id), id);
+    assert.equal(stored.normalization.revision, 2);
+    assert.equal(stored.displayName, 'Updated in Master');
+    assert.equal(stored.rotation.all, 90);
+    assert.equal(await page.evaluate(() => viewerSaveConflict), false);
     assert.deepEqual(errors, []);
     await master.close();
   } finally { await harness.close(); }
@@ -251,4 +325,90 @@ test('Viewer reports saved/current folder paths, mixed settings and moved-group 
     assert.equal(persisted.normalizationBinding.groupId, 'viewer-group', 'Viewer membership assessment is read only');
     assert.deepEqual(errors, []);
   } finally { await harness.close(); }
+});
+
+
+test('Viewer checks newer cloud settings at load and preserves a draft started during focus refresh', { timeout: 90000 }, async () => {
+  const harness = await startBrowserHarness();
+  const { page, context, baseURL, errors } = harness;
+  page.on('dialog', dialog => dialog.dismiss());
+  try {
+    const id = await seedViewerProject(page, baseURL, { id: 'viewer-cloud-refresh' });
+    await page.addScriptTag({ url: baseURL + '/lib/cloud.js' });
+    const setup = await page.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id);
+      const profile = structuredClone(p.normalization);
+      delete p.normalization;
+      p.cloudRev = 1; p.cloudBundlePath = id + '/bundle-v1.zip';
+      p.cloudUpdatedAt = '2026-09-13T00:00:00.000Z';
+      p.cloudStateHash = Cloud.hashState(Cloud.stateOf(p));
+      await ProjectStorage.putProject(p);
+      const state = Cloud.stateOf({...p,normalization:profile});
+      return { row: {id,display_name:p.displayName,bundle_rev:1,bundle_path:p.cloudBundlePath,
+        updated_at:'2026-09-13T01:00:00.000Z',folder_path:[],state}, profile };
+    }, id);
+    await context.addInitScript(row => { window.__viewerRemoteRow = row; }, setup.row);
+    const cloudScript = require('node:fs').readFileSync(require('node:path').join(__dirname, '../lib/cloud.js'), 'utf8');
+    await context.route('**/lib/cloud.js', route => route.fulfill({status:200,contentType:'application/javascript',body:cloudScript + `
+      Cloud.configured = () => true; Cloud.signedIn = () => true;
+      Cloud.getProject = async () => {
+        if (window.__pauseRemote) {
+          window.__remoteWaiting = true;
+          await new Promise(resolve => { window.__releaseRemote = resolve; });
+        }
+        return structuredClone(window.__viewerRemoteRow);
+      };
+      Cloud.listProjects = async () => [structuredClone(window.__viewerRemoteRow)];
+      Cloud.downloadBundle = async () => { throw new Error('same bundle must not download raw data'); };
+      Cloud.patchRowIfUnchanged = async () => { throw new Error('load and focus must not write cloud'); };
+    `}));
+    await page.goto(baseURL + '/viewer/index.html?project=' + id);
+    await page.waitForFunction(() => viewerReady && valueDisplay.mode === 'normalized');
+    assert.equal(await page.evaluate(() => currentProject.normalization.id), setup.profile.id);
+    assert.equal(await page.evaluate(() => currentProject.cloudUpdatedAt), setup.row.updated_at);
+    const before = await page.evaluate(id => ProjectStorage.getProject(id).then(p=>JSON.stringify(p)), id);
+    await page.evaluate(() => {
+      window.__viewerRemoteRow.updated_at = '2026-09-13T02:00:00.000Z';
+      window.__viewerRemoteRow.state.normalization.revision++;
+      window.__pauseRemote = true;
+      window.__focusRefresh = refreshViewerProject({remote:true});
+    });
+    await page.waitForFunction(() => window.__remoteWaiting);
+    await page.evaluate(() => {
+      currentProject.roi.roi_names.all = 'Draft created during request';
+      window.__releaseRemote();
+    });
+    await page.evaluate(() => window.__focusRefresh);
+    assert.equal(await page.evaluate(() => currentProject.roi.roi_names.all), 'Draft created during request');
+    assert.equal(await page.evaluate(() => currentProject.normalization.revision), setup.profile.revision);
+    assert.equal(await page.evaluate(id => ProjectStorage.getProject(id).then(p=>JSON.stringify(p)), id), before, 'request that overlaps a new draft cannot replace its stored baseline');
+    assert.match(await page.locator('#value-display-status').innerText(), /未保存の編集を保持/);
+    assert.deepEqual(errors, []);
+  } finally { await harness.close(); }
+});
+
+
+test('Viewer never adopts an unseen ROI baseline while saving a separate appearance edit', { timeout: 90000 }, async () => {
+  const harness = await startBrowserHarness();
+  const { page, context, baseURL, errors } = harness;
+  page.on('dialog', dialog => dialog.dismiss());
+  try {
+    const id = await seedViewerProject(page, baseURL, {id:'viewer-unseen-roi'});
+    await page.goto(baseURL + '/viewer/index.html?project=' + id);
+    await page.waitForFunction(() => viewerReady);
+    await page.evaluate(() => {currentProject.rotation = {all:90,he:0,msi:0};});
+    const master = await context.newPage();
+    await master.goto(baseURL + '/__test_seed');
+    await master.evaluate(async id => {
+      const p = await ProjectStorage.getProject(id);
+      p.roi.roi_items.all[0].poly_msi = [[0,0],[2,0],[2,1],[0,1]];
+      await ProjectStorage.putProject(p);
+    }, id);
+    assert.equal(await page.evaluate(() => saveViewerProject().then(()=>false,()=>true)),true);
+    assert.equal(await page.evaluate(() => currentProject.rotation.all),90);
+    assert.deepEqual(await page.evaluate(() => atlasData.roi.roi_items.all[0].poly_msi),[[0,0],[4,0],[4,2],[0,2]]);
+    assert.deepEqual(await page.evaluate(id => ProjectStorage.getProject(id).then(p=>p.roi.roi_items.all[0].poly_msi),id),[[0,0],[2,0],[2,1],[0,1]]);
+    assert.deepEqual(errors,[]);
+    await master.close();
+  } finally {await harness.close();}
 });

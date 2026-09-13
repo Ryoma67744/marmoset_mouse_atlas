@@ -145,3 +145,118 @@ test('Explicit whole-group save repairs a shared group ID without modifying the 
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
+
+async function openOutputFixture(h, {unconfigured = false, invalidReference = false, cloudRetry = false} = {}) {
+  for (const id of ['output-good','output-reference']) await seedViewerProject(h.page,h.baseURL,{id});
+  await loadUI(h);
+  const before = await h.page.evaluate(async ({unconfigured,invalidReference,cloudRetry}) => {
+    for (const folder of [{id:'species',name:'Marmoset',parentId:null},{id:'plane',name:'Coronal',parentId:'species'},
+      {id:'child',name:'Reference child',parentId:'plane'}]) await ProjectStorage.putFolder(folder);
+    for (const project of await ProjectStorage.listProjects()) {
+      project.displayName = project.id;
+      project.folderId = project.id === 'output-reference' ? 'child' : 'plane';
+      if (unconfigured) delete project.normalization;
+      if (invalidReference && project.id === 'output-reference') {
+        const m = project.molecules.find(m=>m.key === 'MSI_D4-5-HT');
+        m.blobId = await ProjectStorage.putValueRaster(new Float32Array(8));
+      }
+      await ProjectStorage.putProject(project);
+    }
+    window.__uiCloudAttempts = {};
+    const refreshScope = async () => ({projects:await ProjectStorage.listProjects(),folders:await ProjectStorage.listFolders(),currentFolderId:'plane'});
+    NormalizationUI.open(Object.assign(await refreshScope(),{storage:ProjectStorage,refreshScope,loadProject:p=>ProjectStorage.getProject(p.id),
+      saveCloud:cloudRetry ? async project => {
+        const attempts = window.__uiCloudAttempts;
+        attempts[project.id] = (attempts[project.id] || 0) + 1;
+        if (project.id === 'output-reference' && attempts[project.id] === 1) throw new Error('temporary fixture failure');
+      } : undefined
+    }));
+    return ProjectStorage.listProjects();
+  },{unconfigured,invalidReference,cloudRetry});
+  await h.page.locator('#normalization-load').click();
+  await h.page.locator('#normalization-form').waitFor();
+  await h.page.locator('[name=batchId]').fill('verified-batch');
+  await h.page.locator('[name=prepId]').fill('verified-prep');
+  await h.page.locator('[name=minD4]').fill('0');
+  await h.page.locator('[name=saturationD4]').fill('1000');
+  await h.page.locator('[name=referenceKind]').selectOption('whole_tissue');
+  await h.page.locator('[name=comparability]').check();
+  await h.page.locator('#normalization-form tbody tr').filter({hasText:'output-reference'}).locator('input[type=checkbox]').check();
+  return before;
+}
+
+for (const unconfigured of [false,true]) {
+  test('All unavailable preview blocks ' + (unconfigured ? 'initial setup' : 'existing profile replacement') + ' while preserving all records', {timeout:60000}, async () => {
+    const h = await startBrowserHarness(), page = h.page;
+    try {
+      const before = await openOutputFixture(h,{unconfigured});
+      await page.locator('[name=minD4]').fill('100');
+      await page.locator('#normalization-preview').click();
+      await page.locator('#normalization-output-blocked').waitFor();
+      assert.equal(await page.locator('#normalization-save').isDisabled(),true);
+      assert.equal(await page.locator('#normalization-cloud').isDisabled(),true);
+      assert.equal(await page.locator('[data-output-project]').count(),2);
+      assert.deepEqual(await page.locator('[data-output-role]').evaluateAll(cells=>cells.map(c=>c.dataset.finite)),['0','0','0','0','0','0']);
+      assert.doesNotMatch(await page.locator('#normalization-preview-result').innerText(),/信号比は暫定表示できます|信号比の表示は独立して利用できます/);
+      await page.evaluate(()=>document.getElementById('normalization-save').onclick());
+      assert.deepEqual(await page.evaluate(()=>ProjectStorage.listProjects()),before,'even a direct handler call must preserve the existing profile');
+      assert.deepEqual(h.errors,[]);
+    } finally { await h.close(); }
+  });
+}
+
+test('Finite 5-HT ratios remain saveable with unavailable k and preserve every group member and selected fixed reference', {timeout:60000}, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  page.on('dialog',dialog=>dialog.accept());
+  try {
+    const before = await openOutputFixture(h,{invalidReference:true});
+    await page.locator('#normalization-preview').click();
+    await page.waitForFunction(()=>!document.getElementById('normalization-save').disabled);
+    const good = page.locator('[data-output-project="output-good"]');
+    assert.equal(await good.locator('[data-output-role="ht"]').getAttribute('data-finite'),'8');
+    assert.equal(await good.locator('[data-output-role="da"]').getAttribute('data-finite'),'0');
+    assert.equal(await good.locator('[data-output-role="ne"]').getAttribute('data-finite'),'0');
+    assert.match(await good.innerText(),/8 \/ 8画素/);
+    assert.equal(await page.locator('[data-output-project="output-reference"] [data-finite="0"]').count(),3);
+    await page.locator('#normalization-save').click();
+    await page.waitForFunction(()=>/2 件をこの PC に保存しました/.test(document.getElementById('normalization-status').textContent));
+    const after = await page.evaluate(async()=>{
+      const out = [];
+      for (const p of await ProjectStorage.listProjects()) {
+        const evaluation = Normalization.evaluate(p,await Normalization.loadRasters(p,{storage:ProjectStorage}));
+        out.push({project:p,ht:evaluation.channels['MSI_5-HT'].nValid || 0});
+      }
+      return out;
+    });
+    for (const {project} of after) {
+      assert.equal(project.normalization.section.k,null);
+      assert.equal(project.normalization.section.Dref,null,'invalid fixed reference cannot be silently omitted');
+      assert.deepEqual(project.normalization.scope.memberIds,['output-good','output-reference']);
+      assert.deepEqual(project.normalization.reference.projectIds,['output-reference']);
+      assert.deepEqual(project.molecules,before.find(p=>p.id===project.id).molecules);
+    }
+    assert.equal(after.find(row=>row.project.id==='output-good').ht,8);
+    assert.deepEqual(h.errors,[]);
+  } finally { await h.close(); }
+});
+
+test('Cloud profile retry sends only failed members and keeps the cumulative completion count', {timeout:60000}, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  page.on('dialog',dialog=>dialog.accept());
+  try {
+    await openOutputFixture(h,{cloudRetry:true});
+    await page.locator('#normalization-preview').click();
+    await page.waitForFunction(()=>!document.getElementById('normalization-save').disabled);
+    await page.locator('#normalization-save').click();
+    await page.waitForFunction(()=>/2 件をこの PC に保存しました/.test(document.getElementById('normalization-status').textContent));
+    const saved = await page.evaluate(()=>ProjectStorage.listProjects());
+    await page.locator('#normalization-cloud').click();
+    await page.waitForFunction(()=>/クラウド同期 1\/2 件/.test(document.getElementById('normalization-status').textContent));
+    await page.locator('#normalization-cloud').click();
+    await page.waitForFunction(()=>/クラウド同期 2\/2 件/.test(document.getElementById('normalization-status').textContent));
+    assert.deepEqual(await page.evaluate(()=>window.__uiCloudAttempts),{'output-good':1,'output-reference':2});
+    assert.equal(await page.locator('#normalization-cloud').isDisabled(),true);
+    assert.deepEqual(await page.evaluate(()=>ProjectStorage.listProjects()),saved);
+    assert.deepEqual(h.errors,[]);
+  } finally { await h.close(); }
+});
