@@ -66,6 +66,29 @@ async function setSlider(page, selector, value) {
   }, value);
 }
 
+async function seedReferenceImages(page) {
+  await page.evaluate(async ids => {
+    const he = document.createElement('canvas'); he.width = 128; he.height = 64;
+    const ctx = he.getContext('2d');
+    ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, 128, 32);
+    ctx.fillStyle = '#0000ff'; ctx.fillRect(0, 32, 128, 32);
+    // A one-native-pixel feature is destroyed if HE is reduced to the 4×2 MSI raster.
+    ctx.fillStyle = '#00ff00'; ctx.fillRect(48, 0, 1, 32);
+    const atlas = document.createElement('canvas'); atlas.width = 256; atlas.height = 128;
+    atlas.getContext('2d').drawImage(he, 0, 0, atlas.width, atlas.height);
+    for (const id of ids.slice(0, 2)) {
+      const project = await ProjectStorage.getProject(id);
+      for (const [key, source] of [['HE_Stain', he], ['ATLAS', atlas]]) {
+        const blob = await new Promise(resolve => source.toBlob(resolve, 'image/png'));
+        const filename = key + '.png';
+        project.images[key] = { blobId: await ProjectStorage.putBlob({ blob, mime: 'image/png', filename }), filename, mime: 'image/png' };
+      }
+      project.world_coords = { T_he_to_msi: [[1 / 32, 0, 0.5], [0, 1 / 32, 0], [0, 0, 1]] };
+      await ProjectStorage.putProject(project);
+    }
+  }, IDS);
+}
+
 function sameView(actual, expected) {
   for (const key of ['position', 'target', 'up']) for (let i = 0; i < 3; i++) {
     assert.ok(Math.abs(actual[key][i] - expected[key][i]) < 1e-8, key + '[' + i + '] restored');
@@ -87,7 +110,10 @@ test('Master subset opens a 3D stack and section detail returns with camera, con
     await setSlider(page, '#opacity', 0.31);
     await setSlider(page, '#threshold', 0.2);
     await setSlider(page, '#spacing', 0.61);
-    await page.locator('#range-mode').selectOption('common');
+    assert.equal(await page.locator('#range-mode').count(), 0, 'color range is no longer an editable choice');
+    assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
+    await setSlider(page, '#he-opacity', 0.27);
+    await page.locator('#he-visible').uncheck();
     await page.locator('input[name="channel"][value="NE"]').uncheck();
     await page.locator('#next-section').click();
     await page.waitForFunction(() => document.getElementById('section-name').textContent === 'Cor_1_10');
@@ -109,7 +135,10 @@ test('Master subset opens a 3D stack and section detail returns with camera, con
     assert.equal(await page.locator('#opacity').inputValue(), '0.31');
     assert.equal(await page.locator('#threshold').inputValue(), '0.2');
     assert.equal(await page.locator('#spacing').inputValue(), '0.61');
-    assert.equal(await page.locator('#range-mode').inputValue(), 'common');
+    assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
+    assert.equal(await page.locator('#he-visible').isChecked(), false);
+    assert.equal(await page.locator('#he-opacity').inputValue(), '0.27');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [1, 1], 'section cutoff survives the detail round trip');
     assert.equal(await page.locator('input[name="channel"][value="NE"]').isChecked(), false);
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
     await page.locator('#master-link').click();
@@ -132,7 +161,7 @@ test('normalized 3D mode exposes a skipped correction without rendering or pooli
     await ready(page, 3);
     assert.equal(await page.locator('#section-name').innerText(), 'Cor_10_1');
     await page.locator('#value-mode').selectOption('normalized');
-    await page.locator('#range-mode').selectOption('common');
+    assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
     await page.waitForFunction(() => Atlas3D.rendered[Atlas3D.selected]?.status.code === 'UNAVAILABLE');
     assert.match(await page.locator('#section-status').innerText(), /表示できる値がありません|補正値を表示できません/);
     const actual = await page.evaluate(() => {
@@ -153,6 +182,184 @@ test('normalized 3D mode exposes a skipped correction without rendering or pooli
     await page.waitForFunction(() => Atlas3D.rendered[Atlas3D.selected]?.status.code === 'RAW');
     assert.match(await page.locator('#section-status').innerText(), /原値/);
     assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('common color ranges override older sessions and the bottom scrubber hides earlier sections until reset', { timeout: 90000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h);
+    const before = await rawBits(page);
+    await page.evaluate(ids => sessionStorage.setItem('atlas-stack3d-view-v1', JSON.stringify({
+      ids, selectedId: ids[0], options: { mode: 'raw', rangeMode: 'individual', channels: ['DA', 'NE', '5-HT'] }, range: [1, 3]
+    })), IDS);
+    await page.goto(h.baseURL + '/stack3d/index.html');
+    await ready(page, 3);
+    assert.equal(await page.locator('#range-mode').count(), 0);
+    assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
+    assert.match(await page.locator('.scene-bottom').innerText(), /小脳側\s*→\s*嗅球側.*初期視点/);
+    await setSlider(page, '#section-slider', 1);
+    assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
+    let stats = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.deepEqual(stats.range, [1, 2]);
+    assert.deepEqual(stats.visibleSectionIds, IDS.slice(1), 'the selected section and later sections remain visible');
+    assert.equal(stats.selectedIndex, 1);
+    await page.locator('#reload').click();
+    await ready(page, 3);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [1, 2], 'cutoff survives reload');
+    await page.locator('#previous-section').click();
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 2]);
+    await page.locator('#range-end').fill('2');
+    await page.locator('#range-end').dispatchEvent('change');
+    await setSlider(page, '#section-slider', 2);
+    stats = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.deepEqual(stats.range, [2, 2], 'scrubbing beyond the old end includes the selected section');
+    assert.deepEqual(stats.visibleSectionIds, [IDS[2]]);
+    await page.locator('#show-all').click();
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 2]);
+    assert.equal(await page.locator('#section-name').innerText(), 'Cor_10_1');
+    assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('atlas-stack3d-view-v1')).options.rangeMode), 'common');
+    assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('unsynchronized edits appear as a compact header warning with complete accessible details', { timeout: 90000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h);
+    await h.context.route(h.baseURL + '/lib/cloud.js', route => route.fulfill({
+      contentType: 'application/javascript', body: `window.Cloud = {
+        configured: () => true, signedIn: () => true,
+        listProjects: async () => (await ProjectStorage.listProjects()).map(p => ({ id: p.id, display_name: p.displayName }))
+      };`
+    }));
+    await h.context.route(h.baseURL + '/lib/project-sync.js', route => route.fulfill({
+      contentType: 'application/javascript', body: `window.ProjectSync = {
+        ensureLocal: id => ProjectStorage.getProject(id),
+        statusOf: p => p.id === 'stack-skipped' ? { status: 'current' } : {
+          status: 'local-edits', reason: '手元に未同期の編集があります'
+        }
+      };`
+    }));
+    await page.goto(h.baseURL + '/stack3d/index.html');
+    await ready(page, 3);
+    assert.equal(await page.locator('#sync-warning').isVisible(), true);
+    const title = await page.locator('#sync-warning').getAttribute('title');
+    assert.match(title, /Cor_1_2/); assert.match(title, /Cor_1_10/); assert.match(title, /未同期/);
+    assert.match(await page.locator('#sync-warning').getAttribute('aria-label'), /未同期.*2/);
+    const bounds = await page.locator('#sync-warning').boundingBox();
+    assert.ok(bounds.y < 100 && bounds.width <= 48 && bounds.height <= 48, 'warning is a small icon in the top header');
+    assert.equal(await page.locator('#notice').isVisible(), false, 'ordinary local edits do not cover the bottom scrubber');
+    await page.locator('#sync-warning').click();
+    assert.equal(await page.locator('#sync-warning').getAttribute('aria-expanded'), 'true');
+    assert.equal(await page.locator('#sync-details').isVisible(), true);
+    const details = await page.locator('#sync-details').innerText();
+    assert.match(details, /Cor_1_2/); assert.match(details, /Cor_1_10/);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#sync-details').isVisible(), false);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('HE overlay follows the cutoff, reuses GPU resources and preserves native image detail and alignment', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await seedReferenceImages(page);
+    const before = await rawBits(page);
+    const storedBefore = await page.evaluate(() => ProjectStorage.listProjects());
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second');
+    await ready(page, 3);
+    await page.waitForFunction(() => {
+      const stats = Atlas3D.renderer.getStats();
+      return stats.heTextureCount === 2 && stats.heVisibleCount === 2 && stats.gpuTextures >= stats.textureCount + stats.heTextureCount;
+    });
+    assert.equal(await page.locator('#he-visible').isChecked(), true);
+    let stats = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.equal(stats.heOpacity, 0.12);
+    assert.deepEqual(stats.heVisibleSectionIds, IDS.slice(0, 2));
+    const resources = { textures: stats.gpuTextures, geometries: stats.gpuGeometries };
+    await setSlider(page, '#section-slider', 1);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[1]]);
+    await setSlider(page, '#he-opacity', 0.28);
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().heOpacity), 0.28);
+    for (let i = 0; i < 4; i++) {
+      await page.locator('#he-visible').uncheck();
+      assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleCount), 0);
+      await page.locator('#he-visible').check();
+      await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 1);
+    }
+    stats = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.equal(stats.heTextureCount, 2);
+    assert.ok(stats.gpuTextures <= resources.textures, 'HE toggles reuse the same GPU textures');
+    assert.ok(stats.gpuGeometries <= resources.geometries, 'HE toggles reuse the same plane geometry');
+    const plane = await page.evaluate(async () => {
+      const section = Atlas3D.sections.find(s => s.id === 'stack-second');
+      const canvas = await Stack3D.renderHePlane(section, { maxSize: 512 });
+      const ctx = canvas.getContext('2d');
+      const sample = (x, y) => Array.from(ctx.getImageData(x, y, 1, 1).data);
+      const result = { width: canvas.width, height: canvas.height, blank: sample(4, 8), red: sample(32, 8),
+        blue: sample(32, 48), stripe: sample(64, 8), besideStripe: sample(65, 8) };
+      canvas.width = 0; canvas.height = 0; return result;
+    });
+    assert.equal(plane.width, 128); assert.equal(plane.height, 64);
+    assert.equal(plane.blank[3], 0, 'saved affine translation leaves the expected transparent margin');
+    assert.deepEqual(plane.red, [255, 0, 0, 255]); assert.deepEqual(plane.blue, [0, 0, 255, 255]);
+    assert.deepEqual(plane.stripe, [0, 255, 0, 255]); assert.deepEqual(plane.besideStripe, [255, 0, 0, 255]);
+    // Hold one HE preview in flight, then scrub through several sections.
+    // Intermediate requests must not build an unbounded image-decode queue.
+    await page.locator('[data-preview="MSI"]').click();
+    await page.evaluate(() => Atlas3D.selectSection(0));
+    await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'MSI');
+    await page.evaluate(() => {
+      const state = window.__previewQueueTest = { calls: [], active: 0, maximum: 0, original: Stack3D.renderHePreview };
+      const gate = new Promise(resolve => { state.release = resolve; });
+      Stack3D.renderHePreview = async (...args) => {
+        state.calls.push(args[0].id); state.active++; state.maximum = Math.max(state.maximum, state.active);
+        try { if (state.calls.length === 1) await gate; return await state.original(...args); }
+        finally { state.active--; }
+      };
+    });
+    await page.locator('[data-preview="HE_Stain"]').click();
+    await page.waitForFunction(() => window.__previewQueueTest.calls.length === 1);
+    await page.evaluate(() => { Atlas3D.selectSection(1); Atlas3D.selectSection(2); Atlas3D.selectSection(0); Atlas3D.selectSection(1); });
+    assert.deepEqual(await page.evaluate(() => window.__previewQueueTest.calls), [IDS[0]]);
+    await page.evaluate(() => window.__previewQueueTest.release());
+    await page.waitForFunction(() => window.__previewQueueTest.calls.length === 2 && window.__previewQueueTest.active === 0 &&
+      document.getElementById('section-preview').dataset.previewKind === 'HE_Stain');
+    const queue = await page.evaluate(() => {
+      const state = window.__previewQueueTest; Stack3D.renderHePreview = state.original;
+      return { calls: state.calls, maximum: state.maximum, size: Array.from(document.querySelectorAll('#section-preview canvas'), c => [c.width, c.height]) };
+    });
+    assert.deepEqual(queue.calls, IDS.slice(0, 2)); assert.equal(queue.maximum, 1);
+    assert.deepEqual(queue.size, [[128, 128]], 'the final requested section replaces the obsolete preview');
+    for (const kind of ['MSI', 'HE_Stain', 'ROI']) {
+      await page.locator('[data-preview="' + kind + '"]').click();
+      await page.waitForFunction(kind => {
+        const host = document.getElementById('section-preview'), canvas = host.querySelector('canvas');
+        return host.dataset.previewKind === kind && canvas && canvas.width > 4 && canvas.height > 2;
+      }, kind);
+      await page.locator('#enlarge-preview').click();
+      await page.waitForFunction(kind => document.getElementById('preview-dialog').open &&
+        document.getElementById('detail-preview').dataset.previewKind === kind && document.querySelector('#detail-preview canvas')?.width > 4, kind);
+      if (kind === 'HE_Stain') {
+        const size = await page.locator('#detail-preview canvas').evaluate(canvas => [canvas.width, canvas.height]);
+        assert.ok(size[0] >= 128 && size[1] >= 64, 'enlarged HE retains source-level sampling');
+      }
+      await page.keyboard.press('Escape');
+      assert.equal(await page.locator('#preview-dialog').isVisible(), false);
+    }
+    await page.locator('[data-preview="ATLAS"]').click();
+    await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'ATLAS' && document.querySelector('#section-preview img')?.naturalWidth === 256);
+    await page.locator('#enlarge-preview').click();
+    await page.waitForFunction(() => document.getElementById('detail-preview').dataset.previewKind === 'ATLAS' && document.querySelector('#detail-preview img')?.naturalWidth === 256);
+    assert.equal(await page.locator('#detail-preview img').evaluate(image => image.naturalHeight), 128);
+    await page.keyboard.press('Escape');
+    await page.locator('#show-all').click();
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), IDS.slice(0, 2));
+    assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), storedBefore, 'display controls and previews preserve all saved data and affine matrices');
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });

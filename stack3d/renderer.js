@@ -26,6 +26,7 @@
     controls.minDistance = 0.2; controls.maxDistance = 5000;
     const raycaster = new T.Raycaster(), pointer = new T.Vector2(), scratch = new T.Vector3();
     let entries = [], byId = new Map(), selected = -1, spacing = 0.35, opacity = 1, range = [0, -1];
+    let heVisible = true, heOpacity = 0.12;
     let disposed = false, contextLost = false, pendingFrame = null, renderCount = 0, pointerDown = null, viewSet = false;
     const pointers = new Set();
     const outlineGeometry = new T.BufferGeometry();
@@ -40,10 +41,13 @@
       camera.updateMatrixWorld();
       // Parallel planes are composited from the farthest Z plane. The order
       // reverses as the camera crosses the stack; per-pixel depth still applies.
-      const visible = entries.filter(entry => entry.mesh.visible);
+      const visible = entries.filter(entry => entry.mesh.visible || entry.he.mesh.visible);
       for (const entry of visible) entry.depth = -Math.abs(entry.mesh.position.z - camera.position.z);
       visible.sort((a, b) => a.depth - b.depth || a.index - b.index);
-      visible.forEach((entry, index) => { entry.mesh.renderOrder = index; });
+      // HE and MSI occupy the exact same scientific section plane. Neither
+      // writes depth, and this explicit order composites HE first, then MSI,
+      // without introducing an artificial Z offset or depth-buffer fighting.
+      visible.forEach((entry, index) => { entry.he.mesh.renderOrder = index * 2; entry.mesh.renderOrder = index * 2 + 1; });
       try { renderer.render(scene, camera); renderCount++; } catch (error) { report(error); }
     }
     function scheduleRender() {
@@ -61,37 +65,52 @@
       entry.mesh.rotation.z = -(d.angleDeg + d.rotationDeg) * RAD;
       entry.mesh.position.set(d.offsetXUm / 1000, -d.offsetYUm / 1000, (entry.index - (entries.length - 1) / 2) * spacing);
       entry.mesh.updateMatrixWorld();
+      entry.he.mesh.rotation.z = -(d.heAngleDeg + d.rotationDeg) * RAD;
+      entry.he.mesh.position.copy(entry.mesh.position); entry.he.mesh.updateMatrixWorld();
     }
     function updateOutline() {
-      const entry = entries[selected]; outline.visible = !!entry && entry.mesh.visible;
+      const entry = entries[selected]; outline.visible = !!entry && (entry.mesh.visible || entry.he.mesh.visible);
       if (!entry) return;
-      outline.position.copy(entry.mesh.position); outline.quaternion.copy(entry.mesh.quaternion);
+      const plane = entry.mesh.visible ? entry.mesh : entry.he.mesh;
+      outline.position.copy(plane.position); outline.quaternion.copy(plane.quaternion);
       outline.scale.set(entry.descriptor.widthMm, entry.descriptor.heightMm, 1); outline.updateMatrixWorld();
     }
     function updateVisibility() {
-      for (const entry of entries) entry.mesh.visible = entry.index >= range[0] && entry.index <= range[1] && !!entry.texture;
+      for (const entry of entries) {
+        const inRange = entry.index >= range[0] && entry.index <= range[1];
+        entry.mesh.visible = inRange && !!entry.texture;
+        entry.he.mesh.visible = inRange && heVisible && heOpacity > 0 && !!entry.he.texture;
+      }
       updateOutline(); scheduleRender();
     }
-    function setTexture(entry, source) {
+    function setTexture(entry, source, { smooth = false, name = entry.descriptor?.name || 'HE' } = {}) {
       if (!source || !source.width || !source.height) {
         if (entry.texture) entry.texture.dispose();
         entry.texture = null; entry.alphaPixels = null; entry.mesh.material.map = null; entry.mesh.material.needsUpdate = true;
         return;
       }
-      if (Math.max(source.width, source.height) > renderer.capabilities.maxTextureSize) throw new Error(`${entry.descriptor.name}: 画像サイズがGPUの上限を超えています。`);
+      if (Math.max(source.width, source.height) > renderer.capabilities.maxTextureSize) throw new Error(`${name}: 画像サイズがGPUの上限を超えています。`);
       if (entry.texture) { entry.texture.image = source; entry.texture.needsUpdate = true; }
       else {
         entry.texture = new T.CanvasTexture(source); entry.texture.colorSpace = T.SRGBColorSpace;
-        entry.texture.minFilter = T.NearestFilter; entry.texture.magFilter = T.NearestFilter; entry.texture.generateMipmaps = false;
+        entry.texture.minFilter = smooth ? T.LinearFilter : T.NearestFilter;
+        entry.texture.magFilter = smooth ? T.LinearFilter : T.NearestFilter; entry.texture.generateMipmaps = false;
         entry.mesh.material.map = entry.texture; entry.mesh.material.needsUpdate = true;
       }
       entry.textureWidth = source.width; entry.textureHeight = source.height;
-      try { entry.alphaPixels = source.getContext('2d').getImageData(0, 0, source.width, source.height).data; }
+      try {
+        const pixels = source.getContext('2d').getImageData(0, 0, source.width, source.height).data;
+        // Retain only alpha for picking, especially for higher-resolution HE.
+        entry.alphaPixels = new Uint8Array(source.width * source.height);
+        for (let i = 0; i < entry.alphaPixels.length; i++) entry.alphaPixels[i] = pixels[i * 4 + 3];
+      }
       catch (_) { entry.alphaPixels = null; }
     }
     function release(entry) {
       scene.remove(entry.mesh); entry.mesh.geometry.dispose(); entry.mesh.material.dispose();
       if (entry.texture) entry.texture.dispose(); entry.alphaPixels = null;
+      scene.remove(entry.he.mesh); entry.he.mesh.material.dispose();
+      if (entry.he.texture) entry.he.texture.dispose(); entry.he.alphaPixels = null;
     }
     function setSections(descriptors) {
       if (disposed) return;
@@ -102,7 +121,8 @@
             !Number.isFinite(Number(d.heightMm)) || Number(d.heightMm) <= 0) throw new TypeError('切片のIDまたはXYサイズが不正です。');
         const id = String(d.id); if (ids.has(id)) throw new Error(`切片IDが重複しています: ${id}`); ids.add(id);
         return { ...d, id, name: String(d.name || id), widthMm: Number(d.widthMm), heightMm: Number(d.heightMm),
-          angleDeg: finite(d.angleDeg), rotationDeg: finite(d.rotationDeg), offsetXUm: finite(d.offsetXUm), offsetYUm: finite(d.offsetYUm) };
+          angleDeg: finite(d.angleDeg), heAngleDeg: finite(d.heAngleDeg, finite(d.angleDeg)),
+          rotationDeg: finite(d.rotationDeg), offsetXUm: finite(d.offsetXUm), offsetYUm: finite(d.offsetYUm) };
       });
       const selectedId = entries[selected]?.descriptor.id, previous = byId; byId = new Map();
       entries = checked.map((d, index) => {
@@ -111,6 +131,7 @@
           previous.delete(d.id);
           if (entry.descriptor.widthMm !== d.widthMm || entry.descriptor.heightMm !== d.heightMm) {
             entry.mesh.geometry.dispose(); entry.mesh.geometry = new T.PlaneGeometry(d.widthMm, d.heightMm);
+            entry.he.mesh.geometry = entry.mesh.geometry;
           }
           entry.descriptor = d; entry.index = index;
         } else {
@@ -118,9 +139,15 @@
             depthWrite: false, depthTest: true, alphaTest: 0.001, toneMapped: false });
           material.forceSinglePass = true;
           const mesh = new T.Mesh(new T.PlaneGeometry(d.widthMm, d.heightMm), material);
-          entry = { descriptor: d, index, mesh, texture: null, alphaPixels: null }; scene.add(mesh);
+          const heMaterial = material.clone(); heMaterial.opacity = heOpacity;
+          heMaterial.forceSinglePass = true;
+          const heMesh = new T.Mesh(mesh.geometry, heMaterial);
+          entry = { descriptor: d, index, mesh, texture: null, alphaPixels: null,
+            he: { mesh: heMesh, texture: null, alphaPixels: null } };
+          scene.add(heMesh, mesh);
         }
-        entry.mesh.userData.sectionId = d.id; byId.set(d.id, entry);
+        entry.mesh.userData.sectionId = d.id; entry.mesh.userData.layer = 'msi';
+        entry.he.mesh.userData.sectionId = d.id; entry.he.mesh.userData.layer = 'he'; byId.set(d.id, entry);
         if (Object.hasOwn(d, 'textureCanvas')) setTexture(entry, d.textureCanvas);
         return entry;
       });
@@ -134,6 +161,24 @@
       for (const [id, source] of textures instanceof Map ? textures : Object.entries(textures || {})) {
         const entry = byId.get(String(id)); if (entry) setTexture(entry, source);
       }
+      updateVisibility();
+    }
+    // Sources must already contain the saved HE→MSI affine transform, in the
+    // unrotated MSI bounds. The renderer applies the saved HE rotation itself.
+    // Keep each source canvas alive while its texture is installed.
+    function updateHeTextures(textures) {
+      if (disposed) return;
+      for (const [id, source] of textures instanceof Map ? textures : Object.entries(textures || {})) {
+        const entry = byId.get(String(id));
+        if (entry && (!source || entry.he.texture?.image !== source)) setTexture(entry.he, source, { smooth: true, name: entry.descriptor.name + ' HE' });
+      }
+      updateVisibility();
+    }
+    function setHeOverlay(settings = {}) {
+      if (disposed) return;
+      if (Object.hasOwn(settings, 'visible')) heVisible = !!settings.visible;
+      if (Object.hasOwn(settings, 'opacity')) heOpacity = Math.max(0, Math.min(1, finite(settings.opacity, heOpacity)));
+      for (const entry of entries) entry.he.mesh.material.opacity = heOpacity;
       updateVisibility();
     }
     function setSpacing(value) {
@@ -154,7 +199,11 @@
       const box = new T.Box3();
       for (const entry of entries) {
         const d = entry.descriptor;
-        for (const x of [-d.widthMm / 2, d.widthMm / 2]) for (const y of [-d.heightMm / 2, d.heightMm / 2]) box.expandByPoint(scratch.set(x, y, 0).applyMatrix4(entry.mesh.matrixWorld));
+        for (const plane of [entry.mesh, entry.he.mesh]) {
+          for (const x of [-d.widthMm / 2, d.widthMm / 2]) for (const y of [-d.heightMm / 2, d.heightMm / 2]) {
+            box.expandByPoint(scratch.set(x, y, 0).applyMatrix4(plane.matrixWorld));
+          }
+        }
       }
       if (box.isEmpty()) { box.min.set(-10, -10, -10); box.max.set(10, 10, 10); } return box;
     }
@@ -178,16 +227,18 @@
       controls.update(); viewSet = true; scheduleRender(); return true;
     }
     function pick(event) {
-      if (disposed || contextLost || opacity <= 0) return;
+      if (disposed || contextLost) return;
       const rect = canvas.getBoundingClientRect(); if (!rect.width || !rect.height) return;
       pointer.set((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1);
       camera.updateMatrixWorld(); raycaster.setFromCamera(pointer, camera);
-      for (const hit of raycaster.intersectObjects(entries.filter(e => e.mesh.visible).map(e => e.mesh), false)) {
+      const planes = entries.flatMap(entry => [entry.mesh, entry.he.mesh]).filter(mesh => mesh.visible && mesh.material.opacity > 0);
+      for (const hit of raycaster.intersectObjects(planes, false)) {
         const entry = byId.get(hit.object.userData.sectionId); if (!entry) continue;
-        if (entry.alphaPixels && hit.uv) {
-          const x = Math.min(entry.textureWidth - 1, Math.max(0, Math.floor(hit.uv.x * entry.textureWidth)));
-          const y = Math.min(entry.textureHeight - 1, Math.max(0, Math.floor((1 - hit.uv.y) * entry.textureHeight)));
-          if (entry.alphaPixels[(y * entry.textureWidth + x) * 4 + 3] === 0) continue;
+        const layer = hit.object.userData.layer === 'he' ? entry.he : entry;
+        if (layer.alphaPixels && hit.uv) {
+          const x = Math.min(layer.textureWidth - 1, Math.max(0, Math.floor(hit.uv.x * layer.textureWidth)));
+          const y = Math.min(layer.textureHeight - 1, Math.max(0, Math.floor((1 - hit.uv.y) * layer.textureHeight)));
+          if (layer.alphaPixels[y * layer.textureWidth + x] * hit.object.material.opacity / 255 < hit.object.material.alphaTest) continue;
         }
         select(entry.index); onSelect(entry.index); break;
       }
@@ -208,7 +259,11 @@
       if (pendingFrame !== null) { win.cancelAnimationFrame(pendingFrame); pendingFrame = null; }
       report(new Error('3D描画が中断されました。表示データを減らすか、ページを再読み込みしてください。保存済みの測定値は保持されています。'));
     }
-    function onContextRestored() { contextLost = false; for (const entry of entries) if (entry.texture) entry.texture.needsUpdate = true; scheduleRender(); }
+    function onContextRestored() {
+      contextLost = false;
+      for (const entry of entries) for (const layer of [entry, entry.he]) if (layer.texture) layer.texture.needsUpdate = true;
+      scheduleRender();
+    }
     const events = { pointerdown: onPointerDown, pointermove: onPointerMove, pointerup: onPointerUp, pointercancel: onPointerCancel,
       webglcontextlost: onContextLost, webglcontextrestored: onContextRestored };
     controls.addEventListener('change', scheduleRender);
@@ -224,9 +279,16 @@
     function getStats() {
       return { threeVersion: '186', sectionCount: entries.length, visibleCount: entries.filter(e => e.mesh.visible).length,
         textureCount: entries.filter(e => e.texture).length, selectedIndex: selected, spacing, range: [...range], opacity,
+        heVisible, heOpacity, heTextureCount: entries.filter(e => e.he.texture).length,
+        heVisibleCount: entries.filter(e => e.he.mesh.visible).length,
+        visibleSectionCount: entries.filter(e => e.mesh.visible || e.he.mesh.visible).length,
+        visibleSectionIds: entries.filter(e => e.mesh.visible || e.he.mesh.visible).map(e => e.descriptor.id),
+        heVisibleSectionIds: entries.filter(e => e.he.mesh.visible).map(e => e.descriptor.id),
         contextLost, disposed, renderCount, canvasWidth: canvas.width, canvasHeight: canvas.height,
         gpuGeometries: renderer.info.memory.geometries, gpuTextures: renderer.info.memory.textures,
-        drawOrder: entries.filter(e => e.mesh.visible).sort((a, b) => a.mesh.renderOrder - b.mesh.renderOrder).map(e => e.descriptor.id) };
+        drawOrder: entries.filter(e => e.mesh.visible).sort((a, b) => a.mesh.renderOrder - b.mesh.renderOrder).map(e => e.descriptor.id),
+        layerDrawOrder: entries.flatMap(e => [e.he.mesh, e.mesh]).filter(mesh => mesh.visible)
+          .sort((a, b) => a.renderOrder - b.renderOrder).map(mesh => ({ id: mesh.userData.sectionId, layer: mesh.userData.layer })) };
     }
     function dispose() {
       if (disposed) return; disposed = true;
@@ -237,7 +299,7 @@
       entries.forEach(release); entries = []; byId.clear(); outlineGeometry.dispose(); outlineMaterial.dispose();
       renderer.dispose(); renderer.forceContextLoss(); canvas.remove();
     }
-    return { setSections, updateTextures, setSpacing, setRange, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
+    return { setSections, updateTextures, updateHeTextures, setHeOverlay, setSpacing, setRange, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
   }
   global.Stack3DRenderer = { createRenderer };
 })(window);

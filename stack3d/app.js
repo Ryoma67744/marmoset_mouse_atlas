@@ -11,22 +11,30 @@
     set(key, value) { try { sessionStorage.setItem(key, JSON.stringify(value)); } catch (_) {} }
   };
   let sections = [], rendered = [], renderer = null, selected = 0, previewKind = 'MSI';
-  let renderGeneration = 0, loadGeneration = 0, previewGeneration = 0;
+  let renderGeneration = 0, loadGeneration = 0, previewGeneration = 0, heGeneration = 0, detailGeneration = 0;
   let busy = false, saving = false, noticeTimer, unsubscribe = null, sourceChanged = false, restoredCamera = null, repaintPending = false;
-  const dirtyPlacements = new Set(), commonRanges = new Map();
+  let pendingPreview = null, previewWorker = null;
+  const dirtyPlacements = new Set(), commonRanges = new Map(), hePlanes = new Map();
+
+  function syncWarning(messages) {
+    const button = $('sync-warning'), text = messages.join('\n');
+    button.hidden = !messages.length; button.title = text;
+    button.setAttribute('aria-label', messages.length ? `未同期の編集があります（${messages.length}切片）。詳細を表示` : '未同期の編集はありません');
+    button.setAttribute('aria-expanded', 'false'); $('sync-details').hidden = true; $('sync-details').textContent = text;
+  }
 
   function notice(message, persistent = false) {
     clearTimeout(noticeTimer); $('notice').textContent = message; $('notice').hidden = false;
     if (!persistent) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 6500);
   }
   function options() {
-    return { mode: $('value-mode').value, rangeMode: $('range-mode').value,
+    return { mode: $('value-mode').value, rangeMode: 'common',
       channels: Array.from(document.querySelectorAll('input[name=channel]:checked'), input => input.value), threshold: finite($('threshold').value, 0) };
   }
   function saveView() {
     if (!sections.length) return;
     session.set(VIEW_KEY, { ids: sections.map(section => section.id), selectedId: sections[selected]?.id, options: options(),
-      opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, 0.35),
+      opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, 0.35), he: heOptions(),
       range: [finite($('range-start').value, 1), finite($('range-end').value, sections.length)], camera: renderer?.getView(), previewKind });
   }
   function restoreView() {
@@ -34,11 +42,12 @@
     if (!view || !Array.isArray(view.ids) || view.ids.join('\n') !== sections.map(section => section.id).join('\n')) return;
     const saved = view.options || {};
     $('value-mode').value = saved.mode === 'normalized' ? 'normalized' : 'raw';
-    $('range-mode').value = saved.rangeMode === 'common' ? 'common' : 'individual';
     if (Array.isArray(saved.channels)) for (const input of document.querySelectorAll('input[name=channel]')) input.checked = saved.channels.includes(input.value);
     $('threshold').value = Math.max(0, Math.min(0.95, finite(saved.threshold, 0)));
     $('opacity').value = Math.max(0.05, Math.min(1, finite(view.opacity, 0.55)));
     $('spacing').value = Math.max(0.08, Math.min(2, finite(view.spacing, 0.35)));
+    $('he-visible').checked = view.he?.visible !== false;
+    $('he-opacity').value = Math.max(0.01, Math.min(0.4, finite(view.he?.opacity, 0.12)));
     if (Array.isArray(view.range)) { $('range-start').value = view.range[0]; $('range-end').value = view.range[1]; }
     selected = Math.max(0, sections.findIndex(section => section.id === view.selectedId));
     previewKind = ['MSI', 'HE_Stain', 'ATLAS', 'ROI'].includes(view.previewKind) ? view.previewKind : 'MSI';
@@ -46,7 +55,7 @@
   }
   function setBusy(value) {
     busy = value;
-    for (const id of ['reload', 'save-image', 'open-section', 'save-placement', 'reset-placement', 'save-cloud']) $(id).disabled = value || (id !== 'reload' && !sections.length);
+    for (const id of ['reload', 'save-image', 'open-section', 'enlarge-preview', 'save-placement', 'reset-placement', 'save-cloud']) $(id).disabled = value || (id !== 'reload' && !sections.length);
     for (const input of document.querySelectorAll('.controls input,.controls select,.controls button,.slice-scrubber input,.slice-scrubber button,.placement input,[data-preview]')) input.disabled = value || !sections.length;
   }
   function renderError(error) {
@@ -62,7 +71,7 @@
   }
   async function sourceProjects(progress) {
     let locals = await ProjectStorage.listProjects();
-    const notices = [], rows = new Map(locals.map(project => [project.id, project]));
+    const notices = [], unsynced = [], rows = new Map(locals.map(project => [project.id, project]));
     const cloudReady = global.Cloud?.configured?.() && global.Cloud?.signedIn?.();
     if (cloudReady) {
       try {
@@ -80,7 +89,7 @@
     }
     if (duplicates.size) {
       notices.push('同じ切片番号が複数あります。Masterで各切片番号が1つになるよう対象データを選択してください: ' + [...duplicates].join(', '));
-      return { projects: [], allProjects: locals, folders: await ProjectStorage.listFolders(), notices, blocked: '切片番号が重複しています' };
+      return { projects: [], allProjects: locals, folders: await ProjectStorage.listFolders(), notices, unsynced, blocked: '切片番号が重複しています' };
     }
     if (requested) for (const id of requested) if (!rows.has(id)) notices.push('選択データが見つかりません: ' + id);
     const projects = [];
@@ -98,7 +107,8 @@
         projects.push(project);
         if (cloudReady) {
           const status = ProjectSync.statusOf(project);
-          if (status.reason && !['current', 'updated', 'local-only'].includes(status.status)) notices.push(`${project.displayName}: ${status.reason}`);
+          if (status.status === 'local-edits') unsynced.push(`${project.displayName}: ${status.reason}`);
+          else if (status.reason && !['current', 'updated', 'local-only'].includes(status.status)) notices.push(`${project.displayName}: ${status.reason}`);
         }
       } catch (error) { notices.push(`${candidate.displayName || candidate.id}: ${error.message}`); }
       await yieldUI();
@@ -106,24 +116,28 @@
     // Cloud imports may update group membership; resolve normalization using
     // the completed, current project/folder inventory rather than the old list.
     locals = await ProjectStorage.listProjects();
-    return { projects, allProjects: locals, folders: await ProjectStorage.listFolders(), notices };
+    return { projects, allProjects: locals, folders: await ProjectStorage.listFolders(), notices, unsynced };
   }
   async function load() {
-    setBusy(true); renderGeneration++; previewGeneration++;
+    setBusy(true); renderGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
+    $('preview-dialog').close(); syncWarning([]); clearTimeout(noticeTimer); $('notice').hidden = true;
     const generation = ++loadGeneration; global.__stack3dReady = false;
     $('render-error').hidden = true;
     try {
       const source = await sourceProjects(text => { if (generation === loadGeneration) $('load-progress').textContent = text; });
       if (generation !== loadGeneration) return;
+      syncWarning(source.unsynced);
       const loaded = await Stack3D.loadSections(source.projects, { allProjects: source.allProjects, folders: source.folders,
         onProgress: ({ completed, total, project }) => { if (generation === loadGeneration) $('load-progress').textContent = `${completed} / ${total} · ${project.displayName || project.id}`; } });
       if (generation !== loadGeneration) { loaded.forEach(Stack3D.releaseSection); return; }
       // Detach old canvases from GPU textures before releasing their pixels.
       renderer?.updateTextures(new Map(sections.map(section => [section.id, null])));
+      renderer?.updateHeTextures(new Map(sections.map(section => [section.id, null])));
+      hePlanes.forEach(canvas => { if (canvas) { canvas.width = 0; canvas.height = 0; } }); hePlanes.clear();
       sections.forEach(Stack3D.releaseSection); rendered.forEach(releaseRender);
       sections = loaded; rendered = []; commonRanges.clear(); dirtyPlacements.clear(); sourceChanged = false; selected = 0;
       if (!sections.length) {
-        renderer?.setSections([]); $('section-list').replaceChildren(); $('section-preview').replaceChildren();
+        renderer?.setSections([]); $('section-list').replaceChildren(); replacePreview($('section-preview'), null, '切片を選択してください');
         $('section-name').textContent = '—'; $('section-metadata').textContent = ''; $('section-status').textContent = '';
         emptyState(source.blocked || (source.projects.length ? '切片を読み込めませんでした' : '表示するCor切片がありません'));
         const issues = [...source.notices, ...loaded.errors.map(error => `${error.name}: ${error.message}`)];
@@ -137,6 +151,7 @@
       $('dataset-count').textContent = `${sections.length} sections`; $('dataset-title').textContent = 'Coronal sections';
       if (!renderer) { try { renderer = Stack3DRenderer.createRenderer($('scene'), { onSelect: selectSection, onError: renderError }); } catch (error) { renderError(error); } }
       renderer?.setSections(sections); renderer?.setSpacing(finite($('spacing').value, 0.35)); renderer?.setOpacity(finite($('opacity').value, 0.55));
+      renderer?.setHeOverlay(heOptions());
       if (restoredCamera) { renderer?.setView(restoredCamera); restoredCamera = null; }
       updateLabels(); setRange(); buildList(); await repaint();
       if (generation !== loadGeneration) return;
@@ -145,6 +160,7 @@
       if (issues.length) notice(issues.join(' / '), true);
       if (!unsubscribe && ProjectStorage.subscribeChanges) unsubscribe = ProjectStorage.subscribeChanges(onSourceChange);
       global.__stack3dReady = true;
+      updateHeOverlay().catch(error => notice(error.message));
     } catch (error) { setBusy(false); emptyState('読み込みを完了できませんでした'); notice(error.message, true); }
   }
   function releaseRender(result) { if (result) for (const canvas of [result.canvas, result.previewCanvas]) if (canvas) { canvas.width = 0; canvas.height = 0; } }
@@ -152,8 +168,35 @@
     $('opacity-value').textContent = Math.round(finite($('opacity').value, 0.55) * 100) + '%';
     $('threshold-value').textContent = Math.round(finite($('threshold').value, 0) * 100) + '%';
     $('spacing-value').textContent = (finite($('spacing').value, 0.35) / 0.35).toFixed(1) + '×';
-    $('range-note').textContent = $('range-mode').value === 'common' ? '同じ分子・同じ表示値で、全切片の色範囲を揃えます。' : '各切片の分布を見やすく表示します。';
+    $('he-opacity-value').textContent = Math.round(finite($('he-opacity').value, 0.12) * 100) + '%';
+    $('he-opacity').disabled = busy || !sections.length || !$('he-visible').checked;
     for (const button of document.querySelectorAll('[data-preview]')) button.setAttribute('aria-pressed', String(button.dataset.preview === previewKind));
+  }
+  function heOptions() { return { visible: $('he-visible').checked, opacity: finite($('he-opacity').value, 0.12) }; }
+  async function updateHeOverlay() {
+    const generation = ++heGeneration, currentSections = sections;
+    renderer?.setHeOverlay(heOptions()); updateLabels(); saveView();
+    if (!$('he-visible').checked) { $('he-status').textContent = 'HEの重ね合わせはOFFです。'; return; }
+    let available = 0, missing = 0, failed = 0;
+    const errors = [];
+    for (let i = 0; i < currentSections.length; i++) {
+      if (generation !== heGeneration) return;
+      const section = currentSections[i];
+      $('he-status').textContent = `HEを準備中… ${i + 1} / ${currentSections.length}`;
+      try {
+        let canvas = hePlanes.get(section.id);
+        if (!hePlanes.has(section.id)) {
+          canvas = await Stack3D.renderHePlane(section, { maxSize: 768 });
+          if (generation !== heGeneration) { if (canvas) { canvas.width = 0; canvas.height = 0; } return; }
+          hePlanes.set(section.id, canvas);
+        }
+        if (canvas) { renderer?.updateHeTextures(new Map([[section.id, canvas]])); available++; } else missing++;
+      } catch (error) { if (generation !== heGeneration) return; failed++; errors.push(`${section.name}: ${error.message}`); }
+      await yieldUI();
+    }
+    if (generation !== heGeneration) return;
+    $('he-status').textContent = `HE ${available} / ${currentSections.length}切片${missing ? ` · 未登録 ${missing}` : ''}${failed ? ` · 表示不可 ${failed}` : ''}`;
+    $('he-status').title = errors.join('\n');
   }
   async function repaint() {
     const generation = ++renderGeneration, current = options(); updateLabels();
@@ -199,9 +242,10 @@
     }
   }
   function filterList() { const query = $('section-search').value.trim().toLowerCase(); for (const row of $('section-list').children) row.hidden = !sections[Number(row.dataset.index)].name.toLowerCase().includes(query); }
-  function selectSection(index) {
+  function selectSection(index, cutBefore = false) {
     if (!sections.length) return;
     selected = Math.max(0, Math.min(sections.length - 1, Math.round(Number(index) || 0))); const section = sections[selected];
+    if (cutBefore) $('range-start').value = selected + 1;
     if (selected + 1 < Number($('range-start').value)) $('range-start').value = selected + 1;
     if (selected + 1 > Number($('range-end').value)) $('range-end').value = selected + 1;
     setRange(); renderer?.select(selected); $('section-slider').value = selected; $('section-position').textContent = `${selected + 1} / ${sections.length}`;
@@ -218,10 +262,17 @@
     const end = Math.max(start, Math.min(sections.length, Math.round(finite($('range-end').value, sections.length))));
     $('range-start').value = start; $('range-end').value = end; renderer?.setRange(start - 1, end - 1); saveView();
   }
-  function copyCanvas(source) { const copy = document.createElement('canvas'); copy.width = source.width; copy.height = source.height; copy.getContext('2d').drawImage(source, 0, 0); return copy; }
-  function roiPreview(section, source) {
-    const canvas = copyCanvas(source), ctx = canvas.getContext('2d');
-    const roi = section.project.roi || {}; ctx.lineWidth = 0.8;
+  function previewScale(section, maxSize) {
+    const pitch = Math.min(section.umPerPxX, section.umPerPxY);
+    const width = section.W * section.umPerPxX / pitch, height = section.H * section.umPerPxY / pitch;
+    const angle = section.angleDeg * Math.PI / 180;
+    return maxSize / Math.max(Math.abs(width * Math.cos(angle)) + Math.abs(height * Math.sin(angle)), Math.abs(width * Math.sin(angle)) + Math.abs(height * Math.cos(angle)));
+  }
+  function roiPreview(section, source, maxSize) {
+    const scale = previewScale(section, maxSize), canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(section.W * scale)); canvas.height = Math.max(1, Math.round(section.H * scale));
+    const ctx = canvas.getContext('2d'); ctx.imageSmoothingEnabled = false; ctx.scale(canvas.width / section.W, canvas.height / section.H); ctx.drawImage(source, 0, 0);
+    const roi = section.project.roi || {}; ctx.lineWidth = Math.max(0.18, 1.5 / scale);
     for (const [key, polygons] of Object.entries(roi.roi_items || {})) {
       if (roi.roi_show_flags?.[key] === false) continue;
       const color = roi.palette?.[key] || [160, 200, 255]; ctx.strokeStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
@@ -232,13 +283,17 @@
         for (const vertex of vertices.slice(1)) ctx.lineTo(vertex[0], vertex[1]); ctx.closePath(); ctx.stroke();
       }
     }
-    const oriented = Stack3D.orientCanvas(section, canvas); canvas.width = 0; canvas.height = 0; return oriented;
+    const oriented = Stack3D.orientCanvas(section, canvas, { pixelScale: scale }); canvas.width = 0; canvas.height = 0; return oriented;
   }
-  async function preview(index, kind) {
+  async function preview(index, kind, maxSize = 1024) {
     const section = sections[index], image = rendered[index]; if (!image) return null;
-    if (kind === 'MSI') return copyCanvas(image.previewCanvas);
-    if (kind === 'ROI') return roiPreview(section, image.canvas);
-    if (kind === 'HE_Stain') return Stack3D.renderHePreview(section);
+    if (kind === 'MSI') {
+      const current = options(); current.commonRanges = commonRanges.get(current.mode);
+      const result = Stack3D.renderSection(section, { ...current, previewPixelScale: previewScale(section, maxSize) });
+      result.canvas.width = 0; result.canvas.height = 0; return result.previewCanvas;
+    }
+    if (kind === 'ROI') return roiPreview(section, image.canvas, maxSize);
+    if (kind === 'HE_Stain') return Stack3D.renderHePreview(section, { maxSize: 2048 });
     if (kind === 'ATLAS') { const source = await Stack3D.loadReferenceImage(section, 'ATLAS'); if (!source) return null; const image = source.cloneNode(); image.alt = `${section.name} 参照アトラス`; return image; }
     return null;
   }
@@ -253,14 +308,48 @@
     return text.join(' · ');
   }
   async function refreshPreview() {
-    const generation = ++previewGeneration, index = selected; if (!sections[index]) return; updateLabels();
+    const generation = ++previewGeneration, index = selected, kind = previewKind; if (!sections[index]) return; updateLabels();
+    delete $('section-preview').dataset.previewKind;
     const status = rendered[index]?.status;
     $('section-status').textContent = previewStatus(index); $('section-status').classList.toggle('warning', status?.code === 'UNAVAILABLE' || status?.code === 'PARTIAL'); renderLegend(index);
+    // A rapid scrub should decode the last requested HE/Atlas image next,
+    // instead of queueing every obsolete intermediate section.
+    pendingPreview = { generation, index, kind };
+    if (!previewWorker) previewWorker = drainPreviews().finally(() => { previewWorker = null; });
+    return previewWorker;
+  }
+  async function drainPreviews() {
+    while (pendingPreview) {
+      const { generation, index, kind } = pendingPreview; pendingPreview = null;
+      if (generation !== previewGeneration) continue;
+      try {
+        const element = await preview(index, kind);
+        if (generation !== previewGeneration) { releasePreview(element); continue; }
+        replacePreview($('section-preview'), element); $('section-preview').dataset.previewKind = kind;
+      } catch (error) {
+        if (generation === previewGeneration) { replacePreview($('section-preview'), null, error.message); $('section-preview').dataset.previewKind = kind; }
+      }
+    }
+  }
+  function releasePreview(element) { if (element?.tagName === 'CANVAS') { element.width = 0; element.height = 0; } }
+  function replacePreview(container, element, message = 'この参照画像は登録されていません。') {
+    for (const child of container.children) releasePreview(child);
+    if (element) container.replaceChildren(element);
+    else { const text = document.createElement('p'); text.textContent = message; container.replaceChildren(text); }
+  }
+  async function enlargePreview() {
+    const generation = ++detailGeneration, index = selected, kind = previewKind;
+    if (!sections[index] || busy) return;
+    const name = { MSI: 'MSI', HE_Stain: 'HE', ATLAS: 'Atlas', ROI: 'ROI' }[kind];
+    $('detail-title').textContent = `${sections[index].name} · ${name}`;
+    $('detail-status').textContent = kind === 'MSI' || kind === 'ROI' ? 'MSIは元の測定画素を表示しています。' : '登録された元画像の解像度を活かして表示しています。';
+    delete $('detail-preview').dataset.previewKind;
+    replacePreview($('detail-preview'), null, '画像を準備中…'); $('preview-dialog').showModal();
     try {
-      const element = await preview(index, previewKind); if (generation !== previewGeneration) return;
-      if (element) $('section-preview').replaceChildren(element);
-      else { const message = document.createElement('p'); message.textContent = 'この参照画像は登録されていません。'; $('section-preview').replaceChildren(message); }
-    } catch (error) { if (generation === previewGeneration) { const message = document.createElement('p'); message.textContent = error.message; $('section-preview').replaceChildren(message); } }
+      const element = await preview(index, kind, 2048);
+      if (generation !== detailGeneration || !$('preview-dialog').open) { releasePreview(element); return; }
+      replacePreview($('detail-preview'), element); $('detail-preview').dataset.previewKind = kind;
+    } catch (error) { if (generation === detailGeneration && $('preview-dialog').open) replacePreview($('detail-preview'), null, error.message); }
   }
   function renderLegend(index) {
     $('range-legend').replaceChildren(); const format = n => Number.isFinite(n) ? Number(n).toLocaleString('en-US', { maximumSignificantDigits: 4 }) : '—';
@@ -318,16 +407,23 @@
     location.href = '../viewer/index.html?project=' + encodeURIComponent(sections[selected].id) + '&from=stack3d';
   }
   for (const input of document.querySelectorAll('input[name=channel]')) input.addEventListener('change', requestRepaint);
-  for (const id of ['value-mode', 'range-mode']) $(id).addEventListener('change', requestRepaint);
+  $('value-mode').addEventListener('change', requestRepaint);
   $('threshold').addEventListener('input', requestRepaint);
   $('opacity').addEventListener('input', () => { renderer?.setOpacity(Number($('opacity').value)); updateLabels(); saveView(); });
+  $('he-visible').addEventListener('change', () => { updateHeOverlay().catch(error => notice(error.message)); });
+  $('he-opacity').addEventListener('input', () => { renderer?.setHeOverlay(heOptions()); updateLabels(); saveView(); });
   $('spacing').addEventListener('input', () => { renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
   for (const id of ['range-start', 'range-end']) $(id).addEventListener('change', setRange);
   $('show-all').addEventListener('click', () => { $('range-start').value = 1; $('range-end').value = sections.length; setRange(); });
-  $('section-slider').addEventListener('input', () => selectSection($('section-slider').value));
-  $('previous-section').addEventListener('click', () => selectSection(selected - 1)); $('next-section').addEventListener('click', () => selectSection(selected + 1));
+  $('section-slider').addEventListener('input', () => selectSection($('section-slider').value, true));
+  $('previous-section').addEventListener('click', () => selectSection(selected - 1, true)); $('next-section').addEventListener('click', () => selectSection(selected + 1, true));
   $('section-search').addEventListener('input', filterList);
   for (const button of document.querySelectorAll('[data-preview]')) button.addEventListener('click', () => { previewKind = button.dataset.preview; refreshPreview(); saveView(); });
+  $('enlarge-preview').addEventListener('click', enlargePreview);
+  $('close-preview').addEventListener('click', () => $('preview-dialog').close());
+  $('preview-dialog').addEventListener('close', () => { detailGeneration++; replacePreview($('detail-preview'), null, ''); });
+  $('sync-warning').addEventListener('click', () => { const open = $('sync-details').hidden; $('sync-details').hidden = !open; $('sync-warning').setAttribute('aria-expanded', String(open)); });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') { $('sync-details').hidden = true; $('sync-warning').setAttribute('aria-expanded', 'false'); } });
   $('reset-view').addEventListener('click', () => { renderer?.resetView(); saveView(); });
   for (const id of ['offset-x', 'offset-y', 'rotation']) $(id).addEventListener('change', updatePlacement);
   $('reset-placement').addEventListener('click', () => { for (const id of ['offset-x', 'offset-y', 'rotation']) $(id).value = 0; updatePlacement(); });
@@ -344,8 +440,9 @@
   });
   global.addEventListener('beforeunload', event => { saveView(); if (dirtyPlacements.size) { event.preventDefault(); event.returnValue = ''; } });
   global.addEventListener('pagehide', event => {
-    saveView(); if (event.persisted) return; renderGeneration++; loadGeneration++; previewGeneration++;
+    saveView(); if (event.persisted) return; renderGeneration++; loadGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
     unsubscribe?.(); renderer?.dispose(); rendered.forEach(releaseRender); sections.forEach(Stack3D.releaseSection);
+    hePlanes.forEach(releasePreview); hePlanes.clear();
   });
   for (const [name, color] of Object.entries(Stack3D.COLORS)) {
     const input = Array.from(document.querySelectorAll('input[name=channel]')).find(input => input.value === name);
