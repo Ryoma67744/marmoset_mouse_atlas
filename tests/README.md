@@ -81,6 +81,14 @@ remain distinct from acknowledged cloud metadata and can be retried safely.
 Tests use synthetic data and simulated cloud responses; live cross-PC network
 propagation and the production deployment are outside this local test harness.
 
+Excel batch browser regressions read actual downloaded ZIP/XLSX files, including
+an 81-dataset batch with one conflict. They verify automatic successful-only
+downloads, complete failure manifests, unchanged analytical cells and raw bits,
+missing-raster rejection, absent-standard raw export, warning-only completion,
+ordinary-open conflict prompts, cancellation during the first or final dataset,
+and control recovery after listing, index, or archive failures. These tests use
+the installed SheetJS and JSZip versions rather than external CDNs.
+
 These checks verify software behavior, **not scientific validation** of an assay,
 spray uniformity, cross-analyte normalization, saturation thresholds, calibration,
 or the completeness of any real study. Such validation requires the experimental
