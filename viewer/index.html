@@ -240,6 +240,7 @@
                     Import
                 </button>
                 <a href="../index.html" class="text-xs text-blue-600 hover:underline ml-1">Master</a>
+                <a id="back-stack3d" href="../stack3d/index.html" class="hidden text-xs text-blue-600 hover:underline ml-1">3Dモデルへ戻る</a>
             </div>
         </header>
 
@@ -4364,6 +4365,29 @@ function loadAllImages() {
     // =====================================================================
     // ブートストラップ
     // =====================================================================
+    function setupStack3DReturn(params, projectId) {
+      if (params.get('from') !== 'stack3d') return;
+      const link = document.getElementById('back-stack3d');
+      link.href = '../stack3d/index.html?project=' + encodeURIComponent(projectId);
+      link.classList.remove('hidden');
+      link.addEventListener('click', async event => {
+        if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        if (drawingVertices.length || document.querySelector('.modal-backdrop') || otsuPending || otsuDraft) {
+          viewerRefreshNotice = '編集中のROI・位置合わせ・表示マスクを確定してから3Dモデルへ戻ってください。';
+          refreshValueDisplayUi();
+          return;
+        }
+        try {
+          if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+          await saveViewerProject();
+          location.href = link.href;
+        } catch (error) {
+          viewerRefreshNotice = '編集を保存できなかったため、この画面を保持しています。' + error.message;
+          refreshValueDisplayUi();
+        }
+      });
+    }
     (async () => {
       const params = new URLSearchParams(location.search);
       const projectId = params.get('project');
@@ -4379,6 +4403,7 @@ function loadAllImages() {
         await domReady;
         await initializeViewer();
         setupViewerRefresh();
+        setupStack3DReturn(params, projectId);
         // 「クラウドに保存」の表示は、開いたデータが決まってからでないと出せない
         if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
       } catch (e) {
