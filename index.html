@@ -175,6 +175,7 @@
                         <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
                         <button id="new-folder" class="btn">+ フォルダ</button>
                         <button id="excel-export-all" class="btn btn-primary">全データをExcel一括出力</button>
+                        <button id="restore-export-all" class="btn">全データを復元用ZIP一括出力</button>
                         <button id="normalization-settings" class="btn">同位体5-HTで補正</button>
                         <button id="bulk-merge" class="btn" disabled>選択を 1 つに統合</button>
                         <button id="bulk-move" class="btn" disabled>選択を移動</button>
@@ -2081,9 +2082,9 @@
             setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
         }
 
-        // ---- 全登録データの Excel 一括出力 ---------------------------------
-        // 既存の Export は復元用 ZIP。この処理は解析用の XLSX を 1 件ずつ作り、
-        // 最後に 1 つの ZIP へ収める。大きな配列を同時に作らないよう直列に処理する。
+        // ---- 全登録データの一括出力 (Excel / 復元用 ZIP) --------------------
+        // 共通の取得・競合判定・キャンセル処理を使い、1 件ずつ直列に処理する。
+        // 復元用 ZIP は従来形式を 1 件ずつ内包し、個別 Import との互換性を保つ。
         let excelBatchBusy = false;
         let excelBatchCancelRequested = false;
         let normalizationBusy = false;
@@ -2283,17 +2284,25 @@
                 { cancellable: true, cancelPending: true, tone: 'warning' });
         });
 
-        document.getElementById('excel-export-all').addEventListener('click', async () => {
+        async function exportAllProjects(kind) {
             if (excelBatchBusy || normalizationBusy) return;
+            const restore = kind === 'restore';
+            const outputLabel = restore ? '復元用 ZIP' : 'Excel';
+            const indexFilename = restore ? '_Restore_Export_Index.json' : '_Export_Index.xlsx';
             excelBatchBusy = true;
             excelBatchCancelRequested = false;
             setExcelExportControlsDisabled(true);
+            document.getElementById('excel-export-progress').setAttribute('aria-label', outputLabel + ' 一括出力の進捗');
             const archiveDate = new Date();
 
             try {
-                if (!window.ExcelIO || typeof ExcelIO.buildProjectXlsx !== 'function' ||
+                if (typeof window.JSZip !== 'function' || !window.ZipIO ||
+                    typeof ZipIO.exportProject !== 'function') {
+                    throw new Error('ZIP 出力モジュールを読み込めませんでした。ページを再読み込みしてください。');
+                }
+                if (!restore && (!window.ExcelIO || typeof ExcelIO.buildProjectXlsx !== 'function' ||
                     typeof ExcelIO.buildIndexXlsx !== 'function' ||
-                    typeof ExcelIO.makeUniqueWorkbookName !== 'function') {
+                    typeof ExcelIO.makeUniqueWorkbookName !== 'function')) {
                     throw new Error('Excel 出力モジュールを読み込めませんでした。ページを再読み込みしてください。');
                 }
 
@@ -2322,15 +2331,22 @@
 
                 const proceed = confirm(
                     `すべてのフォルダにある ${projects.length} 件を一括出力します。\n\n` +
+                    (restore ?
+                    '・1 件につき 1 つの復元用 ZIP を作成し、まとめてダウンロードします。\n' +
+                    '・MSI 生強度 CSV、登録画像 (HE・Atlas・免疫染色)、ROI、位置合わせ、補正・表示設定を含みます。\n' +
+                    '・取得できないデータや編集が競合するデータはスキップし、成功分を自動ダウンロードします。\n' +
+                    '・登録済みの生値や画像が欠けているデータもスキップし、対象と理由を _Restore_Export_Index.json に記録します。\n' +
+                    '・復元時は外側の ZIP を展開し、datasets 内の各 ZIP を「ZIP を読み込む」で指定してください。\n' +
+                    '・元の imzML / ibd と、データのない空フォルダは含みません。\n\n' :
                     '・1 件につき 1 つの Excel ファイルを作成します。\n' +
                     '・各ファイルには、全分子の MSI 生強度データと ROI 所属情報が入ります。\n' +
                     '・別タブに補正値、ROI 定量値、設定と算出不可の理由も収録します。\n' +
                     '・取得できないデータや編集が競合するデータはスキップし、成功分を自動ダウンロードします。\n' +
                     '・スキップした対象と理由は、同梱の _Export_Index.xlsx に記録します。\n' +
-                    '・画像と復元用の状態は含みません。この ZIP は解析用で、アプリへは読み戻せません。\n\n' +
+                    '・画像と復元用の状態は含みません。この ZIP は解析用で、アプリへは読み戻せません。\n\n') +
                     '処理を開始しますか?');
                 if (!proceed) {
-                    setExcelBatchUi('Excel 一括出力を中止しました。', null,
+                    setExcelBatchUi(outputLabel + ' 一括出力を中止しました。', null,
                         { hideProgress: true });
                     return;
                 }
@@ -2366,35 +2382,44 @@
                         base.moleculeCount = base.moleculeNames.length;
 
                         setExcelBatchUi(
-                            `${i + 1} / ${projects.length} 件目「${base.projectName}」の Excel を作成中…` +
+                            `${i + 1} / ${projects.length} 件目「${base.projectName}」の ${outputLabel} を作成中…` +
                                 (excelBatchCancelRequested ?
                                     '\nキャンセル受け付け済み。この 1 件が終わり次第停止します。' : ''),
                             ((i + 0.45) / projects.length) * 0.85,
                             { cancellable: true, cancelPending: excelBatchCancelRequested,
                               tone: excelBatchCancelRequested ? 'warning' : '' });
-                        const workbookName = ExcelIO.makeUniqueWorkbookName(project, i + 1, usedNames);
-                        const workbookPath = 'datasets/' + workbookName;
-                        const result = await ExcelIO.buildProjectXlsx(project, { storage: ProjectStorage }, {
-                            exportedAt: exportedAt,
-                            appVersion: window.APP_VERSION || '',
-                            folderPath: project.folderPath,
-                        });
-                        const warnings = Array.isArray(result.warnings) ? result.warnings.map(String) :
-                            (result.warnings ? [String(result.warnings)] : []);
-                        zip.file(workbookPath, result.bytes, { binary: true, compression: 'STORE' });
-                        records.push(Object.assign(base, {
-                            status: warnings.length ? 'warning' : 'success',
-                            workbookPath: workbookPath,
-                            rowCount: result.rowCount || 0,
-                            moleculeCount: result.moleculeCount || 0,
-                            roiCount: result.roiCount || 0,
-                            dataSheetCount: result.dataSheetCount || 0,
-                            warnings: warnings,
-                            normalization: result.normalization || null,
-                            normalizedDataSheetCount: result.normalizedDataSheetCount || 0,
-                        }));
+                        if (restore) {
+                            // 通し番号で同名・同じ安全化名のデータも上書きしない。
+                            const name = ZipIO.safeName(project.displayName || project.id).slice(0, 100);
+                            const archivePath = 'datasets/' + String(i + 1).padStart(4, '0') + '_' + name + '.zip';
+                            const projectBlob = await ZipIO.exportProject(project, { storage: ProjectStorage }, { strict: true });
+                            zip.file(archivePath, await projectBlob.arrayBuffer(), { binary: true, compression: 'STORE' });
+                            records.push(Object.assign(base, { status: 'success', archivePath }));
+                        } else {
+                            const workbookName = ExcelIO.makeUniqueWorkbookName(project, i + 1, usedNames);
+                            const workbookPath = 'datasets/' + workbookName;
+                            const result = await ExcelIO.buildProjectXlsx(project, { storage: ProjectStorage }, {
+                                exportedAt: exportedAt,
+                                appVersion: window.APP_VERSION || '',
+                                folderPath: project.folderPath,
+                            });
+                            const warnings = Array.isArray(result.warnings) ? result.warnings.map(String) :
+                                (result.warnings ? [String(result.warnings)] : []);
+                            zip.file(workbookPath, result.bytes, { binary: true, compression: 'STORE' });
+                            records.push(Object.assign(base, {
+                                status: warnings.length ? 'warning' : 'success',
+                                workbookPath: workbookPath,
+                                rowCount: result.rowCount || 0,
+                                moleculeCount: result.moleculeCount || 0,
+                                roiCount: result.roiCount || 0,
+                                dataSheetCount: result.dataSheetCount || 0,
+                                warnings: warnings,
+                                normalization: result.normalization || null,
+                                normalizedDataSheetCount: result.normalizedDataSheetCount || 0,
+                            }));
+                        }
                     } catch (e) {
-                        console.error('[excel export] プロジェクトの出力に失敗', row && row.id, e);
+                        console.error('[batch export] プロジェクトの出力に失敗', row && row.id, e);
                         records.push(Object.assign(base, {
                             status: 'error',
                             error: e && e.message ? e.message : String(e),
@@ -2427,11 +2452,13 @@
                 const errorCount = records.length - successCount;
                 const warningCount = records.filter(r => r.status === 'warning').length;
                 const partial = errorCount > 0;
-                const plannedFilename = excelArchiveName(partial, archiveDate);
+                const plannedFilename = restore
+                    ? fallbackExcelArchiveName(partial, archiveDate).replace('marmoset_atlas_excel_', 'marmoset_atlas_restore_')
+                    : excelArchiveName(partial, archiveDate);
                 const issues = excelBatchIssueSummary(records);
                 if (successCount === 0) {
                     setExcelBatchUi(
-                        `Excel を作成できたデータはありません (${errorCount} 件)。ZIP はダウンロードしませんでした。` +
+                        `${outputLabel} を作成できたデータはありません (${errorCount} 件)。ZIP はダウンロードしませんでした。` +
                         (issues ? '\n' + issues : ''), null,
                         { hideProgress: true, tone: 'error' });
                     return;
@@ -2456,7 +2483,7 @@
                 }
 
                 setExcelBatchUi('出力結果の索引を作成中…', 0.88, {});
-                const indexResult = await ExcelIO.buildIndexXlsx(records, {
+                const exportMetadata = {
                     exportedAt: exportedAt,
                     appVersion: window.APP_VERSION || '',
                     requestedCount: projects.length,
@@ -2464,9 +2491,32 @@
                     archiveFilename: plannedFilename,
                     note: hasUnprocessed ? 'ユーザーのキャンセルにより、一部のデータは未処理です。' :
                         cancelRequested ? 'キャンセル要求時点で全対象を処理済みです。確認後に出力しました。' : '',
-                });
-                zip.file('_Export_Index.xlsx', indexResult.bytes,
-                    { binary: true, compression: 'STORE' });
+                };
+                if (restore) {
+                    zip.file(indexFilename, JSON.stringify(Object.assign({
+                        format: 'marmoset-atlas-restore-batch-index', version: 1,
+                        records: records.map(record => ({
+                            sequence: record.sequence, projectId: record.projectId,
+                            projectName: record.projectName, folderPath: record.folderPath,
+                            archivePath: record.archivePath || '', status: record.status,
+                            moleculeNames: record.moleculeNames, error: record.error || '',
+                        })),
+                    }, exportMetadata), null, 2));
+                    zip.file('README.txt',
+                        '復元用 ZIP 一括出力\n\n' +
+                        `成功 ${successCount} 件 / 未出力 ${errorCount} 件\n\n` +
+                        '復元手順:\n1. この外側の ZIP を展開します。\n' +
+                        '2. datasets 内の復元したい ZIP を、Master 画面の「ZIP を読み込む」で 1 件ずつ指定します。\n' +
+                        '外側の ZIP は直接読み込まず、個別 ZIP を指定してください。\n' +
+                        '各データは新規登録され、名前によるフォルダ位置と保存済みの作業状態が復元されます。\n\n' +
+                        '収録内容: 生強度 CSV、登録画像 (HE・Atlas・免疫染色)、ROI、位置合わせ、補正・表示設定。\n' +
+                        '元の imzML / ibd、データのない空フォルダ、クラウドの同期情報は含みません。\n' +
+                        'データごとの出力結果と未出力の理由は _Restore_Export_Index.json を確認してください。\n');
+                } else {
+                    const indexResult = await ExcelIO.buildIndexXlsx(records, exportMetadata);
+                    zip.file(indexFilename, indexResult.bytes,
+                        { binary: true, compression: 'STORE' });
+                }
 
                 setExcelBatchUi('1 つの ZIP にまとめています…', 0.9, {});
                 const blob = await zip.generateAsync({
@@ -2480,15 +2530,16 @@
                 const filename = plannedFilename;
                 downloadBlob(blob, filename);
                 setExcelBatchUi(
-                    `${successCount} 件の Excel をまとめた「${filename}」のダウンロードを開始しました。` +
+                    `${successCount} 件の ${outputLabel} をまとめた「${filename}」のダウンロードを開始しました。` +
                     (errorCount ? ` ${errorCount} 件をスキップしました。` : '') +
                     (warningCount ? ` 警告あり ${warningCount} 件。` : '') +
                     (issues ? '\n' + issues : '') +
-                    (partial || warningCount ? '\n詳細は同梱の _Export_Index.xlsx を確認してください。' : ''),
+                    (partial || warningCount ? '\n詳細は同梱の ' + indexFilename + ' を確認してください。' : '') +
+                    (restore ? '\n復元時は外側の ZIP を展開し、datasets 内の各 ZIP を「ZIP を読み込む」で指定してください。' : ''),
                     1, { hideProgress: true, tone: partial || warningCount ? 'warning' : 'success' });
             } catch (e) {
-                console.error('[excel export] 一括出力に失敗', e);
-                setExcelBatchUi('Excel 一括出力に失敗しました: ' +
+                console.error('[batch export] 一括出力に失敗', e);
+                setExcelBatchUi(outputLabel + ' 一括出力に失敗しました: ' +
                     (e && e.message ? e.message : String(e)), null,
                     { hideProgress: true, tone: 'error' });
             } finally {
@@ -2497,7 +2548,10 @@
                 setExcelExportControlsDisabled(false);
                 document.getElementById('excel-export-cancel').classList.add('hidden');
             }
-        });
+        }
+
+        document.getElementById('excel-export-all').addEventListener('click', () => exportAllProjects('excel'));
+        document.getElementById('restore-export-all').addEventListener('click', () => exportAllProjects('restore'));
 
         document.getElementById('bulk-export').addEventListener('click', async () => {
             for (const id of selectedIds()) {
