@@ -60,6 +60,7 @@
                     <p class="text-xs text-gray-500 mt-0.5">データ登録と一括管理</p>
                 </div>
                 <div class="flex items-center gap-3">
+                    <a id="open-stack3d" href="stack3d/index.html" class="btn" title="選択したCor切片を3D表示します。未選択なら登録済みのCor切片全体を表示します。">3Dモデル</a>
                     <!-- クラウドの状態。接続先が未設定なら出さない (ローカルのみモード) -->
                     <span id="cloud-chip" class="hidden text-xs px-2 py-0.5 rounded-full border"></span>
                     <button id="cloud-signout" class="btn hidden">ログアウト</button>
@@ -990,6 +991,16 @@
         function selectedIds() {
             return [...document.querySelectorAll('#project-list input.sel:checked')].map(c => c.value);
         }
+        document.getElementById('open-stack3d').addEventListener('click', event => {
+            try {
+                const ids = selectedIds();
+                if (ids.length) sessionStorage.setItem('atlas-stack3d-selection', JSON.stringify(ids));
+                else sessionStorage.removeItem('atlas-stack3d-selection');
+            } catch (_) {
+                event.preventDefault();
+                showError('3Dで開く切片を引き継げませんでした。ブラウザーの保存設定を確認してください。');
+            }
+        });
         function refreshBulkButtons() {
             const n = selectedIds().length;
             document.getElementById('bulk-export').disabled = excelBatchBusy || normalizationBusy || n === 0;

@@ -10,7 +10,7 @@ test('all production scripts and inline scripts parse without executing', () => 
   for (const name of fs.readdirSync(path.join(root, 'lib')).filter(name => name.endsWith('.js'))) {
     new vm.Script(fs.readFileSync(path.join(root, 'lib', name), 'utf8'), {filename:name});
   }
-  for (const name of ['index.html', 'viewer/index.html']) {
+  for (const name of ['index.html', 'viewer/index.html', 'stack3d/index.html']) {
     const source = fs.readFileSync(path.join(root, name), 'utf8');
     for (const match of source.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
       if (!/\bsrc\s*=/.test(match[1])) new vm.Script(match[2], {filename:name});
@@ -18,7 +18,9 @@ test('all production scripts and inline scripts parse without executing', () => 
     const sources = [...source.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(match=>match[1]);
     assert.ok(sources.some(src=>src.endsWith('/normalization.js')));
     for (const src of sources.filter(src=>!/^https?:/.test(src))) {
-      assert.ok(fs.existsSync(path.resolve(path.dirname(path.join(root,name)), src)), src + ' exists');
+      const scriptPath = path.resolve(path.dirname(path.join(root,name)), src);
+      assert.ok(fs.existsSync(scriptPath), src + ' exists');
+      new vm.Script(fs.readFileSync(scriptPath, 'utf8'), { filename: scriptPath });
     }
   }
 });

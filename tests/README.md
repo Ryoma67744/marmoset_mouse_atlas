@@ -30,6 +30,13 @@ analytes do not use local D4 denominators; reference snapshots and ranges are fi
 require a compatible ROI calibration; unavailable values are not zero-filled;
 stale Viewer saves cannot erase newer Master settings.
 
+The v2.14 3D tests cover numeric coronal ordering and ordinal Z, saved XY pitch
+and arbitrary rotation, missing-correction exclusion, source-array preservation,
+and optional placement metadata through cloud state and real ZIP round trips.
+The browser suite exercises Master selection, WebGL rendering, controls,
+section-detail navigation and return state, and concurrent placement/ROI edits.
+Only synthetic rasters are committed; private study data is not a test fixture.
+
 Display ranges in v2.12 are versioned separately from immutable normalization
 profiles. Tests cover exact finite nearest-rank P99, sparse/all-zero/signed data,
 per-molecule raw/normalized manual settings, reversible legacy migration and

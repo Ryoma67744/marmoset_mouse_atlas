@@ -18,7 +18,7 @@ async function startBrowserHarness() {
       const filename = path.resolve(root, '.' + (pathname === '/' ? '/index.html' : pathname));
       if (!filename.startsWith(root + path.sep)) { response.writeHead(403); response.end(); return; }
       const data = await fs.readFile(filename);
-      response.setHeader('Content-Type', filename.endsWith('.html') ? 'text/html; charset=utf-8' : filename.endsWith('.js') ? 'application/javascript; charset=utf-8' : 'application/octet-stream');
+      response.setHeader('Content-Type', filename.endsWith('.html') ? 'text/html; charset=utf-8' : filename.endsWith('.js') ? 'application/javascript; charset=utf-8' : filename.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/octet-stream');
       response.end(data);
     } catch (_) { response.writeHead(404); response.end(); }
   });
