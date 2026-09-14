@@ -14,3 +14,8 @@
 #preview-dialog{width:min(1400px,96vw)}
 #preview-dialog #detail-preview{height:75dvh}
 @media(max-width:760px){.sync-details{right:12px;top:58px}.header-actions .sync-warning{width:26px;height:26px;font-size:15px}#preview-dialog{padding:14px}}
+
+.brain-controls{border-top:1px solid var(--line);padding-top:16px}
+.brain-controls .toggle-label{align-items:center;margin-bottom:16px}
+.brain-context-note{position:absolute;left:22px;bottom:116px;z-index:2;padding:5px 9px;font-size:10px;line-height:1.5;color:#b9d3dc;background:#11232be6;border:1px solid #3d626e;border-radius:5px;pointer-events:none}
+@media(max-width:1100px){.brain-context-note{bottom:130px;left:14px}}

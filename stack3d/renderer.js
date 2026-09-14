@@ -27,6 +27,7 @@
     const raycaster = new T.Raycaster(), pointer = new T.Vector2(), scratch = new T.Vector3();
     let entries = [], byId = new Map(), selected = -1, spacing = 0.35, opacity = 1, range = [0, -1];
     let heVisible = true, heOpacity = 0.12;
+    let brainVisible = false, brainOpacity = 0.12, brainContext = null;
     let disposed = false, contextLost = false, pendingFrame = null, renderCount = 0, pointerDown = null, viewSet = false;
     const pointers = new Set();
     const outlineGeometry = new T.BufferGeometry();
@@ -154,7 +155,7 @@
       for (const entry of previous.values()) release(entry);
       range = [0, entries.length - 1]; selected = entries.findIndex(e => e.descriptor.id === selectedId);
       if (selected < 0 && entries.length) selected = 0;
-      entries.forEach(position); updateVisibility(); if (!viewSet) resetView();
+      entries.forEach(position); syncBrainContext(); updateVisibility(); if (!viewSet) resetView();
     }
     function updateTextures(textures) {
       if (disposed) return;
@@ -181,9 +182,32 @@
       for (const entry of entries) entry.he.mesh.material.opacity = heOpacity;
       updateVisibility();
     }
+    function releaseBrainContext() {
+      if (!brainContext) return;
+      for (const object of brainContext.objects) scene.remove(object);
+      brainContext.dispose(); brainContext = null;
+    }
+    function syncBrainContext() {
+      if (!entries.length) { releaseBrainContext(); return; }
+      if (!brainContext && brainVisible) {
+        if (!global.Stack3DBrainContext?.createContext) throw new Error('脳模式図を読み込めませんでした。ページを再読み込みしてください。');
+        brainContext = global.Stack3DBrainContext.createContext(T);
+        for (const object of brainContext.objects) scene.add(object);
+      }
+      if (!brainContext) return;
+      // Use the COMPLETE stack, never the visibility/cutoff range. Changing
+      // the section being viewed cannot imply a changing anatomical outline.
+      brainContext.setBounds(bounds()); brainContext.setOpacity(brainOpacity); brainContext.setVisible(brainVisible);
+    }
+    function setBrainContext(settings = {}) {
+      if (disposed) return;
+      if (Object.hasOwn(settings, 'visible')) brainVisible = !!settings.visible;
+      if (Object.hasOwn(settings, 'opacity')) brainOpacity = Math.max(0, Math.min(1, finite(settings.opacity, brainOpacity)));
+      syncBrainContext(); scheduleRender();
+    }
     function setSpacing(value) {
       if (disposed) return; spacing = Math.max(0.001, Math.min(100, finite(value, spacing)));
-      entries.forEach(position); updateOutline(); scheduleRender();
+      entries.forEach(position); syncBrainContext(); updateOutline(); scheduleRender();
     }
     function setRange(start, end) {
       const last = entries.length - 1, a = Math.min(last, Math.max(0, Math.round(finite(start)))), b = Math.min(last, Math.max(0, Math.round(finite(end, last))));
@@ -193,7 +217,7 @@
     function setPlacement(id, values = {}) {
       const entry = byId.get(String(id)); if (!entry) return;
       for (const key of ['offsetXUm', 'offsetYUm', 'rotationDeg']) if (Object.hasOwn(values, key)) entry.descriptor[key] = finite(values[key], entry.descriptor[key]);
-      position(entry); updateOutline(); scheduleRender();
+      position(entry); syncBrainContext(); updateOutline(); scheduleRender();
     }
     function bounds() {
       const box = new T.Box3();
@@ -209,7 +233,9 @@
     }
     function resetView() {
       if (disposed) return; resize();
-      const box = bounds(), center = box.getCenter(new T.Vector3()), radius = Math.max(box.getSize(new T.Vector3()).length() / 2, 1);
+      const box = bounds();
+      if (brainVisible && brainOpacity > 0 && brainContext) box.union(brainContext.getBounds());
+      const center = box.getCenter(new T.Vector3()), radius = Math.max(box.getSize(new T.Vector3()).length() / 2, 1);
       const vertical = camera.fov * RAD / 2, horizontal = Math.atan(Math.tan(vertical) * camera.aspect);
       const distance = radius / Math.sin(Math.min(vertical, horizontal)) * 1.12;
       camera.zoom = 1; camera.position.copy(center).add(new T.Vector3(0.82, 0.45, 1.25).normalize().multiplyScalar(distance));
@@ -273,13 +299,32 @@
     resize(); resetView();
     function capturePNG() {
       if (disposed || contextLost) throw new Error('3D描画を利用できないため画像を保存できません。');
-      render(); return canvas.toDataURL('image/png');
+      render();
+      if (!brainVisible || brainOpacity <= 0 || !brainContext) return canvas.toDataURL('image/png');
+      // The DOM badge is not part of the WebGL canvas. Bake the schematic
+      // qualification into exported images so it survives sharing/cropping
+      // of the surrounding application controls.
+      const output = doc.createElement('canvas'); output.width = canvas.width; output.height = canvas.height;
+      const context = output.getContext('2d');
+      if (!context) throw new Error('画像保存用の描画を開始できません。');
+      context.drawImage(canvas, 0, 0);
+      const fontSize = Math.max(12, Math.round(Math.min(output.width, output.height) / 48));
+      const padding = Math.round(fontSize * 0.7), label = 'SCHEMATIC / NOT REGISTERED';
+      context.font = `600 ${fontSize}px sans-serif`;
+      const width = Math.ceil(context.measureText(label).width) + padding * 2, height = fontSize + padding * 2;
+      context.fillStyle = 'rgba(11, 20, 32, 0.88)'; context.fillRect(padding, output.height - height - padding, width, height);
+      context.fillStyle = '#c8d8e5'; context.textBaseline = 'middle';
+      context.fillText(label, padding * 2, output.height - height / 2 - padding);
+      return output.toDataURL('image/png');
     }
     function setOpacity(value) { opacity = Math.max(0, Math.min(1, finite(value, opacity))); for (const entry of entries) entry.mesh.material.opacity = opacity; scheduleRender(); }
     function getStats() {
       return { threeVersion: '186', sectionCount: entries.length, visibleCount: entries.filter(e => e.mesh.visible).length,
         textureCount: entries.filter(e => e.texture).length, selectedIndex: selected, spacing, range: [...range], opacity,
         heVisible, heOpacity, heTextureCount: entries.filter(e => e.he.texture).length,
+        brainVisible, brainOpacity, brainObjectCount: brainContext?.getStats().objectCount || 0,
+        brainModelBounds: brainContext?.getStats().bounds || null,
+        brainContextRendered: brainVisible && brainOpacity > 0 && !!brainContext,
         heVisibleCount: entries.filter(e => e.he.mesh.visible).length,
         visibleSectionCount: entries.filter(e => e.mesh.visible || e.he.mesh.visible).length,
         visibleSectionIds: entries.filter(e => e.mesh.visible || e.he.mesh.visible).map(e => e.descriptor.id),
@@ -296,10 +341,10 @@
       if (observer) observer.disconnect(); else win.removeEventListener('resize', resize);
       controls.removeEventListener('change', scheduleRender); controls.dispose();
       for (const [name, handler] of Object.entries(events)) canvas.removeEventListener(name, handler);
-      entries.forEach(release); entries = []; byId.clear(); outlineGeometry.dispose(); outlineMaterial.dispose();
+      entries.forEach(release); entries = []; byId.clear(); releaseBrainContext(); outlineGeometry.dispose(); outlineMaterial.dispose();
       renderer.dispose(); renderer.forceContextLoss(); canvas.remove();
     }
-    return { setSections, updateTextures, updateHeTextures, setHeOverlay, setSpacing, setRange, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
+    return { setSections, updateTextures, updateHeTextures, setHeOverlay, setBrainContext, setSpacing, setRange, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
   }
   global.Stack3DRenderer = { createRenderer };
 })(window);

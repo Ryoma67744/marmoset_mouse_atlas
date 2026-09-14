@@ -1,5 +1,6 @@
 .claude/
 node_modules/
 test-results/
+test-artifacts/
 playwright-report/
 __pycache__/

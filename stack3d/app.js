@@ -34,7 +34,7 @@
   function saveView() {
     if (!sections.length) return;
     session.set(VIEW_KEY, { ids: sections.map(section => section.id), selectedId: sections[selected]?.id, options: options(),
-      opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, 0.35), he: heOptions(),
+      opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, 0.35), he: heOptions(), brain: brainOptions(),
       range: [finite($('range-start').value, 1), finite($('range-end').value, sections.length)], camera: renderer?.getView(), previewKind });
   }
   function restoreView() {
@@ -48,9 +48,11 @@
     $('spacing').value = Math.max(0.08, Math.min(2, finite(view.spacing, 0.35)));
     $('he-visible').checked = view.he?.visible !== false;
     $('he-opacity').value = Math.max(0.01, Math.min(0.4, finite(view.he?.opacity, 0.12)));
+    $('brain-visible').checked = view.brain?.visible === true;
+    $('brain-opacity').value = Math.max(0.02, Math.min(0.35, finite(view.brain?.opacity, 0.12)));
     if (Array.isArray(view.range)) { $('range-start').value = view.range[0]; $('range-end').value = view.range[1]; }
     selected = Math.max(0, sections.findIndex(section => section.id === view.selectedId));
-    previewKind = ['MSI', 'HE_Stain', 'ATLAS', 'ROI'].includes(view.previewKind) ? view.previewKind : 'MSI';
+    previewKind = ['MSI', 'HE_Stain', 'ATLAS'].includes(view.previewKind) ? view.previewKind : 'MSI';
     restoredCamera = view.camera;
   }
   function setBusy(value) {
@@ -151,7 +153,7 @@
       $('dataset-count').textContent = `${sections.length} sections`; $('dataset-title').textContent = 'Coronal sections';
       if (!renderer) { try { renderer = Stack3DRenderer.createRenderer($('scene'), { onSelect: selectSection, onError: renderError }); } catch (error) { renderError(error); } }
       renderer?.setSections(sections); renderer?.setSpacing(finite($('spacing').value, 0.35)); renderer?.setOpacity(finite($('opacity').value, 0.55));
-      renderer?.setHeOverlay(heOptions());
+      renderer?.setHeOverlay(heOptions()); renderer?.setBrainContext(brainOptions());
       if (restoredCamera) { renderer?.setView(restoredCamera); restoredCamera = null; }
       updateLabels(); setRange(); buildList(); await repaint();
       if (generation !== loadGeneration) return;
@@ -170,9 +172,13 @@
     $('spacing-value').textContent = (finite($('spacing').value, 0.35) / 0.35).toFixed(1) + '×';
     $('he-opacity-value').textContent = Math.round(finite($('he-opacity').value, 0.12) * 100) + '%';
     $('he-opacity').disabled = busy || !sections.length || !$('he-visible').checked;
+    $('brain-opacity-value').textContent = Math.round(finite($('brain-opacity').value, 0.12) * 100) + '%';
+    $('brain-opacity').disabled = busy || !sections.length || !$('brain-visible').checked;
+    $('brain-context-note').hidden = !$('brain-visible').checked || !sections.length || !renderer;
     for (const button of document.querySelectorAll('[data-preview]')) button.setAttribute('aria-pressed', String(button.dataset.preview === previewKind));
   }
   function heOptions() { return { visible: $('he-visible').checked, opacity: finite($('he-opacity').value, 0.12) }; }
+  function brainOptions() { return { visible: $('brain-visible').checked, opacity: finite($('brain-opacity').value, 0.12) }; }
   async function updateHeOverlay() {
     const generation = ++heGeneration, currentSections = sections;
     renderer?.setHeOverlay(heOptions()); updateLabels(); saveView();
@@ -268,50 +274,35 @@
     const angle = section.angleDeg * Math.PI / 180;
     return maxSize / Math.max(Math.abs(width * Math.cos(angle)) + Math.abs(height * Math.sin(angle)), Math.abs(width * Math.sin(angle)) + Math.abs(height * Math.cos(angle)));
   }
-  function roiPreview(section, source, maxSize) {
-    const scale = previewScale(section, maxSize), canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.round(section.W * scale)); canvas.height = Math.max(1, Math.round(section.H * scale));
-    const ctx = canvas.getContext('2d'); ctx.imageSmoothingEnabled = false; ctx.scale(canvas.width / section.W, canvas.height / section.H); ctx.drawImage(source, 0, 0);
-    const roi = section.project.roi || {}; ctx.lineWidth = Math.max(0.18, 1.5 / scale);
-    for (const [key, polygons] of Object.entries(roi.roi_items || {})) {
-      if (roi.roi_show_flags?.[key] === false) continue;
-      const color = roi.palette?.[key] || [160, 200, 255]; ctx.strokeStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
-      for (const polygon of polygons) {
-        const vertices = polygon.poly_msi;
-        if (!Array.isArray(vertices) || vertices.length < 3 || vertices.some(v => !Array.isArray(v) || v.length < 2 || !v.slice(0, 2).every(Number.isFinite))) continue;
-        ctx.beginPath(); ctx.moveTo(vertices[0][0], vertices[0][1]);
-        for (const vertex of vertices.slice(1)) ctx.lineTo(vertex[0], vertex[1]); ctx.closePath(); ctx.stroke();
-      }
-    }
-    const oriented = Stack3D.orientCanvas(section, canvas, { pixelScale: scale }); canvas.width = 0; canvas.height = 0; return oriented;
-  }
   async function preview(index, kind, maxSize = 1024) {
     const section = sections[index], image = rendered[index]; if (!image) return null;
     if (kind === 'MSI') {
       const current = options(); current.commonRanges = commonRanges.get(current.mode);
-      const result = Stack3D.renderSection(section, { ...current, previewPixelScale: previewScale(section, maxSize) });
+      const result = Stack3D.renderSection(section, { ...current, previewPixelScale: previewScale(section, maxSize), roi: true });
       result.canvas.width = 0; result.canvas.height = 0; return result.previewCanvas;
     }
-    if (kind === 'ROI') return roiPreview(section, image.canvas, maxSize);
-    if (kind === 'HE_Stain') return Stack3D.renderHePreview(section, { maxSize: 2048 });
+    if (kind === 'HE_Stain') return Stack3D.renderHePreview(section, { maxSize: 2048, roi: true });
     if (kind === 'ATLAS') { const source = await Stack3D.loadReferenceImage(section, 'ATLAS'); if (!source) return null; const image = source.cloneNode(); image.alt = `${section.name} 参照アトラス`; return image; }
     return null;
   }
   function previewStatus(index) {
     const section = sections[index], status = rendered[index]?.status; if (!section || !status) return '';
+    const roi = Stack3D.roiSummary(section);
+    const roiText = roi.totalPolygons ? `ROI輪郭 ${roi.visiblePolygons} / ${roi.totalPolygons}` : 'ROI未登録';
+    if (previewKind === 'ATLAS') return '参照用の2Dアトラス画像';
+    if (previewKind === 'HE_Stain') return `保存された位置合わせのHE画像 · ${roiText}`;
     const text = [options().mode === 'raw' ? '原値を表示' : '補正値を表示'];
     if (status.code === 'UNAVAILABLE') text[0] = status.message || '表示できる値がありません。分子・表示値を確認してください。'; else if (status.message) text.push(status.message);
     if (status.unavailableChannels?.length && status.code !== 'UNAVAILABLE') text.push(`表示不可：${status.unavailableChannels.join('・')}`);
     if (options().mode === 'normalized' && status.code === 'PROVISIONAL') text.push('保存された暫定補正を使用');
-    if (previewKind === 'ATLAS') text.push('参照用の2Dアトラス画像');
-    if (previewKind === 'ROI') text.push(`${Object.values(section.project.roi?.roi_items || {}).reduce((count, items) => count + items.length, 0)} ROIポリゴン`);
+    text.push(roiText);
     return text.join(' · ');
   }
   async function refreshPreview() {
     const generation = ++previewGeneration, index = selected, kind = previewKind; if (!sections[index]) return; updateLabels();
     delete $('section-preview').dataset.previewKind;
     const status = rendered[index]?.status;
-    $('section-status').textContent = previewStatus(index); $('section-status').classList.toggle('warning', status?.code === 'UNAVAILABLE' || status?.code === 'PARTIAL'); renderLegend(index);
+    $('section-status').textContent = previewStatus(index); $('section-status').classList.toggle('warning', kind === 'MSI' && (status?.code === 'UNAVAILABLE' || status?.code === 'PARTIAL')); renderLegend(index);
     // A rapid scrub should decode the last requested HE/Atlas image next,
     // instead of queueing every obsolete intermediate section.
     pendingPreview = { generation, index, kind };
@@ -340,9 +331,9 @@
   async function enlargePreview() {
     const generation = ++detailGeneration, index = selected, kind = previewKind;
     if (!sections[index] || busy) return;
-    const name = { MSI: 'MSI', HE_Stain: 'HE', ATLAS: 'Atlas', ROI: 'ROI' }[kind];
+    const name = { MSI: 'MSI＋ROI', HE_Stain: 'HE＋ROI', ATLAS: 'Atlas' }[kind];
     $('detail-title').textContent = `${sections[index].name} · ${name}`;
-    $('detail-status').textContent = kind === 'MSI' || kind === 'ROI' ? 'MSIは元の測定画素を表示しています。' : '登録された元画像の解像度を活かして表示しています。';
+    $('detail-status').textContent = kind === 'MSI' ? 'MSIは元の測定画素を表示しています。' : '登録された元画像の解像度を活かして表示しています。';
     delete $('detail-preview').dataset.previewKind;
     replacePreview($('detail-preview'), null, '画像を準備中…'); $('preview-dialog').showModal();
     try {
@@ -412,6 +403,7 @@
   $('opacity').addEventListener('input', () => { renderer?.setOpacity(Number($('opacity').value)); updateLabels(); saveView(); });
   $('he-visible').addEventListener('change', () => { updateHeOverlay().catch(error => notice(error.message)); });
   $('he-opacity').addEventListener('input', () => { renderer?.setHeOverlay(heOptions()); updateLabels(); saveView(); });
+  for (const [id, event] of [['brain-visible', 'change'], ['brain-opacity', 'input']]) $(id).addEventListener(event, () => { renderer?.setBrainContext(brainOptions()); updateLabels(); saveView(); });
   $('spacing').addEventListener('input', () => { renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
   for (const id of ['range-start', 'range-end']) $(id).addEventListener('change', setRange);
   $('show-all').addEventListener('click', () => { $('range-start').value = 1; $('range-end').value = sections.length; setRange(); });
