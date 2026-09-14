@@ -89,6 +89,22 @@ ordinary-open conflict prompts, cancellation during the first or final dataset,
 and control recovery after listing, index, or archive failures. These tests use
 the installed SheetJS and JSZip versions rather than external CDNs.
 
+The v2.13 restoration batch uses the existing `marmoset_atlas_v1` inner ZIP
+format and puts one ZIP per registered dataset under `datasets/` in one outer
+archive. Its `_Restore_Export_Index.json` records every target and its result,
+including skips and cancellation. The outer archive must be extracted before
+individual dataset ZIPs are imported through the ordinary restore UI.
+
+Restoration verification must check raw Float32/NaN round trips, ROI and spatial
+alignment, original HE/Atlas/Immuno image bytes, normalization and binding,
+per-layer display/Otsu/rotation state, and folder paths. Missing declared raster
+or image assets must skip that dataset, never produce an incomplete success.
+Unregistered optional images are allowed. Batch controls must recover on every
+exit, partial success must remain downloadable, cancellation must offer built
+results, and all-failed batches must not download an empty archive. These ZIPs
+do not include source imzML/ibd spectra, empty folder-only trees, or cloud identity
+and synchronization metadata; the Excel export remains a separate output.
+
 These checks verify software behavior, **not scientific validation** of an assay,
 spray uniformity, cross-analyte normalization, saturation thresholds, calibration,
 or the completeness of any real study. Such validation requires the experimental
