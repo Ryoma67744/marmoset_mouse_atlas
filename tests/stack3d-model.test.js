@@ -136,3 +136,16 @@ test('a registered missing analyte is reported and cancellation stops loading wi
   assert.deepEqual(plain(sections.map(s => s.zIndex)), [0, 1]);
   await assert.rejects(c.Stack3D.loadSections(f.entries.map(e => e.project), { storage: f.storage, signal: { aborted: true } }), /中止/);
 });
+
+test('ROI summary counts disjoint valid contours, respects saved visibility and rejects a damaged ring as a whole', () => {
+  const c = app();
+  const triangle = { poly_msi: [[0, 0], [1, 0], [0, 1]] };
+  const roi = { roi_items: { a: [triangle, { poly_msi: [[2, 2], [3, 2], [2, 3]] }],
+    hidden: [triangle], damaged: [{ poly_msi: [[0, 0], [NaN, 1], [1, 1], [1, 0]] }],
+    tooShort: [{ poly_msi: [[0, 0], [1, 0]] }], legacy: [{ verts: [[0, 0], [1, 0], [0, 1]] }] },
+    palette: { a: [0, 255, 255, 255] }, roi_show_flags: { hidden: false } };
+  const before = structuredClone(roi);
+  assert.deepEqual(plain(c.Stack3D.roiSummary({ project: { roi } })), { visiblePolygons: 2, totalPolygons: 3 });
+  assert.deepEqual(roi, before);
+  assert.deepEqual(plain(c.Stack3D.roiSummary({ project: {} })), { visiblePolygons: 0, totalPolygons: 0 });
+});

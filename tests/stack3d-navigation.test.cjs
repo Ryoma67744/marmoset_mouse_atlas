@@ -192,13 +192,17 @@ test('common color ranges override older sessions and the bottom scrubber hides 
     await seed(h);
     const before = await rawBits(page);
     await page.evaluate(ids => sessionStorage.setItem('atlas-stack3d-view-v1', JSON.stringify({
-      ids, selectedId: ids[0], options: { mode: 'raw', rangeMode: 'individual', channels: ['DA', 'NE', '5-HT'] }, range: [1, 3]
+      ids, selectedId: ids[0], previewKind: 'ROI', options: { mode: 'raw', rangeMode: 'individual', channels: ['DA', 'NE', '5-HT'] }, range: [1, 3]
     })), IDS);
     await page.goto(h.baseURL + '/stack3d/index.html');
     await ready(page, 3);
     assert.equal(await page.locator('#range-mode').count(), 0);
     assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
     assert.match(await page.locator('.scene-bottom').innerText(), /小脳側\s*→\s*嗅球側.*初期視点/);
+    assert.equal(await page.locator('[data-preview="ROI"]').count(), 0, 'ROI no longer has a standalone tab');
+    await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'MSI');
+    assert.match(await page.locator('[data-preview="MSI"]').innerText(), /MSI.*ROI/);
+    assert.match(await page.locator('[data-preview="HE_Stain"]').innerText(), /HE.*ROI/);
     await setSlider(page, '#section-slider', 1);
     assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
     let stats = await page.evaluate(() => Atlas3D.renderer.getStats());
@@ -334,7 +338,7 @@ test('HE overlay follows the cutoff, reuses GPU resources and preserves native i
     });
     assert.deepEqual(queue.calls, IDS.slice(0, 2)); assert.equal(queue.maximum, 1);
     assert.deepEqual(queue.size, [[128, 128]], 'the final requested section replaces the obsolete preview');
-    for (const kind of ['MSI', 'HE_Stain', 'ROI']) {
+    for (const kind of ['MSI', 'HE_Stain']) {
       await page.locator('[data-preview="' + kind + '"]').click();
       await page.waitForFunction(kind => {
         const host = document.getElementById('section-preview'), canvas = host.querySelector('canvas');
@@ -360,6 +364,186 @@ test('HE overlay follows the cutoff, reuses GPU resources and preserves native i
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), IDS.slice(0, 2));
     assert.deepEqual(await rawBits(page), before);
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), storedBefore, 'display controls and previews preserve all saved data and affine matrices');
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('MSI and HE previews draw saved ROI landmarks without changing scientific textures, image detail or data', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await seedReferenceImages(page);
+    await page.evaluate(async () => {
+      const p = await ProjectStorage.getProject('stack-second');
+      // Saved HE and MSI rotations can legitimately differ. ROI coordinates
+      // are raw MSI coordinates and must follow the MSI rotation in both tabs.
+      p.rotation = { all: 180, msi: 90, he: 0 };
+      p.roi = { roi_names: { landmark: 'Two separate landmarks' },
+        palette: { landmark: [0, 255, 255, 255], hidden: [255, 0, 255, 255], malformed: [0, 255, 0, 255] },
+        roi_show_flags: { landmark: true, hidden: false, malformed: true },
+        roi_items: {
+          landmark: [{ poly_msi: [[1, .25], [2, .25], [2, .75], [1, .75]] },
+            { poly_msi: [[2.5, 1.25], [3, 1.25], [3, 1.75], [2.5, 1.75]] }],
+          hidden: [{ poly_msi: [[.5, .9], [.75, .9], [.75, 1.1], [.5, 1.1]] }],
+          malformed: [{ poly_msi: [[0, 0], [NaN, 1], [4, 2]] }]
+        } };
+      await ProjectStorage.putProject(p);
+    });
+    const before = await rawBits(page), stored = await page.evaluate(() => ProjectStorage.listProjects());
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second');
+    await ready(page, 3);
+    const result = await page.evaluate(async () => {
+      const section = Atlas3D.sections.find(s => s.id === 'stack-second');
+      const pixels = canvas => Array.from(canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data);
+      const keep = [], hold = canvas => { keep.push(canvas); return canvas; };
+      const opts = { mode: 'raw', rangeMode: 'common', commonRanges: Stack3D.computeCommonRanges(Atlas3D.sections, 'raw'),
+        channels: ['DA', 'NE', '5-HT'], previewPixelScale: 32 };
+      const plain = Stack3D.renderSection(section, opts), overlay = Stack3D.renderSection(section, { ...opts, roi: true });
+      keep.push(plain.canvas, plain.previewCanvas, overlay.canvas, overlay.previewCanvas);
+      const he = hold(await Stack3D.renderHePreview(section, { maxSize: 2048 }));
+      const heRoi = hold(await Stack3D.renderHePreview(section, { maxSize: 2048, roi: true }));
+      const hePlane = hold(await Stack3D.renderHePlane(section, { maxSize: 512 }));
+      const justVisible = { ...section, project: { ...section.project, roi: {
+        ...section.project.roi, roi_items: { landmark: section.project.roi.roi_items.landmark }
+      } } };
+      const visibleOnly = hold(await Stack3D.renderHePreview(justVisible, { maxSize: 2048, roi: true }));
+      const empty = { ...section, project: { ...section.project, roi: { roi_items: {} } } };
+      const absent = hold(await Stack3D.renderHePreview(empty, { maxSize: 2048, roi: true }));
+      const unequal = { ...section, umPerPxY: 75 };
+      const union = hold(await Stack3D.renderHePreview(unequal, { maxSize: 2048, roi: true }));
+      const close = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+      // Hard-coded landmarks follow the saved 90° rotation about the center:
+      // raw (1,.5) => (96,32), raw (2.5,1.5) => (32,80).
+      const delta = (a, b, x, y) => {
+        const ca = a.getContext('2d'), cb = b.getContext('2d'); let peak = 0;
+        for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+          const pa = ca.getImageData(x + dx, y + dy, 1, 1).data, pb = cb.getImageData(x + dx, y + dy, 1, 1).data;
+          peak = Math.max(peak, ...Array.from(pa, (v, i) => Math.abs(v - pb[i])));
+        }
+        return peak;
+      };
+      const answer = {
+        textureUnchanged: close(pixels(plain.canvas), pixels(overlay.canvas)),
+        rangesUnchanged: JSON.stringify(plain.ranges) === JSON.stringify(overlay.ranges),
+        msiLandmarks: [delta(overlay.previewCanvas, plain.previewCanvas, 96, 32), delta(overlay.previewCanvas, plain.previewCanvas, 32, 80)],
+        heLandmarks: [delta(heRoi, he, 96, 32), delta(heRoi, he, 32, 80)],
+        wrongRotation: delta(heRoi, he, 32, 32), phantomConnection: delta(heRoi, he, 64, 56),
+        heSize: [heRoi.width, heRoi.height], unionSize: [union.width, union.height],
+        hiddenAndMalformedIgnored: close(pixels(heRoi), pixels(visibleOnly)), absentUnchanged: close(pixels(he), pixels(absent)),
+        // Native HE contains a one-pixel-wide green stripe at x=48, translated
+        // by 16 output pixels. It must remain sharp in both HE render paths.
+        stripe: Array.from(heRoi.getContext('2d').getImageData(64, 8, 1, 1).data),
+        besideStripe: Array.from(heRoi.getContext('2d').getImageData(65, 8, 1, 1).data),
+        planeStripe: Array.from(hePlane.getContext('2d').getImageData(64, 8, 1, 1).data)
+      };
+      for (const canvas of keep) { canvas.width = 0; canvas.height = 0; }
+      return answer;
+    });
+    assert.equal(result.textureUnchanged, true, 'ROI remains out of the scientific 3D texture');
+    assert.equal(result.rangesUnchanged, true);
+    assert.ok(result.msiLandmarks.every(x => x > 100), 'both separate ROI outlines appear over MSI');
+    assert.ok(result.heLandmarks.every(x => x > 100), 'HE uses the saved MSI rotation for ROI');
+    assert.equal(result.wrongRotation, 0, 'ROI must not inherit the different HE rotation');
+    assert.equal(result.phantomConnection, 0, 'separate ROI polygons must not be joined');
+    assert.equal(result.hiddenAndMalformedIgnored, true);
+    assert.equal(result.absentUnchanged, true, 'missing ROI does not suppress or change HE');
+    assert.deepEqual(result.heSize, [128, 128]);
+    assert.deepEqual(result.unionSize, [192, 192], 'different rotated anisotropic bounds retain the whole HE and ROI');
+    assert.deepEqual(result.stripe, [0, 255, 0, 255]);
+    assert.deepEqual(result.besideStripe, [255, 0, 0, 255]);
+    assert.deepEqual(result.planeStripe, [0, 255, 0, 255]);
+    await page.locator('[data-preview="HE_Stain"]').click();
+    await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'HE_Stain');
+    await page.locator('#enlarge-preview').click();
+    await page.waitForFunction(() => document.getElementById('detail-preview').dataset.previewKind === 'HE_Stain');
+    const cyan = await page.locator('#detail-preview canvas').evaluate(canvas => {
+      const values = canvas.getContext('2d').getImageData(95, 31, 3, 3).data;
+      for (let i = 0; i < values.length; i += 4) if (values[i + 1] > 100 && values[i + 2] > 100) return true;
+      return false;
+    });
+    assert.equal(cyan, true, 'the enlarged HE preview actually enables the ROI overlay');
+    await page.keyboard.press('Escape');
+    assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('optional brain context preserves camera, scientific data and full-stack bounds through cutoffs and detail navigation', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h);
+    await page.evaluate(async () => {
+      const source = await ProjectStorage.getProject('stack-second');
+      for (let i = 1; i <= 9; i++) {
+        const p = structuredClone(source);
+        p.id = 'brain-context-' + i; p.displayName = 'Cor_2_' + i;
+        delete p.updatedAt; delete p.normalization; delete p.normalizationBinding;
+        await ProjectStorage.putProject(p);
+      }
+      // A 12-plane synthetic model with a visible XY extent is useful for CI
+      // screenshot review as well as renderer resource and navigation checks.
+      for (const p of await ProjectStorage.listProjects()) {
+        p.grid.umPerPxX = 2000; p.grid.umPerPxY = 4000;
+        await ProjectStorage.putProject(p);
+      }
+    });
+    const before = await rawBits(page), stored = await page.evaluate(() => ProjectStorage.listProjects());
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second');
+    await ready(page, 12);
+    await page.locator('#value-mode').selectOption('raw');
+    assert.equal(await page.locator('#brain-visible').isChecked(), false, 'schematic context is opt-in');
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().brainContextRendered), false);
+    const view = await page.evaluate(() => Atlas3D.renderer.getView());
+    const ranges = await page.evaluate(() => Stack3D.computeCommonRanges(Atlas3D.sections, 'raw'));
+    await page.locator('#brain-visible').check();
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().brainContextRendered && Atlas3D.renderer.getStats().brainObjectCount > 0);
+    assert.equal(await page.locator('#brain-context-note').isVisible(), true);
+    assert.match(await page.locator('#brain-context-note').innerText(), /模式図/);
+    assert.match(await page.locator('#brain-context-note').innerText(), /位置合わせ|登録|解剖/);
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    await setSlider(page, '#brain-opacity', 0.23);
+    await page.waitForFunction(() => {
+      const stats = Atlas3D.renderer.getStats();
+      return stats.gpuGeometries >= 12 + stats.brainObjectCount;
+    });
+    const baseline = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.equal(baseline.brainOpacity, 0.23);
+    await setSlider(page, '#section-slider', 4);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().brainModelBounds), baseline.brainModelBounds,
+      'the context uses the full stack, so a cutoff cannot shrink the reference brain');
+    for (let i = 0; i < 3; i++) {
+      await page.locator('#brain-visible').uncheck();
+      assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().brainContextRendered), false);
+      await page.locator('#brain-visible').check();
+      assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().brainObjectCount), baseline.brainObjectCount);
+    }
+    const toggled = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.ok(toggled.gpuGeometries <= baseline.gpuGeometries, 'toggles reuse geometry');
+    assert.ok(toggled.gpuTextures <= baseline.gpuTextures, 'the illustration allocates no new textures on toggle');
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    assert.deepEqual(await page.evaluate(() => Stack3D.computeCommonRanges(Atlas3D.sections, 'raw')), ranges);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored, 'context controls do not save model metadata');
+    const selected = await page.evaluate(() => Atlas3D.sections[Atlas3D.selected].id);
+    await page.locator('#open-section').click();
+    await page.waitForURL('**/viewer/index.html?project=' + selected + '&from=stack3d');
+    await page.waitForFunction(() => viewerReady);
+    await page.locator('#back-stack3d').click();
+    await ready(page, 12);
+    assert.equal(await page.locator('#brain-visible').isChecked(), true);
+    assert.equal(await page.locator('#brain-opacity').inputValue(), '0.23');
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().brainContextRendered), true);
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    assert.deepEqual(await rawBits(page), before);
+    if (process.env.CI) {
+      await page.locator('#show-all').click();
+      await setSlider(page, '#spacing', 0.9);
+      const previousRender = await page.evaluate(() => {
+        const count = Atlas3D.renderer.getStats().renderCount; Atlas3D.renderer.resetView(); return count;
+      });
+      await page.waitForFunction(count => Atlas3D.renderer.getStats().renderCount > count, previousRender);
+      require('node:fs').mkdirSync('test-artifacts', { recursive: true });
+      await page.screenshot({ path: 'test-artifacts/stack3d-brain-preview.png' });
+    }
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });

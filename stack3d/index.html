@@ -25,6 +25,7 @@
       <div class="control-block"><span class="control-label">色の範囲</span><p class="fixed-value">全切片共通 · 分子ごと</p><p id="range-note" class="hint">同じ分子・同じ表示値で、全切片の色範囲を揃えます。</p></div>
       <div class="control-block"><label for="opacity">不透明度 <output id="opacity-value">55%</output></label><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.55"></div>
       <div class="control-block he-controls"><label for="he-visible" class="toggle-label"><span>HEを重ねる</span><input id="he-visible" type="checkbox" checked></label><label for="he-opacity">HEの不透明度 <output id="he-opacity-value">12%</output></label><input id="he-opacity" type="range" min="0.01" max="0.4" step="0.01" value="0.12"><p id="he-status" class="hint" role="status">保存された位置合わせで薄く重ねます。</p></div>
+      <div class="control-block brain-controls"><label for="brain-visible" class="toggle-label"><span>脳のイラストを重ねる</span><input id="brain-visible" type="checkbox"></label><label for="brain-opacity">イラストの濃さ <output id="brain-opacity-value">12%</output></label><input id="brain-opacity" type="range" min="0.02" max="0.35" step="0.01" value="0.12" disabled><p class="hint">マーモセット脳の模式図です。実際の脳への位置合わせは行っていません。</p></div>
       <div class="control-block"><label for="threshold">低信号の透過 <output id="threshold-value">0%</output></label><input id="threshold" type="range" min="0" max="0.95" step="0.01" value="0"><p class="hint">表示のみを調整します。測定値は変わりません。</p></div>
       <div class="control-block"><label for="spacing">切片の間隔 <output id="spacing-value">1.0×</output></label><input id="spacing" type="range" min="0.08" max="2" step="0.01" value="0.35"><p class="hint">前後方向は切片順です。間隔は表示上の距離です。</p></div>
       <div class="control-block slice-range"><label>表示する範囲</label><div><label for="range-start">開始</label><input id="range-start" type="number" min="1" value="1"><span>—</span><label for="range-end">終了</label><input id="range-end" type="number" min="1" value="1"></div><button id="show-all" class="text-button">すべて表示</button></div>
@@ -35,6 +36,7 @@
     <section class="scene-panel" aria-label="インタラクティブ3Dモデル">
       <div class="scene-top"><span class="pill" id="mode-label">DA + NE + 5-HT</span><span id="render-state" role="status" aria-live="polite">準備中</span></div>
       <div id="scene" tabindex="0" aria-label="ドラッグで回転、ホイールで拡大縮小、切片をクリックして選択"></div>
+      <span id="brain-context-note" class="brain-context-note" hidden>脳模式図 · 位置合わせ未実施</span>
       <div id="scene-message" class="scene-message"><strong>切片を読み込んでいます</strong><span id="load-progress"></span></div>
       <div id="render-error" class="error-panel" hidden role="alert"><strong>3D表示を開始できませんでした</strong><p id="render-error-text"></p><p>右の切片一覧から断面を確認できます。</p></div>
       <div class="scene-bottom"><span>ドラッグ：回転　右ドラッグ：移動　スクロール：拡大</span><span>小脳側 → 嗅球側（初期視点）</span></div>
@@ -42,7 +44,7 @@
     </section>
     <aside class="section-panel" aria-label="選択切片">
       <div class="panel-heading"><span class="eyebrow">SELECTED SECTION</span><h2 id="section-name">—</h2><p id="section-metadata" class="hint"></p></div>
-      <div class="preview-tabs" role="group" aria-label="断面プレビュー"><button data-preview="MSI" aria-pressed="true">MSI</button><button data-preview="HE_Stain" aria-pressed="false">HE</button><button data-preview="ATLAS" aria-pressed="false">Atlas</button><button data-preview="ROI" aria-pressed="false">ROI</button></div>
+      <div class="preview-tabs" role="group" aria-label="断面プレビュー"><button data-preview="MSI" aria-pressed="true">MSI＋ROI</button><button data-preview="HE_Stain" aria-pressed="false">HE＋ROI</button><button data-preview="ATLAS" aria-pressed="false">Atlas</button></div>
       <div id="section-preview" class="section-preview"><p>切片を選択してください</p></div>
       <button id="enlarge-preview" class="text-button preview-enlarge" disabled>画像を拡大 ↗</button>
       <p id="section-status" class="section-status" role="status"></p>
@@ -72,6 +74,7 @@
   <script src="../lib/section-display.js"></script>
   <script src="../lib/stack3d.js"></script>
   <script src="vendor/three-orbit.min.js"></script>
+  <script src="brain-context.js"></script>
   <script src="renderer.js"></script>
   <script src="app.js"></script>
 </body>
