@@ -2325,6 +2325,8 @@
                     '・1 件につき 1 つの Excel ファイルを作成します。\n' +
                     '・各ファイルには、全分子の MSI 生強度データと ROI 所属情報が入ります。\n' +
                     '・別タブに補正値、ROI 定量値、設定と算出不可の理由も収録します。\n' +
+                    '・取得できないデータや編集が競合するデータはスキップし、成功分を自動ダウンロードします。\n' +
+                    '・スキップした対象と理由は、同梱の _Export_Index.xlsx に記録します。\n' +
                     '・画像と復元用の状態は含みません。この ZIP は解析用で、アプリへは読み戻せません。\n\n' +
                     '処理を開始しますか?');
                 if (!proceed) {
@@ -2350,11 +2352,11 @@
                     try {
                         // reload() で得た最新クラウド行を渡すことで、必要なデータだけ
                         // ensureLocal() が ZIP を取得し、ローカルキャッシュへ展開する。
-                        const project = await ensureLocal(row);
+                        const project = await ensureLocal(row, { allowConflictPrompt: false });
                         if (cloudOn()) { setStatus(''); setProgress(null); }
                         if (!project || !project.molecules) throw new Error('データ本体が見つかりません');
-                        // ensureLocal() の競合確認で「置き換えない」が選ばれた場合、戻り値は
-                        // 手元の古い版になる。全件が最新版であるかのような ZIP には混ぜない。
+                        // 一括出力では競合する手元の編集を上書きせず、このデータだけを除外する。
+                        // 最新性の検査は個別取得と同じままにし、残りのデータの出力を続ける。
                         assertLatestCloudProject(row, project);
                         project.folderPath = ProjectStorage.folderPathNames(project.folderId, cache.tree.byId);
                         base.folderPath = project.folderPath.length ? project.folderPath.join(' / ') : '(ルート)';
@@ -2408,8 +2410,11 @@
                     await new Promise(resolve => setTimeout(resolve, 0));
                 }
 
-                const cancelled = excelBatchCancelRequested && processedCount < projects.length;
-                if (cancelled) {
+                // 最後のデータの処理中に受理したキャンセルも、保存確認の対象にする。
+                // 未処理の有無は別に判定し、全件完成した ZIP を PARTIAL と誤表示しない。
+                const cancelRequested = excelBatchCancelRequested;
+                const hasUnprocessed = processedCount < projects.length;
+                if (hasUnprocessed) {
                     for (let i = processedCount; i < projects.length; i++) {
                         records.push(Object.assign(excelBatchBaseRecord(projects[i], i + 1), {
                             status: 'error',
@@ -2423,18 +2428,6 @@
                 const warningCount = records.filter(r => r.status === 'warning').length;
                 const partial = errorCount > 0;
                 const plannedFilename = excelArchiveName(partial, archiveDate);
-                setExcelBatchUi('出力結果の索引を作成中…', 0.88, {});
-                const indexResult = await ExcelIO.buildIndexXlsx(records, {
-                    exportedAt: exportedAt,
-                    appVersion: window.APP_VERSION || '',
-                    requestedCount: projects.length,
-                    status: partial ? 'PARTIAL' : 'COMPLETE',
-                    archiveFilename: plannedFilename,
-                    note: cancelled ? 'ユーザーのキャンセルにより、一部のデータは未処理です。' : '',
-                });
-                zip.file('_Export_Index.xlsx', indexResult.bytes,
-                    { binary: true, compression: 'STORE' });
-
                 const issues = excelBatchIssueSummary(records);
                 if (successCount === 0) {
                     setExcelBatchUi(
@@ -2444,21 +2437,36 @@
                     return;
                 }
 
-                if (partial) {
-                    const reason = cancelled ? '処理はキャンセルされました。' : '一部のデータを出力できませんでした。';
-                    const acceptPartial = confirm(
-                        `${reason}\n成功 ${successCount} 件 / 未出力 ${errorCount} 件` +
+                // 通常の部分失敗では確認を挟まず成功分を保存する。
+                // 明示的なキャンセルを受け付けた場合だけ、保存するかをユーザーに委ねる。
+                if (cancelRequested) {
+                    setExcelBatchUi('キャンセル後の保存を確認しています…', null, { hideProgress: true });
+                    const acceptDownload = confirm(
+                        `キャンセルを受け付けました。\n成功 ${successCount} 件 / 未出力 ${errorCount} 件` +
                         (warningCount ? ` / 警告あり ${warningCount} 件` : '') + '\n\n' +
                         (issues || '') + '\n\n' +
-                        '成功したファイルだけを _PARTIAL.zip としてダウンロードしますか?');
-                    if (!acceptPartial) {
+                        `作成済みのファイルを「${plannedFilename}」としてダウンロードしますか?`);
+                    if (!acceptDownload) {
                         setExcelBatchUi(
-                            `成功 ${successCount} 件 / 未出力 ${errorCount} 件。一部 ZIP はダウンロードしませんでした。` +
+                            `成功 ${successCount} 件 / 未出力 ${errorCount} 件。キャンセルにより ZIP はダウンロードしませんでした。` +
                             (issues ? '\n' + issues : ''), null,
                             { hideProgress: true, tone: 'warning' });
                         return;
                     }
                 }
+
+                setExcelBatchUi('出力結果の索引を作成中…', 0.88, {});
+                const indexResult = await ExcelIO.buildIndexXlsx(records, {
+                    exportedAt: exportedAt,
+                    appVersion: window.APP_VERSION || '',
+                    requestedCount: projects.length,
+                    status: partial ? 'PARTIAL' : 'COMPLETE',
+                    archiveFilename: plannedFilename,
+                    note: hasUnprocessed ? 'ユーザーのキャンセルにより、一部のデータは未処理です。' :
+                        cancelRequested ? 'キャンセル要求時点で全対象を処理済みです。確認後に出力しました。' : '',
+                });
+                zip.file('_Export_Index.xlsx', indexResult.bytes,
+                    { binary: true, compression: 'STORE' });
 
                 setExcelBatchUi('1 つの ZIP にまとめています…', 0.9, {});
                 const blob = await zip.generateAsync({
@@ -2472,9 +2480,11 @@
                 const filename = plannedFilename;
                 downloadBlob(blob, filename);
                 setExcelBatchUi(
-                    `${successCount} 件の Excel を「${filename}」としてダウンロードしました。` +
-                    (errorCount ? ` 未出力 ${errorCount} 件。` : '') +
-                    (warningCount ? ` 警告あり ${warningCount} 件。` : ''),
+                    `${successCount} 件の Excel をまとめた「${filename}」のダウンロードを開始しました。` +
+                    (errorCount ? ` ${errorCount} 件をスキップしました。` : '') +
+                    (warningCount ? ` 警告あり ${warningCount} 件。` : '') +
+                    (issues ? '\n' + issues : '') +
+                    (partial || warningCount ? '\n詳細は同梱の _Export_Index.xlsx を確認してください。' : ''),
                     1, { hideProgress: true, tone: partial || warningCount ? 'warning' : 'success' });
             } catch (e) {
                 console.error('[excel export] 一括出力に失敗', e);
@@ -2712,13 +2722,13 @@
         }
 
         /** The listing is only an identity hint; all overwrite decisions use fresh storage. */
-        async function ensureLocal(p) {
+        async function ensureLocal(p, options = {}) {
             const id = typeof p === 'string' ? p : p.id;
             const project = await ProjectSync.ensureLocal(id, {
                 storage:ProjectStorage,cloud:cloudOn() ? Cloud : null,zip:ZipIO,
                 pendingFolderChanges:readFolderChanges,
                 onProgress:f => setProgress(f),
-                confirmReplace:async (local, row) => confirm('「' + (local.displayName || row.display_name || id) +
+                confirmReplace:async (local, row) => options.allowConflictPrompt !== false && confirm('「' + (local.displayName || row.display_name || id) +
                     '」にはこの PC の未同期の変更があります。\nクラウドの最新内容に置き換えますか？ この PC の未同期の変更は失われます。')
             });
             setProgress(null);
