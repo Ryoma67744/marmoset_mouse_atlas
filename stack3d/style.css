@@ -19,3 +19,16 @@
 .brain-controls .toggle-label{align-items:center;margin-bottom:16px}
 .brain-context-note{position:absolute;left:22px;bottom:116px;z-index:2;padding:5px 9px;font-size:10px;line-height:1.5;color:#b9d3dc;background:#11232be6;border:1px solid #3d626e;border-radius:5px;pointer-events:none}
 @media(max-width:1100px){.brain-context-note{bottom:130px;left:14px}}
+
+/* Section visibility is independent of selection and the ordinal cutoff. */
+.section-row{padding:2px 6px;gap:8px}
+.section-visible{width:17px;height:17px;flex:0 0 17px;margin:0;accent-color:#9cbbe4;cursor:pointer}
+.section-select{display:flex;align-items:center;gap:7px;flex:1;min-width:0;border:0;background:none;text-align:left;padding:8px 0;font-size:11px;color:inherit}
+.section-select:hover{background:transparent;color:var(--accent)}
+.section-select .rank{flex:0 0 18px}
+.section-off .section-select{color:var(--muted)}
+.section-off .section-select::after{content:'OFF';margin-left:auto;font-size:9px;letter-spacing:.5px;color:#a0aec0}
+.visibility-actions{display:flex;justify-content:space-between;align-items:center;gap:10px}
+#visibility-status{margin:0;font-size:10px;color:var(--muted)}
+#visibility-help{margin:0;font-size:10px}
+#enable-all-sections{white-space:nowrap}

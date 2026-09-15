@@ -14,7 +14,7 @@
   let renderGeneration = 0, loadGeneration = 0, previewGeneration = 0, heGeneration = 0, detailGeneration = 0;
   let busy = false, saving = false, noticeTimer, unsubscribe = null, sourceChanged = false, restoredCamera = null, repaintPending = false;
   let pendingPreview = null, previewWorker = null;
-  const dirtyPlacements = new Set(), commonRanges = new Map(), hePlanes = new Map();
+  const dirtyPlacements = new Set(), commonRanges = new Map(), hePlanes = new Map(), hiddenSectionIds = new Set();
 
   function syncWarning(messages) {
     const button = $('sync-warning'), text = messages.join('\n');
@@ -35,10 +35,18 @@
     if (!sections.length) return;
     session.set(VIEW_KEY, { ids: sections.map(section => section.id), selectedId: sections[selected]?.id, options: options(),
       opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, 0.35), he: heOptions(), brain: brainOptions(),
-      range: [finite($('range-start').value, 1), finite($('range-end').value, sections.length)], camera: renderer?.getView(), previewKind });
+      range: [finite($('range-start').value, 1), finite($('range-end').value, sections.length)],
+      hiddenSectionIds: [...hiddenSectionIds], camera: renderer?.getView(), previewKind });
   }
   function restoreView() {
     const view = session.get(VIEW_KEY);
+    hiddenSectionIds.clear();
+    // Preserve each known section's toggle even when sections are added or
+    // removed. New sections start ON; never carry an unknown project ID.
+    if (Array.isArray(view?.hiddenSectionIds)) {
+      const loadedIds = new Set(sections.map(section => section.id));
+      for (const id of view.hiddenSectionIds) if (loadedIds.has(id)) hiddenSectionIds.add(id);
+    }
     if (!view || !Array.isArray(view.ids) || view.ids.join('\n') !== sections.map(section => section.id).join('\n')) return;
     const saved = view.options || {};
     $('value-mode').value = saved.mode === 'normalized' ? 'normalized' : 'raw';
@@ -58,7 +66,7 @@
   function setBusy(value) {
     busy = value;
     for (const id of ['reload', 'save-image', 'open-section', 'enlarge-preview', 'save-placement', 'reset-placement', 'save-cloud']) $(id).disabled = value || (id !== 'reload' && !sections.length);
-    for (const input of document.querySelectorAll('.controls input,.controls select,.controls button,.slice-scrubber input,.slice-scrubber button,.placement input,[data-preview]')) input.disabled = value || !sections.length;
+    for (const input of document.querySelectorAll('.controls input,.controls select,.controls button,.slice-scrubber input,.slice-scrubber button,.placement input,[data-preview],.section-visible,.section-select,#enable-all-sections')) input.disabled = value || !sections.length;
   }
   function renderError(error) {
     $('render-error').hidden = false; $('render-error-text').textContent = error?.message || String(error);
@@ -69,7 +77,7 @@
     $('load-progress').textContent = global.Cloud?.configured?.() && !global.Cloud?.signedIn?.()
       ? '左上のMarmoset AtlasからMasterへ戻り、クラウドにログインしてください。'
       : '左上のMarmoset AtlasからMasterへ戻り、Cor切片を登録して「3D表示」から開いてください。';
-    $('dataset-count').textContent = '0 sections'; $('render-state').textContent = ''; setBusy(false);
+    $('dataset-count').textContent = '0 sections'; $('render-state').textContent = ''; setBusy(false); updateVisibilityStatus();
   }
   async function sourceProjects(progress) {
     let locals = await ProjectStorage.listProjects();
@@ -137,7 +145,7 @@
       renderer?.updateHeTextures(new Map(sections.map(section => [section.id, null])));
       hePlanes.forEach(canvas => { if (canvas) { canvas.width = 0; canvas.height = 0; } }); hePlanes.clear();
       sections.forEach(Stack3D.releaseSection); rendered.forEach(releaseRender);
-      sections = loaded; rendered = []; commonRanges.clear(); dirtyPlacements.clear(); sourceChanged = false; selected = 0;
+      sections = loaded; rendered = []; commonRanges.clear(); hiddenSectionIds.clear(); dirtyPlacements.clear(); sourceChanged = false; selected = 0;
       if (!sections.length) {
         renderer?.setSections([]); $('section-list').replaceChildren(); replacePreview($('section-preview'), null, '切片を選択してください');
         $('section-name').textContent = '—'; $('section-metadata').textContent = ''; $('section-status').textContent = '';
@@ -152,7 +160,8 @@
       if (queryIndex >= 0) selected = queryIndex;
       $('dataset-count').textContent = `${sections.length} sections`; $('dataset-title').textContent = 'Coronal sections';
       if (!renderer) { try { renderer = Stack3DRenderer.createRenderer($('scene'), { onSelect: selectSection, onError: renderError }); } catch (error) { renderError(error); } }
-      renderer?.setSections(sections); renderer?.setSpacing(finite($('spacing').value, 0.35)); renderer?.setOpacity(finite($('opacity').value, 0.55));
+      renderer?.setSections(sections); renderer?.setHiddenSections(hiddenSectionIds);
+      renderer?.setSpacing(finite($('spacing').value, 0.35)); renderer?.setOpacity(finite($('opacity').value, 0.55));
       renderer?.setHeOverlay(heOptions()); renderer?.setBrainContext(brainOptions());
       if (restoredCamera) { renderer?.setView(restoredCamera); restoredCamera = null; }
       updateLabels(); setRange(); buildList(); await repaint();
@@ -206,21 +215,24 @@
   }
   async function repaint() {
     const generation = ++renderGeneration, current = options(); updateLabels();
+    const enabled = sections.filter(section => !hiddenSectionIds.has(section.id));
     $('mode-label').textContent = current.channels.length ? current.channels.join(' + ') : '分子を選択'; $('render-state').textContent = '表示を更新中…';
+    $('save-image').disabled = true;
     if (current.rangeMode === 'common') {
-      if (!commonRanges.has(current.mode)) commonRanges.set(current.mode, Stack3D.computeCommonRanges(sections, current.mode));
+      if (!commonRanges.has(current.mode)) commonRanges.set(current.mode, Stack3D.computeCommonRanges(enabled, current.mode));
       current.commonRanges = commonRanges.get(current.mode);
     }
     let unavailable = 0;
     for (let i = 0; i < sections.length; i++) {
       if (generation !== renderGeneration) return;
-      const result = Stack3D.renderSection(sections[i], current), old = rendered[i]; rendered[i] = result;
+      const result = Stack3D.renderSection(sections[i], enabled.length ? current : { ...current, channels: [] }), old = rendered[i]; rendered[i] = result;
       renderer?.updateTextures(new Map([[sections[i].id, result.canvas]])); releaseRender(old);
-      if (result.status.code === 'UNAVAILABLE') unavailable++;
+      if (!hiddenSectionIds.has(sections[i].id) && result.status.code === 'UNAVAILABLE') unavailable++;
       if (i % 4 === 3) await yieldUI();
     }
     if (generation !== renderGeneration) return;
-    $('render-state').textContent = `${current.mode === 'raw' ? '原値' : '補正値'} · ${sections.length}切片${unavailable ? ` / ${unavailable}切片は表示不可` : ''}`;
+    $('render-state').textContent = `${current.mode === 'raw' ? '原値' : '補正値'} · ON ${enabled.length} / ${sections.length}切片${unavailable ? ` / ${unavailable}切片は表示不可` : ''}`;
+    $('save-image').disabled = busy || !renderer || !$('render-error').hidden;
     updateList(); await refreshPreview(); saveView();
   }
   function requestRepaint() {
@@ -231,21 +243,47 @@
   function buildList() {
     $('section-list').replaceChildren();
     sections.forEach((section, index) => {
-      const button = document.createElement('button'); button.className = 'section-row'; button.dataset.index = index;
-      button.setAttribute('role', 'listitem'); button.setAttribute('aria-label', `${index + 1} ${section.name}`);
+      const row = document.createElement('div'); row.className = 'section-row'; row.dataset.index = index; row.setAttribute('role', 'listitem');
+      const toggle = document.createElement('input'); toggle.type = 'checkbox'; toggle.className = 'section-visible'; toggle.dataset.sectionId = section.id;
+      toggle.setAttribute('aria-label', `${section.name}を3D表示`); toggle.setAttribute('aria-describedby', 'visibility-help');
+      toggle.addEventListener('change', () => setSectionVisible(section.id, toggle.checked));
+      const button = document.createElement('button'); button.className = 'section-select'; button.setAttribute('aria-label', `${index + 1} ${section.name}`);
       const rank = document.createElement('span'), name = document.createElement('span'); rank.className = 'rank'; rank.textContent = String(index + 1).padStart(2, '0'); name.textContent = section.name;
-      button.append(rank, name); button.addEventListener('click', () => selectSection(index)); $('section-list').append(button);
+      button.append(rank, name); button.addEventListener('click', () => selectSection(index)); row.append(toggle, button); $('section-list').append(row);
     });
     filterList(); updateList();
   }
   function updateList() {
     for (const row of $('section-list').children) {
       const index = Number(row.dataset.index), section = sections[index]; row.setAttribute('aria-current', String(index === selected)); row.querySelector('.status-dot,.dirty-dot')?.remove();
-      if (dirtyPlacements.has(section.id) || rendered[index]?.status.code === 'UNAVAILABLE') {
+      const visible = !hiddenSectionIds.has(section.id);
+      row.querySelector('.section-visible').checked = visible; row.querySelector('.section-visible').disabled = busy;
+      row.querySelector('.section-select').setAttribute('aria-current', String(index === selected)); row.querySelector('.section-select').disabled = busy;
+      row.classList.toggle('section-off', !visible);
+      if (dirtyPlacements.has(section.id) || (visible && rendered[index]?.status.code === 'UNAVAILABLE')) {
         const dot = document.createElement('span'); dot.className = dirtyPlacements.has(section.id) ? 'dirty-dot' : 'status-dot'; dot.textContent = dirtyPlacements.has(section.id) ? '•' : '';
         dot.title = dirtyPlacements.has(section.id) ? '配置の未保存変更' : '現在の表示値を表示できません'; row.append(dot);
       }
     }
+    updateVisibilityStatus();
+  }
+  function updateVisibilityStatus() {
+    const count = sections.length - hiddenSectionIds.size;
+    $('visibility-status').textContent = count ? `ON ${count} / ${sections.length}切片 · OFF ${hiddenSectionIds.size}` : 'ON 0切片 · 全切片がOFFです。チェックを入れると再表示できます。';
+    $('enable-all-sections').disabled = busy || !hiddenSectionIds.size;
+  }
+  function visibilityChanged() {
+    // Invalidate BOTH raw and corrected display windows. Stored normalization
+    // references and scientific arrays remain untouched.
+    commonRanges.clear(); previewGeneration++; detailGeneration++;
+    $('preview-dialog').close();
+    renderer?.setHiddenSections(hiddenSectionIds); updateList(); saveView();
+    requestRepaint();
+  }
+  function setSectionVisible(id, visible) {
+    if (busy || !sections.some(section => section.id === id)) return;
+    if (visible) hiddenSectionIds.delete(id); else hiddenSectionIds.add(id);
+    visibilityChanged();
   }
   function filterList() { const query = $('section-search').value.trim().toLowerCase(); for (const row of $('section-list').children) row.hidden = !sections[Number(row.dataset.index)].name.toLowerCase().includes(query); }
   function selectSection(index, cutBefore = false) {
@@ -274,10 +312,20 @@
     const angle = section.angleDeg * Math.PI / 180;
     return maxSize / Math.max(Math.abs(width * Math.cos(angle)) + Math.abs(height * Math.sin(angle)), Math.abs(width * Math.sin(angle)) + Math.abs(height * Math.cos(angle)));
   }
+  function msiPreviewMessage() {
+    if (hiddenSectionIds.size === sections.length) return '切片一覧から表示をONにしてください。';
+    const current = options(), ranges = commonRanges.get(current.mode);
+    if (!ranges) return '表示を更新中…';
+    if (!current.channels.length) return '表示する分子を選択してください。';
+    if (!current.channels.some(name => ranges[name]?.nFinite > 0)) return 'ONの切片に表示できる値がありません。分子・表示値を確認してください。';
+    return '';
+  }
   async function preview(index, kind, maxSize = 1024) {
     const section = sections[index], image = rendered[index]; if (!image) return null;
     if (kind === 'MSI') {
+      if (msiPreviewMessage()) return null;
       const current = options(); current.commonRanges = commonRanges.get(current.mode);
+      current.channels = current.channels.filter(name => current.commonRanges[name]?.nFinite > 0);
       const result = Stack3D.renderSection(section, { ...current, previewPixelScale: previewScale(section, maxSize), roi: true });
       result.canvas.width = 0; result.canvas.height = 0; return result.previewCanvas;
     }
@@ -289,14 +337,17 @@
     const section = sections[index], status = rendered[index]?.status; if (!section || !status) return '';
     const roi = Stack3D.roiSummary(section);
     const roiText = roi.totalPolygons ? `ROI輪郭 ${roi.visiblePolygons} / ${roi.totalPolygons}` : 'ROI未登録';
-    if (previewKind === 'ATLAS') return '参照用の2Dアトラス画像';
-    if (previewKind === 'HE_Stain') return `保存された位置合わせのHE画像 · ${roiText}`;
+    const off = hiddenSectionIds.has(section.id) ? '3D表示OFF・共通色範囲の計算対象外 · ' : '';
+    if (previewKind === 'ATLAS') return off + '参照用の2Dアトラス画像';
+    if (previewKind === 'HE_Stain') return off + `保存された位置合わせのHE画像 · ${roiText}`;
+    if (hiddenSectionIds.size === sections.length) return '全切片がOFFです。切片一覧から表示をONにしてください。';
+    if (msiPreviewMessage()) return off + msiPreviewMessage();
     const text = [options().mode === 'raw' ? '原値を表示' : '補正値を表示'];
     if (status.code === 'UNAVAILABLE') text[0] = status.message || '表示できる値がありません。分子・表示値を確認してください。'; else if (status.message) text.push(status.message);
     if (status.unavailableChannels?.length && status.code !== 'UNAVAILABLE') text.push(`表示不可：${status.unavailableChannels.join('・')}`);
     if (options().mode === 'normalized' && status.code === 'PROVISIONAL') text.push('保存された暫定補正を使用');
     text.push(roiText);
-    return text.join(' · ');
+    return off + text.join(' · ');
   }
   async function refreshPreview() {
     const generation = ++previewGeneration, index = selected, kind = previewKind; if (!sections[index]) return; updateLabels();
@@ -316,7 +367,7 @@
       try {
         const element = await preview(index, kind);
         if (generation !== previewGeneration) { releasePreview(element); continue; }
-        replacePreview($('section-preview'), element); $('section-preview').dataset.previewKind = kind;
+        replacePreview($('section-preview'), element, kind === 'MSI' ? msiPreviewMessage() : undefined); $('section-preview').dataset.previewKind = kind;
       } catch (error) {
         if (generation === previewGeneration) { replacePreview($('section-preview'), null, error.message); $('section-preview').dataset.previewKind = kind; }
       }
@@ -333,18 +384,19 @@
     if (!sections[index] || busy) return;
     const name = { MSI: 'MSI＋ROI', HE_Stain: 'HE＋ROI', ATLAS: 'Atlas' }[kind];
     $('detail-title').textContent = `${sections[index].name} · ${name}`;
-    $('detail-status').textContent = kind === 'MSI' ? 'MSIは元の測定画素を表示しています。' : '登録された元画像の解像度を活かして表示しています。';
+    $('detail-status').textContent = previewStatus(index);
     delete $('detail-preview').dataset.previewKind;
     replacePreview($('detail-preview'), null, '画像を準備中…'); $('preview-dialog').showModal();
     try {
       const element = await preview(index, kind, 2048);
       if (generation !== detailGeneration || !$('preview-dialog').open) { releasePreview(element); return; }
-      replacePreview($('detail-preview'), element); $('detail-preview').dataset.previewKind = kind;
+      replacePreview($('detail-preview'), element, kind === 'MSI' ? msiPreviewMessage() : undefined); $('detail-preview').dataset.previewKind = kind;
     } catch (error) { if (generation === detailGeneration && $('preview-dialog').open) replacePreview($('detail-preview'), null, error.message); }
   }
   function renderLegend(index) {
     $('range-legend').replaceChildren(); const format = n => Number.isFinite(n) ? Number(n).toLocaleString('en-US', { maximumSignificantDigits: 4 }) : '—';
-    for (const [name, range] of Object.entries(rendered[index]?.ranges || {})) {
+    for (const [name, range] of Object.entries(commonRanges.get(options().mode) || {})) {
+      if (!range.memberIds?.length || !options().channels.includes(name)) continue;
       const row = document.createElement('div'), label = document.createElement('span'), value = document.createElement('span'); row.className = 'range-row'; label.textContent = name;
       value.textContent = `${format(range.min)} – ${format(range.max)}`; row.append(label, value); $('range-legend').append(row);
     }
@@ -407,6 +459,7 @@
   $('spacing').addEventListener('input', () => { renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
   for (const id of ['range-start', 'range-end']) $(id).addEventListener('change', setRange);
   $('show-all').addEventListener('click', () => { $('range-start').value = 1; $('range-end').value = sections.length; setRange(); });
+  $('enable-all-sections').addEventListener('click', () => { if (busy) return; hiddenSectionIds.clear(); visibilityChanged(); });
   $('section-slider').addEventListener('input', () => selectSection($('section-slider').value, true));
   $('previous-section').addEventListener('click', () => selectSection(selected - 1, true)); $('next-section').addEventListener('click', () => selectSection(selected + 1, true));
   $('section-search').addEventListener('input', filterList);
@@ -442,6 +495,7 @@
   }
   global.AppVersion?.paint?.();
   global.Atlas3D = { get sections() { return sections; }, get selected() { return selected; }, get rendered() { return rendered; },
+    get hiddenSectionIds() { return [...hiddenSectionIds]; },
     get renderer() { return renderer; }, get sourceChanged() { return sourceChanged; }, options, selectSection };
   load();
 })(window);
