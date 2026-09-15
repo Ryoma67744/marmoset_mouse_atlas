@@ -50,6 +50,7 @@
       // writes depth, and this explicit order composites HE first, then MSI,
       // without introducing an artificial Z offset or depth-buffer fighting.
       visible.forEach((entry, index) => { entry.he.mesh.renderOrder = index * 2; entry.mesh.renderOrder = index * 2 + 1; });
+      entries.forEach(entry => entry.roi?.faceCamera(camera));
       try { renderer.render(scene, camera); renderCount++; } catch (error) { report(error); }
     }
     function scheduleRender() {

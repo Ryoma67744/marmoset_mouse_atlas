@@ -50,7 +50,8 @@ async function seed(h, { brightOutlier = false } = {}) {
 }
 
 async function ready(page, count) {
-  await page.waitForFunction(n => window.__stack3dReady && window.Atlas3D && Atlas3D.sections.length === n, count);
+  try { await page.waitForFunction(n => window.__stack3dReady && window.Atlas3D && Atlas3D.sections.length === n, count); }
+  catch (error) { throw new Error(await page.locator("#notice").innerText(), { cause: error }); }
   assert.equal(await page.locator('#render-error').isVisible(), false, 'WebGL should initialize in the CI browser');
   await page.waitForFunction(n => Atlas3D.renderer && Atlas3D.renderer.getStats().sectionCount === n && Atlas3D.renderer.getStats().renderCount > 0, count);
 }
