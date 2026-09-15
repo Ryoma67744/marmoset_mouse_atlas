@@ -42,6 +42,7 @@ async function seed(h, { brightOutlier = false } = {}) {
     sessionStorage.setItem('marmoset:currentFolder', 'coronal');
     sessionStorage.removeItem('atlas-stack3d-selection');
     sessionStorage.removeItem('atlas-stack3d-view-v1');
+    sessionStorage.removeItem('atlas-stack3d-layout-v1');
   }, { ids: IDS, brightOutlier });
   await h.context.route(h.baseURL + '/lib/cloud-config.js', route => route.fulfill({
     contentType: 'application/javascript', body: 'window.CLOUD_CONFIG = {};'
@@ -103,6 +104,65 @@ function sameView(actual, expected) {
   assert.equal(actual.zoom, expected.zoom);
 }
 
+test('initial spacing is exactly 1.7x and only the former session default migrates', { timeout: 90000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await page.goto(h.baseURL + '/stack3d/index.html'); await ready(page, 3);
+    assert.equal(await page.locator('#spacing').inputValue(), '0.595');
+    assert.equal(await page.locator('#spacing-value').innerText(), '1.7×');
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().spacing), 0.595);
+    for (const [spacing, version, expected] of [[0.35, null, 0.595], [0.61, null, 0.61], [0.35, 1, 0.35]]) {
+      await seed(h);
+      await page.evaluate(({ ids, spacing, version }) => sessionStorage.setItem('atlas-stack3d-view-v1', JSON.stringify({
+        ids, spacing, spacingDefaultsVersion: version, options: { mode: 'raw' }
+      })), { ids: IDS, spacing, version });
+      await page.goto(h.baseURL + '/stack3d/index.html'); await ready(page, 3);
+      assert.equal(Number(await page.locator('#spacing').inputValue()), expected);
+    }
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('sidebar drag preserves MSI HE and Atlas dimensions and restores layout without changing data or camera', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await seedReferenceImages(page);
+    const before = await rawBits(page);
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second'); await ready(page, 3);
+    const view = await page.evaluate(() => Atlas3D.renderer.getView());
+    const size = () => page.locator('#section-preview').evaluate(e => [e.getBoundingClientRect().width, e.getBoundingClientRect().height]);
+    const initial = await size(), panelWidth = (await page.locator('#section-panel').boundingBox()).width;
+    const handle = page.locator('#section-resizer'), box = await handle.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + 100); await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 - 120, box.y + 100, { steps: 8 }); await page.mouse.up();
+    assert.ok((await page.locator('#section-panel').boundingBox()).width > panelWidth + 80);
+    assert.deepEqual(await size(), initial);
+    for (const kind of ['MSI', 'HE_Stain', 'ATLAS']) {
+      await page.locator('[data-preview="' + kind + '"]').click();
+      await page.waitForFunction(kind => document.getElementById('section-preview').dataset.previewKind === kind && document.querySelector('#section-preview canvas,#section-preview img'), kind);
+      const nativeBefore = await page.locator('#section-preview canvas,#section-preview img').evaluate(e => [e.width, e.height]);
+      await handle.focus(); await page.keyboard.press('Home');
+      assert.deepEqual(await size(), initial);
+      assert.equal(await page.locator('#preview-viewport').evaluate(e => e.scrollWidth > e.clientWidth), true);
+      assert.deepEqual(await page.locator('#section-preview canvas,#section-preview img').evaluate(e => [e.width, e.height]), nativeBefore);
+      await page.keyboard.press('End'); assert.deepEqual(await size(), initial);
+    }
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    const savedWidth = (await page.locator('#section-panel').boundingBox()).width;
+    await page.locator('#open-section').click(); await page.waitForURL('**/viewer/index.html?project=stack-second&from=stack3d');
+    await page.waitForFunction(() => viewerReady); await page.locator('#back-stack3d').click(); await ready(page, 3);
+    assert.equal((await page.locator('#section-panel').boundingBox()).width, savedWidth);
+    assert.deepEqual(await size(), initial);
+    await page.reload(); await ready(page, 3); assert.deepEqual(await size(), initial);
+    const viewport = page.viewportSize(); await page.setViewportSize({ width: 700, height: 900 });
+    assert.equal(await handle.isVisible(), false);
+    await page.setViewportSize(viewport); assert.deepEqual(await size(), initial);
+    await handle.dblclick();
+    assert.equal(await page.evaluate(() => sessionStorage.getItem('atlas-stack3d-layout-v1')), null);
+    assert.deepEqual(await rawBits(page), before); assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
 test('Master subset opens a 3D stack and section detail returns with camera, controls and selected section preserved', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
@@ -145,7 +205,7 @@ test('Master subset opens a 3D stack and section detail returns with camera, con
     assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
     assert.equal(await page.locator('#he-visible').isChecked(), false);
     assert.equal(await page.locator('#he-opacity').inputValue(), '0.27');
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [1, 1], 'section cutoff survives the detail round trip');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 1], 'section cutoff survives the detail round trip');
     assert.equal(await page.locator('input[name="channel"][value="NE"]').isChecked(), false);
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
     await page.locator('#master-link').click();
@@ -193,7 +253,7 @@ test('normalized 3D mode exposes a skipped correction without rendering or pooli
   } finally { await h.close(); }
 });
 
-test('common color ranges override older sessions and the bottom scrubber hides earlier sections until reset', { timeout: 90000 }, async () => {
+test('common color ranges override older sessions and the bottom scrubber hides later sections until reset', { timeout: 90000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
     await seed(h);
@@ -210,26 +270,45 @@ test('common color ranges override older sessions and the bottom scrubber hides 
     await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'MSI');
     assert.match(await page.locator('[data-preview="MSI"]').innerText(), /MSI.*ROI/);
     assert.match(await page.locator('[data-preview="HE_Stain"]').innerText(), /HE.*ROI/);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), IDS,
+      'initial selection of the first slice does not clip the fresh stack');
+    const rangesBefore = await page.evaluate(() => {
+      window.__rangeCalls = 0;
+      const original = Stack3D.computeCommonRanges;
+      Stack3D.computeCommonRanges = (...args) => { window.__rangeCalls++; return original(...args); };
+      return Atlas3D.rendered[0].ranges;
+    });
     await setSlider(page, '#section-slider', 1);
     assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
     let stats = await page.evaluate(() => Atlas3D.renderer.getStats());
-    assert.deepEqual(stats.range, [1, 2]);
-    assert.deepEqual(stats.visibleSectionIds, IDS.slice(1), 'the selected section and later sections remain visible');
+    assert.deepEqual(stats.range, [0, 1]);
+    assert.deepEqual(stats.visibleSectionIds, IDS.slice(0, 2), 'the selected section and earlier sections remain visible');
     assert.equal(stats.selectedIndex, 1);
+    assert.equal(await page.evaluate(() => window.__rangeCalls), 0, 'scrubbing does not recompute the common color scale');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[0].ranges), rangesBefore);
     await page.locator('#reload').click();
     await ready(page, 3);
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [1, 2], 'cutoff survives reload');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 1], 'cutoff survives reload');
     await page.locator('#previous-section').click();
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 2]);
-    await page.locator('#range-end').fill('2');
-    await page.locator('#range-end').dispatchEvent('change');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 0]);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), [IDS[0]],
+      'the first scrubber endpoint displays only the first slice');
+    await page.locator('#next-section').click();
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 1]);
     await setSlider(page, '#section-slider', 2);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), IDS,
+      'the last scrubber endpoint displays all enabled slices');
+    await page.locator('#range-start').fill('2');
+    await page.locator('#range-start').dispatchEvent('change');
+    await setSlider(page, '#section-slider', 2);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [1, 2], 'scrubbing preserves a manually limited start');
+    await setSlider(page, '#section-slider', 0);
     stats = await page.evaluate(() => Atlas3D.renderer.getStats());
-    assert.deepEqual(stats.range, [2, 2], 'scrubbing beyond the old end includes the selected section');
-    assert.deepEqual(stats.visibleSectionIds, [IDS[2]]);
+    assert.deepEqual(stats.range, [0, 0], 'scrubbing before the old start includes the selected section');
+    assert.deepEqual(stats.visibleSectionIds, [IDS[0]]);
     await page.locator('#show-all').click();
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 2]);
-    assert.equal(await page.locator('#section-name').innerText(), 'Cor_10_1');
+    assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_2');
     assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('atlas-stack3d-view-v1')).options.rangeMode), 'common');
     assert.deepEqual(await rawBits(page), before);
     assert.deepEqual(h.errors, []);
@@ -358,9 +437,11 @@ test('a hidden section remains inspectable and its OFF state survives HE changes
     assert.equal(await checkbox.isChecked(), false);
     assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
-    await setSlider(page, '#section-slider', 2);
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), [IDS[2]]);
     const rangeBefore = await page.evaluate(() => Atlas3D.rendered[0].ranges);
+    await setSlider(page, '#section-slider', 1);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), [IDS[0]],
+      'the reverse cutoff and individual OFF state are both applied');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[0].ranges), rangeBefore, 'scrubbing does not recalculate the common scale');
     await page.locator('#show-all').click();
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 2]);
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), [IDS[0], IDS[2]]);
@@ -466,8 +547,8 @@ test('HE overlay follows the cutoff, reuses GPU resources and preserves native i
     assert.equal(stats.heOpacity, 0.12);
     assert.deepEqual(stats.heVisibleSectionIds, IDS.slice(0, 2));
     const resources = { textures: stats.gpuTextures, geometries: stats.gpuGeometries };
-    await setSlider(page, '#section-slider', 1);
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[1]]);
+    await setSlider(page, '#section-slider', 0);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[0]]);
     await setSlider(page, '#he-opacity', 0.28);
     assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().heOpacity), 0.28);
     for (let i = 0; i < 4; i++) {

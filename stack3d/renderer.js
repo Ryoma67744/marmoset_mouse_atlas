@@ -25,7 +25,7 @@
     controls.enableDamping = false; controls.screenSpacePanning = true;
     controls.minDistance = 0.2; controls.maxDistance = 5000;
     const raycaster = new T.Raycaster(), pointer = new T.Vector2(), scratch = new T.Vector3();
-    let entries = [], byId = new Map(), hiddenSectionIds = new Set(), selected = -1, spacing = 0.35, opacity = 1, range = [0, -1];
+    let entries = [], byId = new Map(), hiddenSectionIds = new Set(), selected = -1, spacing = 0.595, opacity = 1, range = [0, -1];
     let heVisible = true, heOpacity = 0.12;
     let brainVisible = false, brainOpacity = 0.12, brainContext = null;
     let disposed = false, contextLost = false, pendingFrame = null, renderCount = 0, pointerDown = null, viewSet = false;
