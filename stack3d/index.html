@@ -24,7 +24,7 @@
       <div class="control-block"><label for="value-mode">表示値</label><select id="value-mode"><option value="raw">原値</option><option value="normalized">補正値</option></select></div>
       <div class="control-block"><span class="control-label">色の範囲</span><p class="fixed-value">全切片共通 · 分子ごと</p><p id="range-note" class="hint">ONの切片で色範囲を揃えます。OFFにすると残りの切片で再計算します。</p></div>
       <div class="control-block"><label for="opacity">不透明度 <output id="opacity-value">55%</output></label><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.55"></div>
-      <div class="control-block he-controls"><label for="he-visible" class="toggle-label"><span>HEを重ねる</span><input id="he-visible" type="checkbox" checked></label><label for="he-opacity">HEの不透明度 <output id="he-opacity-value">12%</output></label><input id="he-opacity" type="range" min="0.01" max="0.4" step="0.01" value="0.12"><p id="he-status" class="hint" role="status">保存された位置合わせで薄く重ねます。</p></div>
+      <div class="control-block roi-controls"><label class="toggle-label" for="roi-visible"><span>ROIを3Dに表示</span><input id="roi-visible" type="checkbox" checked></label><label class="toggle-label" for="roi-labels"><span>領域名（選択切片）</span><input id="roi-labels" type="checkbox" checked></label><label for="roi-region">表示する領域</label><select id="roi-region"><option value="">全領域</option></select><p class="hint">領域を選ぶと、そのROI内のMSIのみを表示します。色範囲は変わりません。</p></div>
       <div class="control-block brain-controls"><label for="brain-visible" class="toggle-label"><span>脳のイラストを重ねる</span><input id="brain-visible" type="checkbox"></label><label for="brain-opacity">イラストの濃さ <output id="brain-opacity-value">12%</output></label><input id="brain-opacity" type="range" min="0.02" max="0.35" step="0.01" value="0.12" disabled><p class="hint">マーモセット脳の模式図です。実際の脳への位置合わせは行っていません。</p></div>
       <div class="control-block"><label for="threshold">低信号の透過 <output id="threshold-value">0%</output></label><input id="threshold" type="range" min="0" max="0.95" step="0.01" value="0"><p class="hint">表示のみを調整します。測定値は変わりません。</p></div>
       <div class="control-block"><label for="spacing">切片の間隔 <output id="spacing-value">1.7×</output></label><input id="spacing" type="range" min="0.08" max="2" step="0.005" value="0.595"><p class="hint">前後方向は切片順です。間隔は表示上の距離です。</p></div>
@@ -76,6 +76,7 @@
   <script src="../lib/stack3d.js"></script>
   <script src="vendor/three-orbit.min.js"></script>
   <script src="brain-context.js"></script>
+  <script src="roi.js"></script>
   <script src="renderer.js"></script>
   <script src="panel-resize.js"></script>
   <script src="app.js"></script>
