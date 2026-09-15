@@ -1,6 +1,6 @@
 {
   "name": "marmoset-mouse-atlas-verification",
-  "version": "2.19.0",
+  "version": "2.20.0",
   "private": true,
   "description": "Development-only verification for the static Atlas app",
   "scripts": {

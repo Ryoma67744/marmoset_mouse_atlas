@@ -26,6 +26,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: stack3d-preview
-          path: test-artifacts/stack3d-brain-preview.png
+          path: test-artifacts/stack3d-*.png
           if-no-files-found: ignore
           retention-days: 3

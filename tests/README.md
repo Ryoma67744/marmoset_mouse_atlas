@@ -37,6 +37,17 @@ The browser suite exercises Master selection, WebGL rendering, controls,
 section-detail navigation and return state, and concurrent placement/ROI edits.
 Only synthetic rasters are committed; private study data is not a test fixture.
 
+The v2.20 alignment candidates use exact-name ROI union-mask pixel centroids in
+physical coordinates from both immediate loaded neighbors. Numerical checks
+cover unequal XY pitch, saved rotation and offsets, proper rigid composition,
+equal ROI weights, edge/area defaults and degenerate cases. Browser regressions
+cover read-only calculation, ROI choice, preview/original comparison, manual
+tuning, cancellation to a pre-existing draft, explicit adoption and placement-only
+save/reload. Changes to central or neighboring ROI/geometry/placement invalidate
+the candidate's save dependencies. Raw rasters remain bitwise identical and the
+normalization, ROI, image-registration and display metadata remain unchanged.
+These checks validate the software workflow, not anatomical registration accuracy.
+
 Display ranges in v2.12 are versioned separately from immutable normalization
 profiles. Tests cover exact finite nearest-rank P99, sparse/all-zero/signed data,
 per-molecule raw/normalized manual settings, reversible legacy migration and

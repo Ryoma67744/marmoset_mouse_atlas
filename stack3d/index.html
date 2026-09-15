@@ -50,7 +50,26 @@
       <button id="enlarge-preview" class="text-button preview-enlarge" disabled>画像を拡大 ↗</button>
       <p id="section-status" class="section-status" role="status"></p>
       <button id="open-section" class="primary wide">この断面を開く <span>↗</span></button>
-      <details id="placement-details" class="placement"><summary>切片の位置を調整</summary><p class="hint">この切片全体の3D配置を調整します。</p><div class="placement-grid"><label>X (µm)<input id="offset-x" type="number" step="100" value="0"></label><label>Y (µm)<input id="offset-y" type="number" step="100" value="0"></label><label>回転 (°)<input id="rotation" type="number" step="1" value="0"></label></div><div class="placement-actions"><button id="reset-placement">リセット</button><button id="save-placement">配置を保存</button></div><button id="save-cloud" class="wide" hidden>クラウドに保存</button><p id="placement-status" class="hint" role="status"></p></details>
+      <details id="placement-details" class="placement">
+        <summary>切片の位置を調整</summary>
+        <p class="hint">この切片全体の3D配置を調整します。MSIとROIは一緒に動きます。</p>
+        <div class="alignment-controls">
+          <button id="alignment-calculate" class="wide">前後のROIから配置候補を計算</button>
+          <p class="hint">一覧で前後にある切片の同名ROIを使い、選択中の切片だけの移動・回転を提案します。実寸と測定値は保ちます。</p>
+          <p id="alignment-message" class="hint" role="status"></p>
+          <div id="alignment-result" hidden>
+            <div id="alignment-rois" role="group" aria-label="配置候補の計算に使うROI"></div>
+            <p id="alignment-summary" class="hint" role="status"></p>
+            <button id="alignment-preview" class="wide" aria-pressed="false">候補を仮表示</button>
+            <div class="placement-actions"><button id="alignment-adopt">この候補を採用</button><button id="alignment-cancel">候補を取り消す</button></div>
+            <p class="hint">仮表示中は下の数値で微調整できます。採用後に「配置を保存」を押してください。切片を切り替えると未採用の候補は取り消されます。</p>
+          </div>
+          <p class="hint">3領域以上を同じ重みで比較します。前後は表示順の等間隔として扱います。重心の一致は解剖学的な正しさを保証しないため、ROIの輪郭も確認してください。</p>
+        </div>
+        <div class="placement-grid"><label>X (µm)<input id="offset-x" type="number" step="any" value="0"></label><label>Y (µm)<input id="offset-y" type="number" step="any" value="0"></label><label>回転 (°)<input id="rotation" type="number" step="any" value="0"></label></div>
+        <div class="placement-actions"><button id="reset-placement">リセット</button><button id="save-placement">配置を保存</button></div>
+        <button id="save-cloud" class="wide" hidden>クラウドに保存</button><p id="placement-status" class="hint" role="status"></p>
+      </details>
       <div class="list-heading"><label for="section-search">切片一覧 · 3D表示 ON/OFF</label><input id="section-search" type="search" placeholder="Cor_…" autocomplete="off"><p id="visibility-help" class="hint">チェックを外すと3D表示と共通色範囲の計算から除外します。</p><div class="visibility-actions"><span id="visibility-status" role="status" aria-live="polite"></span><button id="enable-all-sections" class="text-button" disabled>すべてON</button></div></div><div id="section-list" class="section-list" role="list" aria-label="切片一覧"></div>
     </aside>
   </main>
@@ -74,6 +93,7 @@
   <script src="../lib/project-sync.js"></script>
   <script src="../lib/section-display.js"></script>
   <script src="../lib/stack3d.js"></script>
+  <script src="../lib/stack3d-alignment.js"></script>
   <script src="vendor/three-orbit.min.js"></script>
   <script src="brain-context.js"></script>
   <script src="roi.js"></script>
