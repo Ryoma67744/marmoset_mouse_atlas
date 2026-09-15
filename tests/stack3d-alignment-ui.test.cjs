@@ -224,6 +224,7 @@ test('endpoint alignment cannot preview and unadopted candidates are discarded o
 
 test('changed central or neighboring ROI and placement invalidate adopted alignment before persistence', { timeout: 180000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
+  page.on('dialog', dialog => dialog.accept());
   try {
     for (const kind of ['central-roi', 'neighbor-roi', 'neighbor-placement']) {
       await seed(h); await open(h);
