@@ -84,6 +84,9 @@ async function setPlacement(page, placement) {
     await page.locator('#' + id).fill(String(placement[key]));
   }
   await page.locator('#rotation').dispatchEvent('change');
+  // Commit the native focused-input change before installing spies or clicking
+  // Calculate; otherwise that click's blur would look like a calculation write.
+  await page.locator('#rotation').evaluate(element => element.blur());
 }
 
 async function calculate(page) {
