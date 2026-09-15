@@ -26,9 +26,10 @@
     controls.minDistance = 0.2; controls.maxDistance = 5000;
     const raycaster = new T.Raycaster(), pointer = new T.Vector2(), scratch = new T.Vector3();
     let entries = [], byId = new Map(), hiddenSectionIds = new Set(), selected = -1, spacing = 0.595, opacity = 1, range = [0, -1];
-    let heVisible = true, heOpacity = 0.12;
+    let heVisible = false, heOpacity = 0.12;
     let brainVisible = false, brainOpacity = 0.12, brainContext = null;
     let disposed = false, contextLost = false, pendingFrame = null, renderCount = 0, pointerDown = null, viewSet = false;
+    let roiSettings = { visible: true, region: "", labelsVisible: true };
     const pointers = new Set();
     const outlineGeometry = new T.BufferGeometry();
     outlineGeometry.setAttribute('position', new T.Float32BufferAttribute([-0.5,-0.5,0, 0.5,-0.5,0, 0.5,0.5,0, -0.5,0.5,0], 3));
@@ -66,6 +67,7 @@
       entry.mesh.rotation.z = -(d.angleDeg + d.rotationDeg) * RAD;
       entry.mesh.position.set(d.offsetXUm / 1000, -d.offsetYUm / 1000, (entry.index - (entries.length - 1) / 2) * spacing);
       entry.mesh.updateMatrixWorld();
+      if (entry.roi) { entry.roi.group.position.copy(entry.mesh.position); entry.roi.group.rotation.copy(entry.mesh.rotation); }
       entry.he.mesh.rotation.z = -(d.heAngleDeg + d.rotationDeg) * RAD;
       entry.he.mesh.position.copy(entry.mesh.position); entry.he.mesh.updateMatrixWorld();
     }
@@ -82,8 +84,14 @@
         entry.mesh.visible = enabled && !!entry.texture;
         entry.he.mesh.visible = enabled && heVisible && heOpacity > 0 && !!entry.he.texture;
       }
-      updateOutline(); scheduleRender();
+      updateRoi(); updateOutline(); scheduleRender();
     }
+    function updateRoi() {
+      for (const entry of entries) entry.roi?.update({ ...roiSettings,
+        visible: roiSettings.visible && entry.index >= range[0] && entry.index <= range[1] && !hiddenSectionIds.has(entry.descriptor.id),
+        labelsVisible: roiSettings.labelsVisible && entry.index === selected });
+    }
+    function setRoiOverlay(settings) { roiSettings = { ...roiSettings, ...settings }; updateRoi(); scheduleRender(); }
     function setTexture(entry, source, { smooth = false, name = entry.descriptor?.name || 'HE' } = {}) {
       if (!source || !source.width || !source.height) {
         if (entry.texture) entry.texture.dispose();
@@ -108,6 +116,7 @@
       catch (_) { entry.alphaPixels = null; }
     }
     function release(entry) {
+      if (entry.roi) { scene.remove(entry.roi.group); entry.roi.dispose(); }
       scene.remove(entry.mesh); entry.mesh.geometry.dispose(); entry.mesh.material.dispose();
       if (entry.texture) entry.texture.dispose(); entry.alphaPixels = null;
       scene.remove(entry.he.mesh); entry.he.mesh.material.dispose();
@@ -147,6 +156,8 @@
             he: { mesh: heMesh, texture: null, alphaPixels: null } };
           scene.add(heMesh, mesh);
         }
+        if (entry.roi) { scene.remove(entry.roi.group); entry.roi.dispose(); }
+        entry.roi = global.Stack3DRoi.create(T, doc, d); scene.add(entry.roi.group);
         entry.mesh.userData.sectionId = d.id; entry.mesh.userData.layer = 'msi';
         entry.he.mesh.userData.sectionId = d.id; entry.he.mesh.userData.layer = 'he'; byId.set(d.id, entry);
         if (Object.hasOwn(d, 'textureCanvas')) setTexture(entry, d.textureCanvas);
@@ -222,7 +233,7 @@
       // bounds, textures, camera, and schematic brain geometry.
       updateVisibility();
     }
-    function select(index) { selected = Number.isInteger(index) && index >= 0 && index < entries.length ? index : -1; updateOutline(); scheduleRender(); }
+    function select(index) { selected = Number.isInteger(index) && index >= 0 && index < entries.length ? index : -1; updateRoi(); updateOutline(); scheduleRender(); }
     function setPlacement(id, values = {}) {
       const entry = byId.get(String(id)); if (!entry) return;
       for (const key of ['offsetXUm', 'offsetYUm', 'rotationDeg']) if (Object.hasOwn(values, key)) entry.descriptor[key] = finite(values[key], entry.descriptor[key]);
@@ -328,7 +339,7 @@
     }
     function setOpacity(value) { opacity = Math.max(0, Math.min(1, finite(value, opacity))); for (const entry of entries) entry.mesh.material.opacity = opacity; scheduleRender(); }
     function getStats() {
-      return { threeVersion: '186', sectionCount: entries.length, visibleCount: entries.filter(e => e.mesh.visible).length,
+      return { roi: entries.map(e => ({ id: e.descriptor.id, ...e.roi.stats() })), threeVersion: '186', sectionCount: entries.length, visibleCount: entries.filter(e => e.mesh.visible).length,
         textureCount: entries.filter(e => e.texture).length, selectedIndex: selected, spacing, range: [...range], opacity,
         heVisible, heOpacity, heTextureCount: entries.filter(e => e.he.texture).length,
         brainVisible, brainOpacity, brainObjectCount: brainContext?.getStats().objectCount || 0,
@@ -355,7 +366,7 @@
       entries.forEach(release); entries = []; byId.clear(); hiddenSectionIds.clear(); releaseBrainContext(); outlineGeometry.dispose(); outlineMaterial.dispose();
       renderer.dispose(); renderer.forceContextLoss(); canvas.remove();
     }
-    return { setSections, updateTextures, updateHeTextures, setHeOverlay, setBrainContext, setSpacing, setRange, setHiddenSections, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
+    return { setRoiOverlay, setSections, updateTextures, updateHeTextures, setHeOverlay, setBrainContext, setSpacing, setRange, setHiddenSections, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
   }
   global.Stack3DRenderer = { createRenderer };
 })(window);

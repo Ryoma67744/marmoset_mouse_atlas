@@ -104,6 +104,53 @@ function sameView(actual, expected) {
   assert.equal(actual.zoom, expected.zoom);
 }
 
+test('3D ROI contours labels and regional MSI filtering follow visibility without changing scientific values', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await seedReferenceImages(page);
+    await page.evaluate(async ids => {
+      for (const id of ids.slice(0, 2)) {
+        const p = await ProjectStorage.getProject(id);
+        p.roi = { roi_names: { left: '領域A', right: '領域B' }, palette: { left: [0,255,255], right: [255,0,255] },
+          roi_items: { left: [{ poly_msi: [[-.5,-.5],[1.5,-.5],[1.5,2.5],[-.5,2.5]] }],
+            right: [{ poly_msi: [[1.5,-.5],[4.5,-.5],[4.5,2.5],[1.5,2.5]] }] } };
+        await ProjectStorage.putProject(p);
+      }
+    }, IDS);
+    const before = await rawBits(page), stored = await page.evaluate(() => ProjectStorage.listProjects());
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second'); await ready(page, 3);
+    assert.equal(await page.locator('#he-visible').count(), 0);
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().heTextureCount), 0);
+    let roi = await page.evaluate(() => Atlas3D.renderer.getStats().roi);
+    assert.deepEqual(roi[1].labels, ['領域A','領域B']); assert.equal(roi[0].labels.length, 0);
+    const ranges = await page.evaluate(() => Atlas3D.rendered[1].ranges);
+    await page.locator('#roi-region').selectOption('領域A');
+    await page.waitForFunction(() => {
+      const c = Atlas3D.rendered[1].canvas, d = c.getContext('2d').getImageData(0,0,4,2).data;
+      return d[3] > 0 && d[2*4+3] === 0 && d[3*4+3] === 0;
+    });
+    roi = await page.evaluate(() => Atlas3D.renderer.getStats().roi);
+    assert.equal(roi[1].contours, 1); assert.deepEqual(roi[1].labels, ['領域A']);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[1].ranges), ranges);
+    await page.locator('#roi-labels').uncheck();
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().roi[1].labels), []);
+    await page.locator('#roi-visible').uncheck();
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().roi[1].contours), 0);
+    await page.locator('#roi-visible').check(); await page.locator('#roi-labels').check();
+    await page.locator('input.section-visible[data-section-id="stack-second"]').uncheck();
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().roi[1].contours), 0);
+    await page.locator('input.section-visible[data-section-id="stack-second"]').check();
+    await page.reload(); await ready(page, 3);
+    assert.equal(await page.locator('#roi-region').inputValue(), '領域A');
+    await page.locator('#roi-region').selectOption('');
+    await page.waitForFunction(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(3,0,1,1).data[3] > 0);
+    await page.locator('[data-preview="HE_Stain"]').click();
+    await page.waitForFunction(() => document.querySelector('#section-preview canvas')?.width >= 128 && document.getElementById('section-preview').dataset.previewKind === 'HE_Stain');
+    assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored); assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
 test('initial spacing is exactly 1.7x and only the former session default migrates', { timeout: 90000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
@@ -179,8 +226,6 @@ test('Master subset opens a 3D stack and section detail returns with camera, con
     await setSlider(page, '#spacing', 0.61);
     assert.equal(await page.locator('#range-mode').count(), 0, 'color range is no longer an editable choice');
     assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
-    await setSlider(page, '#he-opacity', 0.27);
-    await page.locator('#he-visible').uncheck();
     await page.locator('input[name="channel"][value="NE"]').uncheck();
     await page.locator('#next-section').click();
     await page.waitForFunction(() => document.getElementById('section-name').textContent === 'Cor_1_10');
@@ -203,8 +248,6 @@ test('Master subset opens a 3D stack and section detail returns with camera, con
     assert.equal(await page.locator('#threshold').inputValue(), '0.2');
     assert.equal(await page.locator('#spacing').inputValue(), '0.61');
     assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
-    assert.equal(await page.locator('#he-visible').isChecked(), false);
-    assert.equal(await page.locator('#he-opacity').inputValue(), '0.27');
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 1], 'section cutoff survives the detail round trip');
     assert.equal(await page.locator('input[name="channel"][value="NE"]').isChecked(), false);
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
@@ -412,22 +455,20 @@ test('a hidden section remains inspectable and its OFF state survives HE changes
     const before = await rawBits(page), stored = await page.evaluate(() => ProjectStorage.listProjects());
     await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second');
     await ready(page, 3);
-    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 2);
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 0);
     const view = await page.evaluate(() => {
       const view = Atlas3D.renderer.getView(); view.position[0] += 0.3; view.zoom = 1.2;
       Atlas3D.renderer.setView(view); return Atlas3D.renderer.getView();
     });
     const checkbox = page.locator('input.section-visible[data-section-id="stack-second"]');
     await checkbox.uncheck();
-    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleSectionIds.join() === 'stack-first');
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleSectionIds.length === 0);
     assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
     assert.deepEqual(await page.evaluate(() => Atlas3D.hiddenSectionIds), [IDS[1]]);
     await page.locator('[data-preview="HE_Stain"]').click();
     await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'HE_Stain' && document.querySelector('#section-preview canvas')?.width >= 128);
-    await page.locator('#he-visible').uncheck();
-    await page.locator('#he-visible').check();
-    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 1);
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[0]]);
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 0);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), []);
     await page.locator('#open-section').click();
     await page.waitForURL('**/viewer/index.html?project=stack-second&from=stack3d');
     await page.waitForFunction(() => viewerReady);
@@ -456,7 +497,7 @@ test('a hidden section remains inspectable and its OFF state survives HE changes
     assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('atlas-stack3d-view-v1')).hiddenSectionIds), [IDS[1]]);
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
     await page.locator('#enable-all-sections').click();
-    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 2 && Atlas3D.hiddenSectionIds.length === 0);
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 0 && Atlas3D.hiddenSectionIds.length === 0);
     assert.equal(await checkbox.isChecked(), true);
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().enabledSectionIds), IDS);
     assert.deepEqual(await rawBits(page), before);
@@ -502,7 +543,7 @@ test('all sections can be OFF, rapid toggles use the final state, and an enabled
       }
     });
     await page.waitForFunction(() => Atlas3D.rendered[1]?.ranges['5-HT']?.memberIds.join() === 'stack-second' && Atlas3D.renderer.getStats().visibleSectionIds.join() === 'stack-second');
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[1]]);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), []);
     assert.equal(await page.evaluate(() => Atlas3D.rendered[1].ranges['5-HT'].max), 40);
     await page.locator('input.section-visible[data-section-id="stack-skipped"]').check();
     await page.locator('input.section-visible[data-section-id="stack-second"]').uncheck();
@@ -530,7 +571,7 @@ test('all sections can be OFF, rapid toggles use the final state, and an enabled
   } finally { await h.close(); }
 });
 
-test('HE overlay follows the cutoff, reuses GPU resources and preserves native image detail and alignment', { timeout: 120000 }, async () => {
+test('HE stays in the detail preview with native image detail and alignment', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
     await seed(h); await seedReferenceImages(page);
@@ -538,29 +579,8 @@ test('HE overlay follows the cutoff, reuses GPU resources and preserves native i
     const storedBefore = await page.evaluate(() => ProjectStorage.listProjects());
     await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second');
     await ready(page, 3);
-    await page.waitForFunction(() => {
-      const stats = Atlas3D.renderer.getStats();
-      return stats.heTextureCount === 2 && stats.heVisibleCount === 2 && stats.gpuTextures >= stats.textureCount + stats.heTextureCount;
-    });
-    assert.equal(await page.locator('#he-visible').isChecked(), true);
-    let stats = await page.evaluate(() => Atlas3D.renderer.getStats());
-    assert.equal(stats.heOpacity, 0.12);
-    assert.deepEqual(stats.heVisibleSectionIds, IDS.slice(0, 2));
-    const resources = { textures: stats.gpuTextures, geometries: stats.gpuGeometries };
-    await setSlider(page, '#section-slider', 0);
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[0]]);
-    await setSlider(page, '#he-opacity', 0.28);
-    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().heOpacity), 0.28);
-    for (let i = 0; i < 4; i++) {
-      await page.locator('#he-visible').uncheck();
-      assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleCount), 0);
-      await page.locator('#he-visible').check();
-      await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 1);
-    }
-    stats = await page.evaluate(() => Atlas3D.renderer.getStats());
-    assert.equal(stats.heTextureCount, 2);
-    assert.ok(stats.gpuTextures <= resources.textures, 'HE toggles reuse the same GPU textures');
-    assert.ok(stats.gpuGeometries <= resources.geometries, 'HE toggles reuse the same plane geometry');
+    assert.equal(await page.locator('#he-visible').count(), 0);
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().heTextureCount), 0);
     const plane = await page.evaluate(async () => {
       const section = Atlas3D.sections.find(s => s.id === 'stack-second');
       const canvas = await Stack3D.renderHePlane(section, { maxSize: 512 });
@@ -624,7 +644,7 @@ test('HE overlay follows the cutoff, reuses GPU resources and preserves native i
     assert.equal(await page.locator('#detail-preview img').evaluate(image => image.naturalHeight), 128);
     await page.keyboard.press('Escape');
     await page.locator('#show-all').click();
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), IDS.slice(0, 2));
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), []);
     assert.deepEqual(await rawBits(page), before);
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), storedBefore, 'display controls and previews preserve all saved data and affine matrices');
     assert.deepEqual(h.errors, []);

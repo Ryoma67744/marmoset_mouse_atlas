@@ -29,14 +29,14 @@
     if (!persistent) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 6500);
   }
   function options() {
-    return { mode: $('value-mode').value, rangeMode: 'common',
+    return { mode: $('value-mode').value, rangeMode: 'common', roiRegion: $('roi-region').value,
       channels: Array.from(document.querySelectorAll('input[name=channel]:checked'), input => input.value), threshold: finite($('threshold').value, 0) };
   }
   function saveView() {
     if (!sections.length) return;
     session.set(VIEW_KEY, { ids: sections.map(section => section.id), selectedId: sections[selected]?.id, options: options(),
       opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, DEFAULT_SPACING), spacingDefaultsVersion: SPACING_DEFAULTS_VERSION,
-      he: heOptions(), brain: brainOptions(),
+      roi: roiOptions(), brain: brainOptions(),
       range: [finite($('range-start').value, 1), finite($('range-end').value, sections.length)],
       hiddenSectionIds: [...hiddenSectionIds], camera: renderer?.getView(), previewKind });
   }
@@ -60,8 +60,10 @@
     // Once migrated, a user's deliberate 1.0× setting remains 1.0×.
     $('spacing').value = Math.max(0.08, Math.min(2,
       view.spacingDefaultsVersion !== SPACING_DEFAULTS_VERSION && Math.abs(savedSpacing - 0.35) < 1e-9 ? DEFAULT_SPACING : savedSpacing));
-    $('he-visible').checked = view.he?.visible !== false;
-    $('he-opacity').value = Math.max(0.01, Math.min(0.4, finite(view.he?.opacity, 0.12)));
+    $('roi-visible').checked = view.roi?.visible !== false;
+    $('roi-labels').checked = view.roi?.labelsVisible !== false;
+    $('roi-region').value = view.roi?.region || '';
+    if ($('roi-region').selectedIndex < 0) $('roi-region').value = '';
     $('brain-visible').checked = view.brain?.visible === true;
     $('brain-opacity').value = Math.max(0.02, Math.min(0.35, finite(view.brain?.opacity, 0.12)));
     if (Array.isArray(view.range)) { $('range-start').value = view.range[0]; $('range-end').value = view.range[1]; }
@@ -161,14 +163,14 @@
       }
       $('range-start').value = 1; $('range-end').value = sections.length;
       for (const id of ['range-start', 'range-end']) $(id).max = sections.length;
-      $('section-slider').max = sections.length - 1; restoreView();
+      $('section-slider').max = sections.length - 1; buildRoiList(); restoreView();
       const queryId = new URLSearchParams(location.search).get('project'), queryIndex = sections.findIndex(section => section.id === queryId);
       if (queryIndex >= 0) selected = queryIndex;
       $('dataset-count').textContent = `${sections.length} sections`; $('dataset-title').textContent = 'Coronal sections';
       if (!renderer) { try { renderer = Stack3DRenderer.createRenderer($('scene'), { onSelect: selectSection, onError: renderError }); } catch (error) { renderError(error); } }
       renderer?.setSections(sections); renderer?.setHiddenSections(hiddenSectionIds);
       renderer?.setSpacing(finite($('spacing').value, DEFAULT_SPACING)); renderer?.setOpacity(finite($('opacity').value, 0.55));
-      renderer?.setHeOverlay(heOptions()); renderer?.setBrainContext(brainOptions());
+      renderer?.setHeOverlay({ visible: false }); renderer?.setRoiOverlay(roiOptions()); renderer?.setBrainContext(brainOptions());
       if (restoredCamera) { renderer?.setView(restoredCamera); restoredCamera = null; }
       updateLabels(); setRange(); buildList(); await repaint();
       if (generation !== loadGeneration) return;
@@ -177,7 +179,7 @@
       if (issues.length) notice(issues.join(' / '), true);
       if (!unsubscribe && ProjectStorage.subscribeChanges) unsubscribe = ProjectStorage.subscribeChanges(onSourceChange);
       global.__stack3dReady = true;
-      updateHeOverlay().catch(error => notice(error.message));
+
     } catch (error) { setBusy(false); emptyState('読み込みを完了できませんでした'); notice(error.message, true); }
   }
   function releaseRender(result) { if (result) for (const canvas of [result.canvas, result.previewCanvas]) if (canvas) { canvas.width = 0; canvas.height = 0; } }
@@ -185,39 +187,17 @@
     $('opacity-value').textContent = Math.round(finite($('opacity').value, 0.55) * 100) + '%';
     $('threshold-value').textContent = Math.round(finite($('threshold').value, 0) * 100) + '%';
     $('spacing-value').textContent = (finite($('spacing').value, DEFAULT_SPACING) / 0.35).toFixed(1) + '×';
-    $('he-opacity-value').textContent = Math.round(finite($('he-opacity').value, 0.12) * 100) + '%';
-    $('he-opacity').disabled = busy || !sections.length || !$('he-visible').checked;
     $('brain-opacity-value').textContent = Math.round(finite($('brain-opacity').value, 0.12) * 100) + '%';
     $('brain-opacity').disabled = busy || !sections.length || !$('brain-visible').checked;
     $('brain-context-note').hidden = !$('brain-visible').checked || !sections.length || !renderer;
     for (const button of document.querySelectorAll('[data-preview]')) button.setAttribute('aria-pressed', String(button.dataset.preview === previewKind));
   }
-  function heOptions() { return { visible: $('he-visible').checked, opacity: finite($('he-opacity').value, 0.12) }; }
   function brainOptions() { return { visible: $('brain-visible').checked, opacity: finite($('brain-opacity').value, 0.12) }; }
-  async function updateHeOverlay() {
-    const generation = ++heGeneration, currentSections = sections;
-    renderer?.setHeOverlay(heOptions()); updateLabels(); saveView();
-    if (!$('he-visible').checked) { $('he-status').textContent = 'HEの重ね合わせはOFFです。'; return; }
-    let available = 0, missing = 0, failed = 0;
-    const errors = [];
-    for (let i = 0; i < currentSections.length; i++) {
-      if (generation !== heGeneration) return;
-      const section = currentSections[i];
-      $('he-status').textContent = `HEを準備中… ${i + 1} / ${currentSections.length}`;
-      try {
-        let canvas = hePlanes.get(section.id);
-        if (!hePlanes.has(section.id)) {
-          canvas = await Stack3D.renderHePlane(section, { maxSize: 768 });
-          if (generation !== heGeneration) { if (canvas) { canvas.width = 0; canvas.height = 0; } return; }
-          hePlanes.set(section.id, canvas);
-        }
-        if (canvas) { renderer?.updateHeTextures(new Map([[section.id, canvas]])); available++; } else missing++;
-      } catch (error) { if (generation !== heGeneration) return; failed++; errors.push(`${section.name}: ${error.message}`); }
-      await yieldUI();
-    }
-    if (generation !== heGeneration) return;
-    $('he-status').textContent = `HE ${available} / ${currentSections.length}切片${missing ? ` · 未登録 ${missing}` : ''}${failed ? ` · 表示不可 ${failed}` : ''}`;
-    $('he-status').title = errors.join('\n');
+  function roiOptions() { return { visible: $('roi-visible').checked, labelsVisible: $('roi-labels').checked, region: $('roi-region').value }; }
+  function buildRoiList() {
+    $('roi-region').replaceChildren(new Option('全領域', ''));
+    const names = new Set(sections.flatMap(section => Stack3D.roiPolygons(section).filter(p => p.visible).map(p => p.name)));
+    for (const name of [...names].sort((a, b) => a.localeCompare(b))) $('roi-region').add(new Option(name, name));
   }
   async function repaint() {
     const generation = ++renderGeneration, current = options(); updateLabels();
@@ -459,8 +439,9 @@
   $('value-mode').addEventListener('change', requestRepaint);
   $('threshold').addEventListener('input', requestRepaint);
   $('opacity').addEventListener('input', () => { renderer?.setOpacity(Number($('opacity').value)); updateLabels(); saveView(); });
-  $('he-visible').addEventListener('change', () => { updateHeOverlay().catch(error => notice(error.message)); });
-  $('he-opacity').addEventListener('input', () => { renderer?.setHeOverlay(heOptions()); updateLabels(); saveView(); });
+  for (const id of ['roi-visible', 'roi-labels', 'roi-region']) $(id).addEventListener('change', () => {
+    renderer?.setRoiOverlay(roiOptions()); if (id === 'roi-region') requestRepaint(); saveView();
+  });
   for (const [id, event] of [['brain-visible', 'change'], ['brain-opacity', 'input']]) $(id).addEventListener(event, () => { renderer?.setBrainContext(brainOptions()); updateLabels(); saveView(); });
   $('spacing').addEventListener('input', () => { renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
   for (const id of ['range-start', 'range-end']) $(id).addEventListener('change', setRange);
