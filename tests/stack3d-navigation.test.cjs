@@ -795,6 +795,10 @@ test('optional brain context preserves camera, scientific data and full-stack bo
     await setSlider(page, '#section-slider', 4);
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().brainModelBounds), baseline.brainModelBounds,
       'the context uses the full stack, so a cutoff cannot shrink the reference brain');
+    // Selecting another section uploads its ROI label on the next frame.
+    // Measure toggle reuse only after that separate allocation has rendered.
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const toggleBaseline = await page.evaluate(() => Atlas3D.renderer.getStats());
     for (let i = 0; i < 3; i++) {
       await page.locator('#brain-visible').uncheck();
       assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().brainContextRendered), false);
@@ -802,8 +806,8 @@ test('optional brain context preserves camera, scientific data and full-stack bo
       assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().brainObjectCount), baseline.brainObjectCount);
     }
     const toggled = await page.evaluate(() => Atlas3D.renderer.getStats());
-    assert.ok(toggled.gpuGeometries <= baseline.gpuGeometries, 'toggles reuse geometry');
-    assert.ok(toggled.gpuTextures <= baseline.gpuTextures, 'the illustration allocates no new textures on toggle');
+    assert.ok(toggled.gpuGeometries <= toggleBaseline.gpuGeometries, 'toggles reuse geometry');
+    assert.ok(toggled.gpuTextures <= toggleBaseline.gpuTextures, 'the illustration allocates no new textures on toggle');
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
     assert.deepEqual(await page.evaluate(() => Stack3D.computeCommonRanges(Atlas3D.sections, 'raw')), ranges);
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored, 'context controls do not save model metadata');
