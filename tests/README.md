@@ -48,6 +48,17 @@ the candidate's save dependencies. Raw rasters remain bitwise identical and the
 normalization, ROI, image-registration and display metadata remain unchanged.
 These checks validate the software workflow, not anatomical registration accuracy.
 
+The v2.21 whole-stack candidate jointly minimizes second differences of ROI
+centroids with a fixed placement prior (lambda=1), using proper rigid XY poses.
+Tests cover known jitter, preservation of linear ROI trajectories and physical
+scale, disconnected intervals, endpoint support, coordinate equivariance and
+source immutability. Browser regressions cover whole-stack preview, selection,
+adoption/cancellation, unsupported sections and atomic local saving. Every
+reference revision is checked under the same IndexedDB write lock; any conflict
+or failed write rolls back the entire placement batch. Cloud retries retain local
+completion and target only unfinished records. Fixtures are synthetic; these
+checks do not validate anatomical ground truth or actual section spacing.
+
 Display ranges in v2.12 are versioned separately from immutable normalization
 profiles. Tests cover exact finite nearest-rank P99, sparse/all-zero/signed data,
 per-molecule raw/normalized manual settings, reversible legacy migration and

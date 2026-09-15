@@ -59,3 +59,15 @@
 .alignment-roi-row small{display:block;color:var(--muted);font-size:10px;line-height:1.5}
 #alignment-message,#alignment-summary{white-space:pre-line;overflow-wrap:anywhere}
 #alignment-preview[aria-pressed=true]{border-color:var(--accent);background:#263e58}
+
+.batch-alignment{border:1px solid #445d79;border-radius:7px;padding:12px;margin-top:18px}
+.batch-alignment>summary{color:var(--accent);font-weight:600}
+.batch-alignment button{font-size:11px;white-space:normal}
+#batch-message,#batch-summary{white-space:pre-line;overflow-wrap:anywhere}
+#batch-rows{max-height:240px;overflow-y:auto;margin:10px 0;border:1px solid var(--line);border-radius:5px}
+#batch-rows>div{padding:7px;border-bottom:1px solid var(--line);font-size:10px;line-height:1.6;overflow-wrap:anywhere}
+#batch-rows>div:last-child{border-bottom:0}
+#batch-rows small{display:block;color:var(--muted)}
+.batch-section-select{max-width:100%;text-align:left;padding:4px 7px}
+#batch-preview[aria-pressed=true]{border-color:var(--accent);background:#263e58}
+#batch-cancel,#batch-cloud{margin-top:8px}

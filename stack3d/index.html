@@ -50,8 +50,24 @@
       <button id="enlarge-preview" class="text-button preview-enlarge" disabled>画像を拡大 ↗</button>
       <p id="section-status" class="section-status" role="status"></p>
       <button id="open-section" class="primary wide">この断面を開く <span>↗</span></button>
+      <details id="batch-alignment-details" class="placement batch-alignment" open>
+        <summary>全切片をまとめて位置合わせ</summary>
+        <p class="hint">読み込んだ全切片を同時に調整します。表示OFFや下部バーで隠れた切片も対象です。</p>
+        <button id="batch-calculate" class="primary wide">全切片の配置候補を計算</button>
+        <p id="batch-message" class="hint" role="status" aria-live="polite"></p>
+        <div id="batch-result" hidden>
+          <p id="batch-summary" class="hint" role="status"></p>
+          <div id="batch-rows" aria-label="全切片の配置候補と計算状態"></div>
+          <button id="batch-preview" class="wide" aria-pressed="false" disabled>全切片の候補を仮表示</button>
+          <div class="placement-actions"><button id="batch-adopt" disabled>まとめて採用</button><button id="batch-save" disabled>まとめて保存</button></div>
+        </div>
+        <button id="batch-cancel" class="wide" disabled>一括候補を取り消す</button>
+        <button id="batch-cloud" class="wide" hidden>まとめてクラウドに保存</button>
+        <p class="hint">前後の同名ROIのつながりを評価し、元の配置からの移動を抑えて計算します。情報が足りない切片は元の配置を保ちます。実寸と測定値は変わりません。</p>
+        <p class="hint">データだけでは脳本来の曲がりと配置のずれを完全に区別できません。仮表示で全体を見比べてから採用・保存してください。</p>
+      </details>
       <details id="placement-details" class="placement">
-        <summary>切片の位置を調整</summary>
+        <summary>切片の位置を調整（個別）</summary>
         <p class="hint">この切片全体の3D配置を調整します。MSIとROIは一緒に動きます。</p>
         <div class="alignment-controls">
           <button id="alignment-calculate" class="wide">前後のROIから配置候補を計算</button>
@@ -94,11 +110,13 @@
   <script src="../lib/section-display.js"></script>
   <script src="../lib/stack3d.js"></script>
   <script src="../lib/stack3d-alignment.js"></script>
+  <script src="../lib/stack3d-batch-alignment.js"></script>
   <script src="vendor/three-orbit.min.js"></script>
   <script src="brain-context.js"></script>
   <script src="roi.js"></script>
   <script src="renderer.js"></script>
   <script src="panel-resize.js"></script>
+  <script src="batch-alignment.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

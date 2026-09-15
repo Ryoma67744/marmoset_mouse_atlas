@@ -17,6 +17,7 @@
   let pendingPreview = null, previewWorker = null;
   let alignmentProposal = null, alignmentWorking = false, alignmentGeneration = 0;
   const alignmentSaveGuards = new Map();
+  let batchAlignmentUI = null;
   const dirtyPlacements = new Set(), commonRanges = new Map(), hePlanes = new Map(), hiddenSectionIds = new Set();
 
   function syncWarning(messages) {
@@ -140,6 +141,7 @@
     return { projects, allProjects: locals, folders: await ProjectStorage.listFolders(), notices, unsynced };
   }
   async function load() {
+    batchAlignmentUI?.reset();
     cancelAlignment();
     setBusy(true); renderGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
     $('preview-dialog').close(); syncWarning([]); clearTimeout(noticeTimer); $('notice').hidden = true;
@@ -287,7 +289,7 @@
     setRange(); renderer?.select(selected); $('section-slider').value = selected; $('section-position').textContent = `${selected + 1} / ${sections.length}`;
     $('section-name').textContent = section.name; $('section-metadata').textContent = `${section.umPerPxX} × ${section.umPerPxY} µm / pixel · ${section.W} × ${section.H}`;
     $('offset-x').value = section.offsetXUm; $('offset-y').value = section.offsetYUm; $('rotation').value = section.rotationDeg;
-    $('placement-status').textContent = dirtyPlacements.has(section.id) ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。';
+    $('placement-status').textContent = batchAlignmentUI?.active ? '一括操作中です。上の一括操作で採用・保存してください。' : dirtyPlacements.has(section.id) ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。';
     $('previous-section').disabled = selected === 0; $('next-section').disabled = selected === sections.length - 1;
     $('save-cloud').hidden = !(global.Cloud?.configured?.() && global.Cloud?.signedIn?.());
     syncAlignmentControls(); updateList(); refreshPreview().catch(error => notice(error.message)); saveView();
@@ -404,17 +406,21 @@
     return JSON.stringify(['grid', 'rotation', 'world_coords', 'roi', 'stack3d'].map(key => project[key] ?? null));
   }
   function syncAlignmentControls() {
-    const unavailable = busy || saving || alignmentWorking || !sections.length;
+    const batchLocked = batchAlignmentUI?.active || batchAlignmentUI?.working;
+    const unavailable = busy || saving || alignmentWorking || batchLocked || !sections.length;
     const proposal = alignmentProposal;
     $('alignment-calculate').disabled = unavailable;
     $('alignment-preview').disabled = unavailable || !proposal?.fit;
     $('alignment-preview').setAttribute('aria-pressed', String(!!proposal?.previewing));
     $('alignment-preview').textContent = proposal?.previewing ? '元の配置と比較' : '候補を仮表示';
     $('alignment-adopt').disabled = unavailable || !proposal?.fit || !proposal.previewing;
-    $('alignment-cancel').disabled = busy || saving || !proposal;
+    $('alignment-cancel').disabled = busy || saving || batchLocked || !proposal;
     for (const input of $('alignment-rois').querySelectorAll('input')) input.disabled = unavailable;
     for (const id of ['offset-x', 'offset-y', 'rotation', 'reset-placement']) $(id).disabled = unavailable || (!!proposal && !proposal.previewing);
     for (const id of ['save-placement', 'save-cloud']) $(id).disabled = unavailable || !!proposal;
+    $('reload').disabled = busy || saving || !!batchAlignmentUI?.saving;
+    $('open-section').disabled = busy || saving || !!batchAlignmentUI?.saving || !sections.length;
+    batchAlignmentUI?.sync();
   }
   function applyPlacement(section, placement) {
     Object.assign(section, placement); renderer?.setPlacement(section.id, placement);
@@ -487,7 +493,7 @@
     syncAlignmentControls();
   }
   async function calculateAlignment() {
-    if (busy || saving || alignmentWorking || !sections[selected]) return;
+    if (busy || saving || alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || !sections[selected]) return;
     cancelAlignment();
     const section = sections[selected], neighbors = [sections[selected - 1], section, sections[selected + 1]];
     if (neighbors.some(item => !item)) { $('alignment-message').textContent = '前後両方の切片が必要です。端の切片は計算しません。'; return; }
@@ -550,7 +556,7 @@
   }
   function updatePlacement() {
     const section = sections[selected]; if (!section || busy || saving) return;
-    if (alignmentWorking || (alignmentProposal && !alignmentProposal.previewing)) return;
+    if (alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || (alignmentProposal && !alignmentProposal.previewing)) return;
     const fields = [$('offset-x').value, $('offset-y').value, $('rotation').value];
     const values = fields.map(value => value.trim() === '' ? NaN : Number(value));
     if (!values.every(Number.isFinite)) { notice('位置・回転には有限の数値を入力してください。'); return; }
@@ -564,7 +570,7 @@
   }
   function samePlacement(a, b) { return JSON.stringify(a || null) === JSON.stringify(b || null); }
   async function savePlacement() {
-    const section = sections[selected]; if (!section || saving || busy || alignmentWorking || alignmentProposal) return;
+    const section = sections[selected]; if (!section || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
     saving = true; syncAlignmentControls();
     try {
       const guard = alignmentSaveGuards.get(section.id);
@@ -587,7 +593,7 @@
     finally { saving = false; syncAlignmentControls(); }
   }
   async function saveCloud() {
-    const section = sections[selected]; if (!section || saving || busy || alignmentWorking || alignmentProposal) return;
+    const section = sections[selected]; if (!section || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
     if (dirtyPlacements.has(section.id)) { notice('先に「配置を保存」を押してください。'); return; }
     saving = true; syncAlignmentControls();
     try { section.project = await ProjectSync.saveState(section.project); section.sourceRevision = section.project.updatedAt; notice('クラウドに保存しました。'); }
@@ -595,15 +601,16 @@
     finally { saving = false; syncAlignmentControls(); }
   }
   function onSourceChange(change) {
-    if (saving || busy) return;
+    if (saving || busy || batchAlignmentUI?.saving) return;
     const ids = change?.projectIds || []; if (ids.length && !ids.some(id => sections.some(section => section.id === id))) return;
+    batchAlignmentUI?.sourceChanged(ids);
     if (alignmentWorking || (alignmentProposal && (!ids.length || alignmentProposal.references.some(reference => ids.includes(reference.id))))) {
       cancelAlignment('参照したデータが更新されたため、候補を取り消しました。再読込して計算し直してください。');
     }
     sourceChanged = true; notice('登録データが更新されました。「再読込」で最新の内容を反映できます。', true);
   }
   function openSection() {
-    if (!sections[selected] || busy || saving) return; cancelAlignment(); saveView();
+    if (!sections[selected] || busy || saving || batchAlignmentUI?.saving) return; batchAlignmentUI?.cancel(); cancelAlignment(); saveView();
     location.href = '../viewer/index.html?project=' + encodeURIComponent(sections[selected].id) + '&from=stack3d';
   }
   for (const input of document.querySelectorAll('input[name=channel]')) input.addEventListener('change', requestRepaint);
@@ -647,7 +654,7 @@
   });
   global.addEventListener('beforeunload', event => { saveView(); if (dirtyPlacements.size) { event.preventDefault(); event.returnValue = ''; } });
   global.addEventListener('pagehide', event => {
-    cancelAlignment(); saveView(); if (event.persisted) return; renderGeneration++; loadGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
+    batchAlignmentUI?.cancel(); cancelAlignment(); saveView(); if (event.persisted) return; renderGeneration++; loadGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
     unsubscribe?.(); renderer?.dispose(); rendered.forEach(releaseRender); sections.forEach(Stack3D.releaseSection);
     hePlanes.forEach(releasePreview); hePlanes.clear();
   });
@@ -656,6 +663,37 @@
     if (input) input.closest('label').querySelector('.swatch').style.backgroundColor = `rgb(${color.join(',')})`;
   }
   global.AppVersion?.paint?.();
+  batchAlignmentUI = Stack3DBatchUI.create({
+    getSections: () => sections, getSelected: () => selected,
+    isLocked: () => busy || saving || alignmentWorking,
+    placementOf, applyPlacement, getDirtyIds: () => new Set(dirtyPlacements),
+    setDirty: (id, value) => { if (value) dirtyPlacements.add(id); else dirtyPlacements.delete(id); },
+    selectSection, onBeforeCalculate: cancelAlignment,
+    onChange: () => {
+      syncAlignmentControls(); updateList();
+      const current = sections[selected];
+      if (current) $('placement-status').textContent = batchAlignmentUI?.active ? '一括操作中です。上の一括操作で採用・保存してください。' : dirtyPlacements.has(current.id) ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。';
+    },
+    onSaved: projects => {
+      for (const project of projects) {
+        const section = sections.find(item => item.id === project.id); if (!section) continue;
+        section.project = project; section.sourceRevision = project.updatedAt;
+        dirtyPlacements.delete(project.id); alignmentSaveGuards.delete(project.id);
+      }
+      $('placement-status').textContent = '一括配置をこのブラウザーに保存しました。ZIP出力にも含まれます。';
+    },
+    onCloudSaved: project => {
+      const section = sections.find(item => item.id === project.id);
+      if (!section) return;
+      const changed = ['displayName', 'grid', 'molecules', 'images', 'rotation', 'world_coords', 'roi', 'stack3d', 'folderId',
+        'normalization', 'normalizationBinding', 'layerDisplay', 'valueDisplay'].some(key => JSON.stringify(project[key] ?? null) !== JSON.stringify(section.project[key] ?? null));
+      if (changed) {
+        sourceChanged = true; notice('クラウド保存中に手元のデータが更新されました。「再読込」で最新の内容を確認してください。', true);
+        return;
+      }
+      section.project = project; section.sourceRevision = project.updatedAt;
+    }
+  });
   global.Atlas3D = { get sections() { return sections; }, get selected() { return selected; }, get rendered() { return rendered; },
     get hiddenSectionIds() { return [...hiddenSectionIds]; },
     get renderer() { return renderer; }, get sourceChanged() { return sourceChanged; }, options, selectSection };
