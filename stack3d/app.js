@@ -4,6 +4,7 @@
   'use strict';
   const $ = id => document.getElementById(id);
   const SELECTION_KEY = 'atlas-stack3d-selection', VIEW_KEY = 'atlas-stack3d-view-v1';
+  const DEFAULT_SPACING = 0.595, SPACING_DEFAULTS_VERSION = 1;
   const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
   const session = {
@@ -34,7 +35,8 @@
   function saveView() {
     if (!sections.length) return;
     session.set(VIEW_KEY, { ids: sections.map(section => section.id), selectedId: sections[selected]?.id, options: options(),
-      opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, 0.35), he: heOptions(), brain: brainOptions(),
+      opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, DEFAULT_SPACING), spacingDefaultsVersion: SPACING_DEFAULTS_VERSION,
+      he: heOptions(), brain: brainOptions(),
       range: [finite($('range-start').value, 1), finite($('range-end').value, sections.length)],
       hiddenSectionIds: [...hiddenSectionIds], camera: renderer?.getView(), previewKind });
   }
@@ -53,7 +55,11 @@
     if (Array.isArray(saved.channels)) for (const input of document.querySelectorAll('input[name=channel]')) input.checked = saved.channels.includes(input.value);
     $('threshold').value = Math.max(0, Math.min(0.95, finite(saved.threshold, 0)));
     $('opacity').value = Math.max(0.05, Math.min(1, finite(view.opacity, 0.55)));
-    $('spacing').value = Math.max(0.08, Math.min(2, finite(view.spacing, 0.35)));
+    const savedSpacing = finite(view.spacing, DEFAULT_SPACING);
+    // Adopt the new initial interval for sessions still at the former default.
+    // Once migrated, a user's deliberate 1.0× setting remains 1.0×.
+    $('spacing').value = Math.max(0.08, Math.min(2,
+      view.spacingDefaultsVersion !== SPACING_DEFAULTS_VERSION && Math.abs(savedSpacing - 0.35) < 1e-9 ? DEFAULT_SPACING : savedSpacing));
     $('he-visible').checked = view.he?.visible !== false;
     $('he-opacity').value = Math.max(0.01, Math.min(0.4, finite(view.he?.opacity, 0.12)));
     $('brain-visible').checked = view.brain?.visible === true;
@@ -161,7 +167,7 @@
       $('dataset-count').textContent = `${sections.length} sections`; $('dataset-title').textContent = 'Coronal sections';
       if (!renderer) { try { renderer = Stack3DRenderer.createRenderer($('scene'), { onSelect: selectSection, onError: renderError }); } catch (error) { renderError(error); } }
       renderer?.setSections(sections); renderer?.setHiddenSections(hiddenSectionIds);
-      renderer?.setSpacing(finite($('spacing').value, 0.35)); renderer?.setOpacity(finite($('opacity').value, 0.55));
+      renderer?.setSpacing(finite($('spacing').value, DEFAULT_SPACING)); renderer?.setOpacity(finite($('opacity').value, 0.55));
       renderer?.setHeOverlay(heOptions()); renderer?.setBrainContext(brainOptions());
       if (restoredCamera) { renderer?.setView(restoredCamera); restoredCamera = null; }
       updateLabels(); setRange(); buildList(); await repaint();
@@ -178,7 +184,7 @@
   function updateLabels() {
     $('opacity-value').textContent = Math.round(finite($('opacity').value, 0.55) * 100) + '%';
     $('threshold-value').textContent = Math.round(finite($('threshold').value, 0) * 100) + '%';
-    $('spacing-value').textContent = (finite($('spacing').value, 0.35) / 0.35).toFixed(1) + '×';
+    $('spacing-value').textContent = (finite($('spacing').value, DEFAULT_SPACING) / 0.35).toFixed(1) + '×';
     $('he-opacity-value').textContent = Math.round(finite($('he-opacity').value, 0.12) * 100) + '%';
     $('he-opacity').disabled = busy || !sections.length || !$('he-visible').checked;
     $('brain-opacity-value').textContent = Math.round(finite($('brain-opacity').value, 0.12) * 100) + '%';
@@ -286,10 +292,10 @@
     visibilityChanged();
   }
   function filterList() { const query = $('section-search').value.trim().toLowerCase(); for (const row of $('section-list').children) row.hidden = !sections[Number(row.dataset.index)].name.toLowerCase().includes(query); }
-  function selectSection(index, cutBefore = false) {
+  function selectSection(index, cutAfter = false) {
     if (!sections.length) return;
     selected = Math.max(0, Math.min(sections.length - 1, Math.round(Number(index) || 0))); const section = sections[selected];
-    if (cutBefore) $('range-start').value = selected + 1;
+    if (cutAfter) $('range-end').value = selected + 1;
     if (selected + 1 < Number($('range-start').value)) $('range-start').value = selected + 1;
     if (selected + 1 > Number($('range-end').value)) $('range-end').value = selected + 1;
     setRange(); renderer?.select(selected); $('section-slider').value = selected; $('section-position').textContent = `${selected + 1} / ${sections.length}`;
