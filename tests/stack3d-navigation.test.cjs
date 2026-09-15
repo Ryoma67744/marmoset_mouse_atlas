@@ -6,9 +6,9 @@ const assert = require('node:assert/strict');
 const { startBrowserHarness, seedViewerProject } = require('./browser-harness.cjs');
 const IDS = ['stack-first', 'stack-second', 'stack-skipped'];
 
-async function seed(h) {
+async function seed(h, { brightOutlier = false } = {}) {
   for (const id of IDS) await seedViewerProject(h.page, h.baseURL, { id });
-  await h.page.evaluate(async ids => {
+  await h.page.evaluate(async ({ ids, brightOutlier }) => {
     await ProjectStorage.putFolder({ id: 'species', name: 'Synthetic', parentId: null });
     await ProjectStorage.putFolder({ id: 'coronal', name: 'Coronal', parentId: 'species', normalizationGroupId: 'stack-group' });
     const entries = [];
@@ -20,6 +20,13 @@ async function seed(h) {
       p.rotation = { all: i ? 0 : 94, msi: 0, he: 0 };
       p.valueDisplay = { mode: 'raw' };
       delete p.normalization;
+      if (brightOutlier && i === 1) for (const molecule of p.molecules) {
+        if (molecule.key === 'MSI_D4-5-HT') continue;
+        const source = await ProjectStorage.getValueRaster(molecule.blobId);
+        const values = Float32Array.from(source, value => value * 1000);
+        molecule.blobId = await ProjectStorage.putValueRaster(values);
+        molecule.stats = MSIRaster.deriveBakeStats(values);
+      }
       if (i === 2) p.molecules = p.molecules.filter(m => m.key !== 'MSI_D4-5-HT');
       p.normalizationBinding = { groupId: 'stack-group', memberId: p.id, folderPath: ['Synthetic', 'Coronal'] };
       entries.push({ project: p, rasters: await Normalization.loadRasters(p, { storage: ProjectStorage }) });
@@ -35,7 +42,7 @@ async function seed(h) {
     sessionStorage.setItem('marmoset:currentFolder', 'coronal');
     sessionStorage.removeItem('atlas-stack3d-selection');
     sessionStorage.removeItem('atlas-stack3d-view-v1');
-  }, IDS);
+  }, { ids: IDS, brightOutlier });
   await h.context.route(h.baseURL + '/lib/cloud-config.js', route => route.fulfill({
     contentType: 'application/javascript', body: 'window.CLOUD_CONFIG = {};'
   }));
@@ -263,6 +270,181 @@ test('unsynchronized edits appear as a compact header warning with complete acce
     assert.match(details, /Cor_1_2/); assert.match(details, /Cor_1_10/);
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#sync-details').isVisible(), false);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('switching a bright section OFF removes its influence from both common display ranges without changing measurements', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h, { brightOutlier: true });
+    const before = await rawBits(page), stored = await page.evaluate(() => ProjectStorage.listProjects());
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-first');
+    await ready(page, 3);
+    await page.locator('#value-mode').selectOption('raw');
+    await page.waitForFunction(() => Atlas3D.rendered[0]?.ranges['5-HT']?.max === 80000);
+    const valuesBefore = await page.evaluate(() => Atlas3D.sections.map(section => ({
+      id: section.id, zIndex: section.zIndex,
+      channels: Object.fromEntries(Object.entries(section.channels).map(([key, channel]) => [key, {
+        raw: Array.from(channel.raw), normalized: channel.normalized && Array.from(channel.normalized)
+      }]))
+    })));
+    const view = await page.evaluate(() => Atlas3D.renderer.getView());
+    const outlier = page.getByRole('checkbox', { name: 'Cor_1_10を3D表示', exact: true });
+    assert.equal(await outlier.isChecked(), true);
+    await outlier.uncheck();
+    await page.waitForFunction(() => Atlas3D.rendered[0]?.ranges['5-HT']?.max === 80);
+    let range = await page.evaluate(() => Atlas3D.rendered[0].ranges['5-HT']);
+    assert.deepEqual(range.memberIds, [IDS[0], IDS[2]]);
+    assert.equal(range.nFinite, 16, 'the eight outlier pixels are excluded from the pooled raw range');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().hiddenSectionIds), [IDS[1]]);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), [IDS[0], IDS[2]]);
+    assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_2', 'checkbox interaction does not change selection');
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    await page.locator('#value-mode').selectOption('normalized');
+    await page.waitForFunction(() => Atlas3D.rendered[0]?.ranges['5-HT']?.mode === 'normalized' && Atlas3D.rendered[0].ranges['5-HT'].max === 40);
+    range = await page.evaluate(() => Atlas3D.rendered[0].ranges['5-HT']);
+    assert.deepEqual(range.memberIds, [IDS[0]], 'the skipped section must not pool raw measurements as corrected');
+    assert.equal(range.nFinite, 8);
+    assert.equal(await page.evaluate(() => Atlas3D.rendered[2].status.code), 'UNAVAILABLE');
+    await outlier.check();
+    await page.waitForFunction(() => Atlas3D.rendered[0]?.ranges['5-HT']?.max === 40000);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[0].ranges['5-HT'].memberIds), IDS.slice(0, 2));
+    await page.locator('#value-mode').selectOption('raw');
+    await page.waitForFunction(() => Atlas3D.rendered[0]?.ranges['5-HT']?.mode === 'raw' && Atlas3D.rendered[0].ranges['5-HT'].max === 80000);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[0].ranges['5-HT'].memberIds), IDS,
+      're-enabling a section invalidates the previously cached raw range as well');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.sections.map(section => ({
+      id: section.id, zIndex: section.zIndex,
+      channels: Object.fromEntries(Object.entries(section.channels).map(([key, channel]) => [key, {
+        raw: Array.from(channel.raw), normalized: channel.normalized && Array.from(channel.normalized)
+      }]))
+    }))), valuesBefore, 'visibility and recoloring preserve corrected arrays and ordinal positions');
+    assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('a hidden section remains inspectable and its OFF state survives HE changes, cutoffs, reload and detail navigation', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await seedReferenceImages(page);
+    const before = await rawBits(page), stored = await page.evaluate(() => ProjectStorage.listProjects());
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second');
+    await ready(page, 3);
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 2);
+    const view = await page.evaluate(() => {
+      const view = Atlas3D.renderer.getView(); view.position[0] += 0.3; view.zoom = 1.2;
+      Atlas3D.renderer.setView(view); return Atlas3D.renderer.getView();
+    });
+    const checkbox = page.locator('input.section-visible[data-section-id="stack-second"]');
+    await checkbox.uncheck();
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleSectionIds.join() === 'stack-first');
+    assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.hiddenSectionIds), [IDS[1]]);
+    await page.locator('[data-preview="HE_Stain"]').click();
+    await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'HE_Stain' && document.querySelector('#section-preview canvas')?.width >= 128);
+    await page.locator('#he-visible').uncheck();
+    await page.locator('#he-visible').check();
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 1);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[0]]);
+    await page.locator('#open-section').click();
+    await page.waitForURL('**/viewer/index.html?project=stack-second&from=stack3d');
+    await page.waitForFunction(() => viewerReady);
+    assert.equal(await page.locator('#atlas-title').innerText(), 'Cor_1_10');
+    await page.locator('#back-stack3d').click();
+    await ready(page, 3);
+    assert.equal(await checkbox.isChecked(), false);
+    assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    await setSlider(page, '#section-slider', 2);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), [IDS[2]]);
+    const rangeBefore = await page.evaluate(() => Atlas3D.rendered[0].ranges);
+    await page.locator('#show-all').click();
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 2]);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().visibleSectionIds), [IDS[0], IDS[2]]);
+    assert.equal(await checkbox.isChecked(), false, 'resetting the ordinal range does not re-enable an excluded outlier');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[0].ranges), rangeBefore, 'cutoffs do not change the common scale');
+    await page.locator('.section-row[data-index="1"] .section-select').click();
+    assert.equal(await checkbox.isChecked(), false, 'selecting a hidden section does not switch its 3D visibility ON');
+    assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
+    await page.reload();
+    await ready(page, 3);
+    assert.equal(await checkbox.isChecked(), false);
+    assert.deepEqual(await page.evaluate(() => JSON.parse(sessionStorage.getItem('atlas-stack3d-view-v1')).hiddenSectionIds), [IDS[1]]);
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    await page.locator('#enable-all-sections').click();
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 2 && Atlas3D.hiddenSectionIds.length === 0);
+    assert.equal(await checkbox.isChecked(), true);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().enabledSectionIds), IDS);
+    assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('all sections can be OFF, rapid toggles use the final state, and an enabled skipped section has no corrected raw fallback', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await seedReferenceImages(page);
+    const before = await rawBits(page), stored = await page.evaluate(() => ProjectStorage.listProjects());
+    await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second');
+    await ready(page, 3);
+    await page.locator('#value-mode').selectOption('normalized');
+    await page.waitForFunction(() => Atlas3D.rendered[0]?.ranges['5-HT']?.mode === 'normalized');
+    for (const id of IDS) await page.locator('input.section-visible[data-section-id="' + id + '"]').uncheck();
+    await page.waitForFunction(() => Atlas3D.renderer.getStats().enabledSectionIds.length === 0 && Atlas3D.rendered.every(result => result.status.visiblePixels === 0));
+    let stats = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.equal(stats.visibleCount, 0); assert.equal(stats.heVisibleCount, 0);
+    assert.deepEqual(stats.hiddenSectionIds, IDS);
+    assert.deepEqual(stats.visibleSectionIds, []);
+    assert.equal(await page.locator('#visibility-status').isVisible(), true);
+    assert.match(await page.locator('#render-state').innerText(), /ON\s+0\s*\/\s*3/);
+    assert.match(await page.locator('#visibility-status').innerText(), /ON|OFF|チェック/);
+    assert.equal(await page.evaluate(() => Atlas3D.rendered.every(result => {
+      const pixels = result.canvas.getContext('2d').getImageData(0, 0, result.canvas.width, result.canvas.height).data;
+      return Array.from(pixels).every((value, index) => index % 4 !== 3 || value === 0);
+    })), true, 'all-OFF cannot retain stale colored MSI textures');
+    await page.locator('[data-preview="HE_Stain"]').click();
+    await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'HE_Stain' && document.querySelector('#section-preview canvas')?.width >= 128);
+    await page.locator('[data-preview="ATLAS"]').click();
+    await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'ATLAS' && document.querySelector('#section-preview img')?.naturalWidth === 256);
+    await page.locator('[data-preview="MSI"]').click();
+    await page.waitForFunction(() => /OFF|ON/.test(document.getElementById('section-preview').textContent));
+    // Several changes in one event-loop turn must leave only the final enabled
+    // section in both the common range and the visible MSI/HE layers.
+    await page.evaluate(() => {
+      for (const checked of [true, false, true, false, true]) {
+        const element = document.querySelector('input.section-visible[data-section-id="stack-second"]');
+        element.checked = checked; element.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    });
+    await page.waitForFunction(() => Atlas3D.rendered[1]?.ranges['5-HT']?.memberIds.join() === 'stack-second' && Atlas3D.renderer.getStats().visibleSectionIds.join() === 'stack-second');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), [IDS[1]]);
+    assert.equal(await page.evaluate(() => Atlas3D.rendered[1].ranges['5-HT'].max), 40);
+    await page.locator('input.section-visible[data-section-id="stack-skipped"]').check();
+    await page.locator('input.section-visible[data-section-id="stack-second"]').uncheck();
+    await page.waitForFunction(() => Atlas3D.rendered[0]?.ranges['5-HT']?.nFinite === 0 && Atlas3D.rendered[2]?.status.code === 'UNAVAILABLE');
+    stats = await page.evaluate(() => Atlas3D.renderer.getStats());
+    assert.deepEqual(stats.enabledSectionIds, [IDS[2]]);
+    assert.equal(stats.heVisibleCount, 0);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[0].ranges['5-HT'].memberIds), []);
+    assert.equal(await page.evaluate(() => Atlas3D.rendered[2].status.visiblePixels), 0, 'skipped normalized values remain unavailable after visibility changes');
+    assert.equal(await page.evaluate(() => {
+      const canvas = Atlas3D.rendered[2].canvas;
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      return Array.from(pixels).every((value, index) => index % 4 !== 3 || value === 0);
+    }), true, 'the enabled skipped section has a transparent MSI texture, not a raw fallback');
+    await page.waitForFunction(() => /ONの切片に表示できる値/.test(document.getElementById('section-preview').textContent));
+    assert.equal(await page.locator('#section-preview canvas').count(), 0,
+      'a hidden selected section cannot be previewed with an invented common range when every enabled section is unavailable');
+    await page.locator('#enable-all-sections').click();
+    await page.waitForFunction(() => Atlas3D.hiddenSectionIds.length === 0 && Atlas3D.rendered[0]?.ranges['5-HT']?.nFinite === 16);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[0].ranges['5-HT'].memberIds), IDS.slice(0, 2));
+    assert.equal(await page.evaluate(() => Atlas3D.rendered[2].status.code), 'UNAVAILABLE');
+    assert.deepEqual(await rawBits(page), before);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });

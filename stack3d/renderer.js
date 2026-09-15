@@ -25,7 +25,7 @@
     controls.enableDamping = false; controls.screenSpacePanning = true;
     controls.minDistance = 0.2; controls.maxDistance = 5000;
     const raycaster = new T.Raycaster(), pointer = new T.Vector2(), scratch = new T.Vector3();
-    let entries = [], byId = new Map(), selected = -1, spacing = 0.35, opacity = 1, range = [0, -1];
+    let entries = [], byId = new Map(), hiddenSectionIds = new Set(), selected = -1, spacing = 0.35, opacity = 1, range = [0, -1];
     let heVisible = true, heOpacity = 0.12;
     let brainVisible = false, brainOpacity = 0.12, brainContext = null;
     let disposed = false, contextLost = false, pendingFrame = null, renderCount = 0, pointerDown = null, viewSet = false;
@@ -78,9 +78,9 @@
     }
     function updateVisibility() {
       for (const entry of entries) {
-        const inRange = entry.index >= range[0] && entry.index <= range[1];
-        entry.mesh.visible = inRange && !!entry.texture;
-        entry.he.mesh.visible = inRange && heVisible && heOpacity > 0 && !!entry.he.texture;
+        const enabled = entry.index >= range[0] && entry.index <= range[1] && !hiddenSectionIds.has(entry.descriptor.id);
+        entry.mesh.visible = enabled && !!entry.texture;
+        entry.he.mesh.visible = enabled && heVisible && heOpacity > 0 && !!entry.he.texture;
       }
       updateOutline(); scheduleRender();
     }
@@ -153,6 +153,7 @@
         return entry;
       });
       for (const entry of previous.values()) release(entry);
+      hiddenSectionIds = new Set([...hiddenSectionIds].filter(id => byId.has(id)));
       range = [0, entries.length - 1]; selected = entries.findIndex(e => e.descriptor.id === selectedId);
       if (selected < 0 && entries.length) selected = 0;
       entries.forEach(position); syncBrainContext(); updateVisibility(); if (!viewSet) resetView();
@@ -212,6 +213,14 @@
     function setRange(start, end) {
       const last = entries.length - 1, a = Math.min(last, Math.max(0, Math.round(finite(start)))), b = Math.min(last, Math.max(0, Math.round(finite(end, last))));
       range = [Math.min(a, b), Math.max(a, b)]; updateVisibility();
+    }
+    function setHiddenSections(ids = []) {
+      if (disposed) return;
+      if (!ids || typeof ids === 'string' || typeof ids[Symbol.iterator] !== 'function') throw new TypeError('非表示にする切片IDは配列またはSetで指定してください。');
+      hiddenSectionIds = new Set([...ids].map(String).filter(id => byId.has(id)));
+      // Visibility alone changes: retain the complete stack's ordinal positions,
+      // bounds, textures, camera, and schematic brain geometry.
+      updateVisibility();
     }
     function select(index) { selected = Number.isInteger(index) && index >= 0 && index < entries.length ? index : -1; updateOutline(); scheduleRender(); }
     function setPlacement(id, values = {}) {
@@ -327,6 +336,8 @@
         brainContextRendered: brainVisible && brainOpacity > 0 && !!brainContext,
         heVisibleCount: entries.filter(e => e.he.mesh.visible).length,
         visibleSectionCount: entries.filter(e => e.mesh.visible || e.he.mesh.visible).length,
+        hiddenSectionIds: entries.filter(e => hiddenSectionIds.has(e.descriptor.id)).map(e => e.descriptor.id),
+        enabledSectionIds: entries.filter(e => !hiddenSectionIds.has(e.descriptor.id)).map(e => e.descriptor.id),
         visibleSectionIds: entries.filter(e => e.mesh.visible || e.he.mesh.visible).map(e => e.descriptor.id),
         heVisibleSectionIds: entries.filter(e => e.he.mesh.visible).map(e => e.descriptor.id),
         contextLost, disposed, renderCount, canvasWidth: canvas.width, canvasHeight: canvas.height,
@@ -341,10 +352,10 @@
       if (observer) observer.disconnect(); else win.removeEventListener('resize', resize);
       controls.removeEventListener('change', scheduleRender); controls.dispose();
       for (const [name, handler] of Object.entries(events)) canvas.removeEventListener(name, handler);
-      entries.forEach(release); entries = []; byId.clear(); releaseBrainContext(); outlineGeometry.dispose(); outlineMaterial.dispose();
+      entries.forEach(release); entries = []; byId.clear(); hiddenSectionIds.clear(); releaseBrainContext(); outlineGeometry.dispose(); outlineMaterial.dispose();
       renderer.dispose(); renderer.forceContextLoss(); canvas.remove();
     }
-    return { setSections, updateTextures, updateHeTextures, setHeOverlay, setBrainContext, setSpacing, setRange, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
+    return { setSections, updateTextures, updateHeTextures, setHeOverlay, setBrainContext, setSpacing, setRange, setHiddenSections, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
   }
   global.Stack3DRenderer = { createRenderer };
 })(window);
