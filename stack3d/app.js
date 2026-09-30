@@ -5,6 +5,11 @@
   const $ = id => document.getElementById(id);
   const SELECTION_KEY = 'atlas-stack3d-selection', VIEW_KEY = 'atlas-stack3d-view-v1';
   const DEFAULT_SPACING = 0.595, SPACING_DEFAULTS_VERSION = 1;
+  const SOURCE_FIELDS = ['displayName', 'grid', 'molecules', 'images', 'rotation', 'world_coords', 'roi', 'stack3d', 'folderId',
+    'normalization', 'normalizationBinding', 'layerDisplay', 'valueDisplay'];
+  const sourceFingerprint = project => JSON.stringify(SOURCE_FIELDS.map(key => project?.[key] ?? null));
+  const STALE_PLACEMENT_MESSAGE = '元のデータが更新されています。「再読込」で最新の内容を確認してから配置を保存してください。';
+  const UNKNOWN_LOCAL_MESSAGE = 'クラウドには保存されました。手元の保存状態を確認できなかったため、「再読込」で確認してから保存を再試行してください。';
   const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
   const yieldUI = () => new Promise(resolve => setTimeout(resolve, 0));
   const session = {
@@ -19,12 +24,99 @@
   const alignmentSaveGuards = new Map();
   let batchAlignmentUI = null;
   const dirtyPlacements = new Set(), commonRanges = new Map(), hePlanes = new Map(), hiddenSectionIds = new Set();
+  const staleSections = new Map(), pendingSourceIds = new Set();
+  let pendingFolderChange = false, sourceChangeWorker = null, syncWarningGeneration = 0, loadedFolderFingerprint = '[]';
 
   function syncWarning(messages) {
     const button = $('sync-warning'), text = messages.join('\n');
     button.hidden = !messages.length; button.title = text;
     button.setAttribute('aria-label', messages.length ? `未同期の編集があります（${messages.length}切片）。詳細を表示` : '未同期の編集はありません');
     button.setAttribute('aria-expanded', 'false'); $('sync-details').hidden = true; $('sync-details').textContent = text;
+  }
+
+  async function refreshSyncWarnings() {
+    const token = ++syncWarningGeneration, generation = loadGeneration;
+    if (!global.Cloud?.configured?.()) { syncWarning([]); return; }
+    // Inspect acknowledged local baselines only. Refreshing a badge must never
+    // import a cloud project, reload the scene, or discard a placement draft.
+    const projects = new Map((await ProjectStorage.listProjects()).map(project => [project.id, project]));
+    if (token !== syncWarningGeneration || generation !== loadGeneration) return;
+    const pending = {};
+    for (const section of sections) {
+      try { if (localStorage.getItem('marmoset:pendingFolderChange:' + encodeURIComponent(section.id))) pending[section.id] = true; } catch (_) {}
+    }
+    const messages = [];
+    for (const section of sections) {
+      const project = projects.get(section.id); if (!project) continue;
+      const status = ProjectSync.localStatus(project, { pendingFolderChanges: pending });
+      if (status.remainingLocalEdits || status.status === 'pending') messages.push(`${project.displayName || section.name}: ${status.reason}`);
+    }
+    syncWarning(messages);
+  }
+  function placementStatus(section) {
+    return staleSections.get(section.id) || (batchAlignmentUI?.active
+      ? '一括操作中です。上の一括操作で採用・保存してください。' : dirtyPlacements.has(section.id)
+        ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。');
+  }
+  function markStale(section, message = STALE_PLACEMENT_MESSAGE) {
+    staleSections.set(section.id, message); sourceChanged = true;
+    if (sections[selected]?.id === section.id) $('placement-status').textContent = message;
+  }
+  function acknowledgeCloudSave(section, project, status) {
+    if (status?.localStateKnown === false) { markStale(section, UNKNOWN_LOCAL_MESSAGE); return false; }
+    if (sourceFingerprint(project) !== sourceFingerprint(section.project)) {
+      // Keep the source actually used by the renderer as the conflict baseline.
+      // Rebasing it onto unseen data would allow the next local save to replace
+      // a concurrent edit with this screen's older placement.
+      markStale(section); return false;
+    }
+    section.project = project; section.sourceRevision = project.updatedAt; return true;
+  }
+  async function flushSourceChanges({ preserveNotice = false } = {}) {
+    if (saving || busy || batchAlignmentUI?.saving) return;
+    if (sourceChangeWorker) return sourceChangeWorker;
+    sourceChangeWorker = (async () => {
+      while (pendingSourceIds.size || pendingFolderChange) {
+        if (saving || busy || batchAlignmentUI?.saving) return;
+        const generation = loadGeneration, folderChanged = pendingFolderChange;
+        const ids = folderChanged ? sections.map(section => section.id) : [...pendingSourceIds];
+        pendingSourceIds.clear(); pendingFolderChange = false;
+        const latest = new Map((await ProjectStorage.listProjects()).map(project => [project.id, project]));
+        const foldersDiffer = folderChanged && JSON.stringify(await ProjectStorage.listFolders()) !== loadedFolderFingerprint;
+        if (generation !== loadGeneration) continue;
+        if (saving || busy || batchAlignmentUI?.saving) {
+          ids.forEach(id => pendingSourceIds.add(id)); pendingFolderChange ||= folderChanged; return;
+        }
+        const changed = [], newlyStale = [];
+        for (const id of ids) {
+          const section = sections.find(item => item.id === id); if (!section) continue;
+          const project = latest.get(id);
+          if (foldersDiffer || !project || sourceFingerprint(project) !== sourceFingerprint(section.project)) {
+            changed.push(id); if (!staleSections.has(id)) newlyStale.push(id); sourceChanged = true;
+            // Keep the original source for the existing per-field/CAS save
+            // guards. A manual placement may still safely preserve a newer
+            // unrelated ROI; only an unseen cloud-save return locks the pose.
+          } else {
+            section.project = project; section.sourceRevision = project.updatedAt;
+          }
+        }
+        if (changed.length) {
+          batchAlignmentUI?.sourceChanged(changed, { preserveMessage: preserveNotice });
+          if (alignmentWorking || alignmentProposal?.references.some(reference => changed.includes(reference.id))) {
+            cancelAlignment('参照したデータが更新されたため、候補を取り消しました。再読込して計算し直してください。');
+          }
+          if (newlyStale.length) {
+            const previous = preserveNotice && !$('notice').hidden ? $('notice').textContent + '\n' : '';
+            notice(previous + '登録データが更新されました。「再読込」で最新の内容を反映できます。', true);
+          }
+        }
+      }
+      await refreshSyncWarnings();
+    })().catch(error => notice(`同期状態を確認できませんでした：${error.message}`, true)).finally(() => {
+      sourceChangeWorker = null; syncAlignmentControls();
+      if ((pendingSourceIds.size || pendingFolderChange) && !saving && !busy && !batchAlignmentUI?.saving) flushSourceChanges();
+    });
+    return sourceChangeWorker;
   }
 
   function notice(message, persistent = false) {
@@ -159,7 +251,8 @@
       renderer?.updateHeTextures(new Map(sections.map(section => [section.id, null])));
       hePlanes.forEach(canvas => { if (canvas) { canvas.width = 0; canvas.height = 0; } }); hePlanes.clear();
       sections.forEach(Stack3D.releaseSection); rendered.forEach(releaseRender);
-      sections = loaded; rendered = []; commonRanges.clear(); hiddenSectionIds.clear(); dirtyPlacements.clear(); alignmentSaveGuards.clear(); sourceChanged = false; selected = 0;
+      sections = loaded; rendered = []; commonRanges.clear(); hiddenSectionIds.clear(); dirtyPlacements.clear(); alignmentSaveGuards.clear(); staleSections.clear(); sourceChanged = false; selected = 0;
+      loadedFolderFingerprint = JSON.stringify(source.folders);
       if (!sections.length) {
         renderer?.setSections([]); $('section-list').replaceChildren(); replacePreview($('section-preview'), null, '切片を選択してください');
         $('section-name').textContent = '—'; $('section-metadata').textContent = ''; $('section-status').textContent = '';
@@ -184,6 +277,7 @@
       const issues = [...source.notices, ...loaded.errors.map(error => `${error.name}: ${error.message}`)];
       if (issues.length) notice(issues.join(' / '), true);
       if (!unsubscribe && ProjectStorage.subscribeChanges) unsubscribe = ProjectStorage.subscribeChanges(onSourceChange);
+      await flushSourceChanges();
       global.__stack3dReady = true;
 
     } catch (error) { setBusy(false); emptyState('読み込みを完了できませんでした'); notice(error.message, true); }
@@ -289,7 +383,7 @@
     setRange(); renderer?.select(selected); $('section-slider').value = selected; $('section-position').textContent = `${selected + 1} / ${sections.length}`;
     $('section-name').textContent = section.name; $('section-metadata').textContent = `${section.umPerPxX} × ${section.umPerPxY} µm / pixel · ${section.W} × ${section.H}`;
     $('offset-x').value = section.offsetXUm; $('offset-y').value = section.offsetYUm; $('rotation').value = section.rotationDeg;
-    $('placement-status').textContent = batchAlignmentUI?.active ? '一括操作中です。上の一括操作で採用・保存してください。' : dirtyPlacements.has(section.id) ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。';
+    $('placement-status').textContent = placementStatus(section);
     $('previous-section').disabled = selected === 0; $('next-section').disabled = selected === sections.length - 1;
     $('save-cloud').hidden = !(global.Cloud?.configured?.() && global.Cloud?.signedIn?.());
     syncAlignmentControls(); updateList(); refreshPreview().catch(error => notice(error.message)); saveView();
@@ -407,7 +501,7 @@
   }
   function syncAlignmentControls() {
     const batchLocked = batchAlignmentUI?.active || batchAlignmentUI?.working;
-    const unavailable = busy || saving || alignmentWorking || batchLocked || !sections.length;
+    const unavailable = busy || saving || alignmentWorking || batchLocked || !sections.length || staleSections.has(sections[selected]?.id);
     const proposal = alignmentProposal;
     $('alignment-calculate').disabled = unavailable;
     $('alignment-preview').disabled = unavailable || !proposal?.fit;
@@ -441,7 +535,7 @@
       if (section) {
         if (proposal.previewing) applyPlacement(section, proposal.basePlacement);
         if (proposal.baseDirty) dirtyPlacements.add(section.id); else dirtyPlacements.delete(section.id);
-        if (sections[selected]?.id === section.id) $('placement-status').textContent = proposal.baseDirty ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。';
+        if (sections[selected]?.id === section.id) $('placement-status').textContent = placementStatus(section);
         updateList();
       }
     }
@@ -493,7 +587,7 @@
     syncAlignmentControls();
   }
   async function calculateAlignment() {
-    if (busy || saving || alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || !sections[selected]) return;
+    if (busy || saving || alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || !sections[selected] || staleSections.has(sections[selected].id)) return;
     cancelAlignment();
     const section = sections[selected], neighbors = [sections[selected - 1], section, sections[selected + 1]];
     if (neighbors.some(item => !item)) { $('alignment-message').textContent = '前後両方の切片が必要です。端の切片は計算しません。'; return; }
@@ -556,6 +650,7 @@
   }
   function updatePlacement() {
     const section = sections[selected]; if (!section || busy || saving) return;
+    if (staleSections.has(section.id)) { notice(staleSections.get(section.id), true); return; }
     if (alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || (alignmentProposal && !alignmentProposal.previewing)) return;
     const fields = [$('offset-x').value, $('offset-y').value, $('rotation').value];
     const values = fields.map(value => value.trim() === '' ? NaN : Number(value));
@@ -571,6 +666,7 @@
   function samePlacement(a, b) { return JSON.stringify(a || null) === JSON.stringify(b || null); }
   async function savePlacement() {
     const section = sections[selected]; if (!section || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
+    if (staleSections.has(section.id)) { notice(staleSections.get(section.id), true); return; }
     saving = true; syncAlignmentControls();
     try {
       const guard = alignmentSaveGuards.get(section.id);
@@ -590,27 +686,36 @@
       if (sections[selected]?.id === section.id) $('placement-status').textContent = 'このブラウザーに配置を保存しました。ZIP出力にも含まれます。';
       updateList(); notice(`${section.name} の配置を保存しました。` + (sourceChanged ? ' 他の更新内容は「再読込」で表示に反映できます。' : ''), sourceChanged);
     } catch (error) { notice(`配置を保存できませんでした：${error.message}`, true); }
-    finally { saving = false; syncAlignmentControls(); }
+    finally { saving = false; await flushSourceChanges({ preserveNotice: true }); syncAlignmentControls(); }
   }
   async function saveCloud() {
     const section = sections[selected]; if (!section || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
+    if (staleSections.has(section.id)) { notice(staleSections.get(section.id), true); return; }
     if (dirtyPlacements.has(section.id)) { notice('先に「配置を保存」を押してください。'); return; }
     saving = true; syncAlignmentControls();
-    try { section.project = await ProjectSync.saveState(section.project); section.sourceRevision = section.project.updatedAt; notice('クラウドに保存しました。'); }
+    try {
+      const project = await ProjectSync.saveState(section.project), status = ProjectSync.statusOf(project);
+      const unchanged = acknowledgeCloudSave(section, project, status);
+      if (status.status === 'saved-local-deleted') markStale(section);
+      if (status.localStateKnown === false) notice(UNKNOWN_LOCAL_MESSAGE, true);
+      else if (!unchanged) notice('クラウドには保存されました。保存中に手元のデータが更新されたため、「再読込」で最新の内容を確認してください。', true);
+      else if (status.status !== 'saved' || status.remainingLocalEdits) notice(status.reason || 'クラウドには保存されました。手元の未同期の編集を確認してください。', true);
+      else notice('クラウドに保存しました。');
+    }
     catch (error) { notice(`クラウド保存を完了できませんでした：${error.message}`, true); }
-    finally { saving = false; syncAlignmentControls(); }
+    finally { saving = false; await flushSourceChanges({ preserveNotice: true }); syncAlignmentControls(); }
   }
   function onSourceChange(change) {
-    if (saving || busy || batchAlignmentUI?.saving) return;
-    const ids = change?.projectIds || []; if (ids.length && !ids.some(id => sections.some(section => section.id === id))) return;
-    batchAlignmentUI?.sourceChanged(ids);
-    if (alignmentWorking || (alignmentProposal && (!ids.length || alignmentProposal.references.some(reference => ids.includes(reference.id))))) {
-      cancelAlignment('参照したデータが更新されたため、候補を取り消しました。再読込して計算し直してください。');
-    }
-    sourceChanged = true; notice('登録データが更新されました。「再読込」で最新の内容を反映できます。', true);
+    const ids = change?.projectIds || [];
+    for (const id of ids) if (sections.some(section => section.id === id)) pendingSourceIds.add(id);
+    if (!ids.length || change?.folderIds?.length) pendingFolderChange = true;
+    flushSourceChanges();
   }
   function openSection() {
-    if (!sections[selected] || busy || saving || batchAlignmentUI?.saving) return; batchAlignmentUI?.cancel(); cancelAlignment(); saveView();
+    if (!sections[selected] || busy || saving || batchAlignmentUI?.saving) return;
+    // beforeunload must see adopted drafts. Only pagehide cancels a proposal
+    // after the user actually leaves; declining navigation preserves it.
+    saveView();
     location.href = '../viewer/index.html?project=' + encodeURIComponent(sections[selected].id) + '&from=stack3d';
   }
   for (const input of document.querySelectorAll('input[name=channel]')) input.addEventListener('change', requestRepaint);
@@ -666,13 +771,14 @@
   batchAlignmentUI = Stack3DBatchUI.create({
     getSections: () => sections, getSelected: () => selected,
     isLocked: () => busy || saving || alignmentWorking,
+    hasStaleSources: () => staleSections.size > 0, isSourceStale: id => staleSections.has(id),
     placementOf, applyPlacement, getDirtyIds: () => new Set(dirtyPlacements),
     setDirty: (id, value) => { if (value) dirtyPlacements.add(id); else dirtyPlacements.delete(id); },
     selectSection, onBeforeCalculate: cancelAlignment,
     onChange: () => {
       syncAlignmentControls(); updateList();
       const current = sections[selected];
-      if (current) $('placement-status').textContent = batchAlignmentUI?.active ? '一括操作中です。上の一括操作で採用・保存してください。' : dirtyPlacements.has(current.id) ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。';
+      if (current) $('placement-status').textContent = placementStatus(current);
     },
     onSaved: projects => {
       for (const project of projects) {
@@ -682,17 +788,12 @@
       }
       $('placement-status').textContent = '一括配置をこのブラウザーに保存しました。ZIP出力にも含まれます。';
     },
-    onCloudSaved: project => {
+    onCloudSaved: (project, status) => {
       const section = sections.find(item => item.id === project.id);
       if (!section) return;
-      const changed = ['displayName', 'grid', 'molecules', 'images', 'rotation', 'world_coords', 'roi', 'stack3d', 'folderId',
-        'normalization', 'normalizationBinding', 'layerDisplay', 'valueDisplay'].some(key => JSON.stringify(project[key] ?? null) !== JSON.stringify(section.project[key] ?? null));
-      if (changed) {
-        sourceChanged = true; notice('クラウド保存中に手元のデータが更新されました。「再読込」で最新の内容を確認してください。', true);
-        return;
-      }
-      section.project = project; section.sourceRevision = project.updatedAt;
-    }
+      if (!acknowledgeCloudSave(section, project, status)) notice(status?.localStateKnown === false ? UNKNOWN_LOCAL_MESSAGE : 'クラウド保存中に手元のデータが更新されました。「再読込」で最新の内容を確認してください。', true);
+    },
+    onPersistenceFinished: () => flushSourceChanges({ preserveNotice: true })
   });
   global.Atlas3D = { get sections() { return sections; }, get selected() { return selected; }, get rendered() { return rendered; },
     get hiddenSectionIds() { return [...hiddenSectionIds]; },

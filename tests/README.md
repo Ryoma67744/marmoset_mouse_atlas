@@ -37,6 +37,26 @@ The browser suite exercises Master selection, WebGL rendering, controls,
 section-detail navigation and return state, and concurrent placement/ROI edits.
 Only synthetic rasters are committed; private study data is not a test fixture.
 
+The v2.21.1 action regressions cover overlapping cloud/ZIP/PNG/Otsu operations,
+authentication changes, bounded cloud requests and unknown write outcomes.
+MSI-only rotation uses one transform for images, ROI outlines, picking and
+drawing; raw coordinates and analytical values remain unchanged. Cloud save
+acknowledgements distinguish the sent snapshot from newer local edits, and a
+Viewer or 3D screen cannot adopt an unseen source revision as its save baseline.
+Navigation cancellation retains adopted 3D drafts; successful and partially
+successful batch saves refresh local warnings without reloading the scene.
+
+Master recovery tests restore connectivity before explicit folder retry/revert.
+Single and bulk deletion share a recoverable per-project operation with cloud
+and local revision checks. A localStorage journal survives reload without an
+IndexedDB schema migration; a Web Lock serializes deletion across tabs. Missing
+locking/journal support blocks deletion before data changes. A confirmed remote
+deletion followed by a local failure is retried only against the reviewed local
+revision, and never deletes a newly recreated remote row. Atomic local deletion
+retains blobs referenced by another project. The UI offers retry or cancellation
+of pending operations and reports partial results. Network fixtures and local
+storage in these tests are isolated from the production service.
+
 The v2.20 alignment candidates use exact-name ROI union-mask pixel centroids in
 physical coordinates from both immediate loaded neighbors. Numerical checks
 cover unequal XY pitch, saved rotation and offsets, proper rigid composition,
