@@ -57,6 +57,13 @@ retains blobs referenced by another project. The UI offers retry or cancellation
 of pending operations and reports partial results. Network fixtures and local
 storage in these tests are isolated from the production service.
 
+The v2.21.2 Viewer checks keep selected molecules in separate analytical charts
+with their own units and statistics; the controls request individual display,
+not cross-molecule concentration comparison. MSI thumbnails compose the same
+base orientation, whole-view rotation and MSI-only rotation as the central
+image. Arbitrary angles fit within each thumbnail without cropping or changing
+raw arrays, saved ROI coordinates, or the orientations of reference thumbnails.
+
 The v2.20 alignment candidates use exact-name ROI union-mask pixel centroids in
 physical coordinates from both immediate loaded neighbors. Numerical checks
 cover unequal XY pitch, saved rotation and offsets, proper rigid composition,
