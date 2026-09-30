@@ -193,6 +193,61 @@ test('Open from an old Master list uses current local edits and declining replac
   } finally { await h.close(); }
 });
 
+for (const serverAddsState of [false, true]) {
+  test('full upload hashes the saved wire state' + (serverAddsState ? ' including server-added fields' : ' without undefined HE fields'), { timeout: 90000 }, async () => {
+    const h = await startBrowserHarness(), id = 'wire-upload';
+    try {
+      const before = await fixture(h, id, { configured: true, pending: true });
+      await h.page.evaluate(async ({ id, serverAddsState }) => {
+        const p = await ProjectStorage.getProject(id);
+        p.layerDisplay = { HE_Stain: { vmin: 4, vmax: 331, opacity: 1, rawRange: undefined, normalizedRange: undefined } };
+        p.alignment = { HE_Stain: { scale_pct: 100, autoAligned: undefined } };
+        await ProjectStorage.saveProjectIfUnchanged(p, p.updatedAt);
+        ZipIO.exportProject = async () => new Blob(['synthetic replacement raw bundle']);
+        const patch = Cloud.patchRowIfUnchanged;
+        Cloud.patchRowIfUnchanged = async (id, payload, expected) => {
+          window.__wirePayloadHasUndefined = Object.prototype.hasOwnProperty.call(payload.state.layerDisplay.HE_Stain, 'rawRange') ||
+            Object.prototype.hasOwnProperty.call(payload.state.alignment.HE_Stain, 'autoAligned');
+          const row = await patch(id, payload, expected);
+          if (row && serverAddsState) {
+            row.state.futureServerField = { version: 1 };
+            const rows = JSON.parse(localStorage.getItem('reliability-remote'));
+            rows[id] = row; localStorage.setItem('reliability-remote', JSON.stringify(rows));
+          }
+          return row;
+        };
+      }, { id, serverAddsState });
+      await h.page.locator('#project-list [data-act="push"]').click();
+      await h.page.waitForFunction(() => document.getElementById('register-status').textContent.includes('クラウドに保存しました'));
+      const result = await snapshot(h.page, id);
+      const flags = await h.page.evaluate(async id => {
+        const p = await ProjectStorage.getProject(id), row = JSON.parse(localStorage.getItem('reliability-remote'))[id];
+        return { payloadHasUndefined: window.__wirePayloadHasUndefined,
+          localStillHasUndefined: Object.prototype.hasOwnProperty.call(p.layerDisplay.HE_Stain, 'rawRange'),
+          baseline: p.cloudStateHash, serverHash: Cloud.hashSyncState(row.state),
+          localHash: Cloud.hashSyncState(Cloud.stateOf(p)), status: ProjectSync.localStatus(p, { cloud: Cloud }).status };
+      }, id);
+      assert.equal(flags.payloadHasUndefined, false, 'the hashed upload is the exact JSON-safe payload sent');
+      assert.equal(flags.localStillHasUndefined, true, 'acknowledgement does not rewrite unrelated local state');
+      assert.equal(flags.baseline, flags.serverHash, 'the baseline comes from the actual saved row, including unknown keys');
+      assert.equal(flags.baseline === flags.localHash, !serverAddsState);
+      assert.equal(flags.status, serverAddsState ? 'local-edits' : 'current');
+      assert.deepEqual(result.bits, before.bits);
+      assert.deepEqual(result.project.normalization, before.profile);
+      assert.equal(result.project.cloudBundlePath, result.remote.bundle_path);
+      assert.equal(result.project.cloudRev, result.remote.bundle_rev);
+      assert.equal(result.calls.filter(call => call.kind === 'patch').length, 1);
+      if (!serverAddsState) {
+        await h.page.reload();
+        await h.page.locator('#project-list [data-act="open"]').waitFor();
+        assert.match(await h.page.locator('#project-list').innerText(), /同期済み/);
+        assert.doesNotMatch(await h.page.locator('#project-list').innerText(), /未保存の変更/);
+      }
+      assert.deepEqual(h.errors, []);
+    } finally { await h.close(); }
+  });
+}
+
 test('published replacement bundle survives a local edit before upload acknowledgement', { timeout: 90000 }, async () => {
   const h = await startBrowserHarness(), id = 'published-upload';
   try {

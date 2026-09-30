@@ -128,8 +128,9 @@ test('authoritative cloud UUID repair changes mutable identity only and refuses 
       await s.restoreNormalizationGroup(folderId, 'old-group');
       for (const id of ['a', 'b']) {
         const project = { id, folderId, displayName: id, normalization: { schemaVersion: 2, id: 'old-profile', scope: { groupId: 'old-group', memberIds: ['a', 'b'] }, section: { k: 2 } },
-          normalizationBinding: { groupId: 'old-group', memberId: id, folderPath: ['Marmoset', 'Coronal'] }, cloudUpdatedAt: 'old-time' };
-        project.cloudStateHash = Cloud.hashState(Cloud.stateOf(project));
+          normalizationBinding: { groupId: 'old-group', memberId: id, folderPath: ['Marmoset', 'Coronal'] }, cloudUpdatedAt: 'old-time',
+          layerDisplay: { HE_Stain: { vmin: 4, vmax: 331, rawRange: undefined, normalizedRange: undefined } } };
+        project.cloudStateHash = Cloud.hashSyncState(Cloud.stateOf(project));
         await s.saveProjectIfUnchanged(project, null);
       }
       const a = await s.getProject('a'), b = await s.getProject('b'), oldProfileB = JSON.stringify(b.normalization);
@@ -151,7 +152,9 @@ test('authoritative cloud UUID repair changes mutable identity only and refuses 
       const afterB = await s.getProject('b');
       return { rejected, identityAfterRejection, identityAfter: (await s.getFolder(folderId)).normalizationGroupId,
         siblingBinding: afterB.normalizationBinding.groupId, siblingSnapshotUnchanged: JSON.stringify(afterB.normalization) === oldProfileB,
-        siblingRevision: afterB.cloudUpdatedAt, siblingClean: Cloud.hashState(Cloud.stateOf(afterB)) === afterB.cloudStateHash };
+        siblingRevision: afterB.cloudUpdatedAt, siblingClean: Cloud.hashSyncState(Cloud.stateOf(afterB)) === afterB.cloudStateHash,
+        undefinedFieldsPreserved: Object.prototype.hasOwnProperty.call(afterB.layerDisplay.HE_Stain, 'rawRange'),
+        remoteStateNotAcknowledged: Cloud.hashSyncState(authority[1].state) !== afterB.cloudStateHash };
     });
     assert.equal(result.rejected, true);
     assert.equal(result.identityAfterRejection, 'old-group');
@@ -160,6 +163,8 @@ test('authoritative cloud UUID repair changes mutable identity only and refuses 
     assert.equal(result.siblingSnapshotUnchanged, true);
     assert.equal(result.siblingRevision, 'old-time');
     assert.equal(result.siblingClean, true);
+    assert.equal(result.undefinedFieldsPreserved, true);
+    assert.equal(result.remoteStateNotAcknowledged, true, 'identity repair cannot acknowledge the newer remote scientific profile');
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
