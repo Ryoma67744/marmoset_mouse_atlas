@@ -943,6 +943,10 @@
         let currentFolderId = null;                 // null = 一番上
         let expanded = new Set();                   // 展開中のフォルダ id
         let cache = { folders: [], projects: [], tree: null };
+        let deletionBusy = false;
+        let deletionResults = [];
+        let folderSyncUiBusy = false;
+        const DELETION_PREFIX = 'marmoset:pendingDeletion:';
         // Only explicit folder operations enqueue remote writes. A read/refresh must
         // never push an older local path over a newer remote folder assignment.
         const FOLDER_SYNC_PREFIX = 'marmoset:pendingFolderChange:';
@@ -968,6 +972,7 @@
         }
         window.addEventListener('storage', event => {
             if (event.key && event.key.startsWith(FOLDER_SYNC_PREFIX)) { pendingFolderChanges = readFolderChanges(); renderFolderSync(); }
+            if (event.key && event.key.startsWith(DELETION_PREFIX)) renderDeletionStatus();
         });
 
         const FOLDER_KEY = 'marmoset:currentFolder';
@@ -1004,7 +1009,7 @@
         function refreshBulkButtons() {
             const n = selectedIds().length;
             document.getElementById('bulk-export').disabled = excelBatchBusy || normalizationBusy || n === 0;
-            document.getElementById('bulk-delete').disabled = excelBatchBusy || normalizationBusy || n === 0;
+            document.getElementById('bulk-delete').disabled = deletionBusy || excelBatchBusy || normalizationBusy || n === 0;
             document.getElementById('bulk-move').disabled = excelBatchBusy || normalizationBusy || n === 0;
             document.getElementById('bulk-merge').disabled = excelBatchBusy || normalizationBusy || n < 2;
         }
@@ -1120,6 +1125,7 @@
             renderBreadcrumb();
             renderContents();
             renderFolderSync();
+            renderDeletionStatus();
             refreshBulkButtons();
             if (excelBatchBusy || normalizationBusy) setExcelExportControlsDisabled(true);
         }
@@ -1136,25 +1142,27 @@
                 records.map(([id,p]) => esc(p.name || id) + ' → ' + esc(p.path.join(' / ') || 'すべて')).join('<br>') + '</div>' +
                 '<button class="btn" id="folder-sync-retry" style="margin-top:8px">同期を再試行</button> ' +
                 '<button class="btn" id="folder-sync-revert" style="margin-top:8px">クラウドの最新の所属に戻す</button>';
+            panel.querySelectorAll('button').forEach(b => { b.disabled = folderSyncUiBusy; });
             const run = async action => {
+                if (folderSyncUiBusy) return;
+                folderSyncUiBusy = true;
                 panel.querySelectorAll('button').forEach(b => { b.disabled = true; });
-                try { await action(); await reload(); render(); }
-                catch (e) { showError(e.message); renderFolderSync(); }
+                try { await action(); await reload(); }
+                catch (e) { showError(e.message); }
+                finally { folderSyncUiBusy = false; render(); paintCloudChip(); }
             };
             panel.querySelector('#folder-sync-retry').onclick = () => run(async () => {
-                if (!cloudReady()) throw new Error('クラウドに接続してから再試行してください。');
-                const rows = new Map((await Cloud.listProjects()).map(r => [r.id, r]));
+                const rows = new Map((await fetchCurrentCloudRows()).map(r => [r.id, r]));
                 const current = readFolderChanges();
                 const changed = Object.entries(current).filter(([id,p]) => rows.has(id) && rows.get(id).updated_at !== p.expectedUpdatedAt);
                 if (changed.length && !confirm('クラウド側が更新されています。最新のデータ・補正設定を保持し、次の所属変更だけを反映しますか？\n\n' +
                     changed.map(([id,p]) => (p.name || id) + '\n現在: ' + (rows.get(id).folder_path || []).join(' / ') + '\n移動先: ' + p.path.join(' / ')).join('\n\n'))) return;
                 for (const [id,p] of changed) await changeFolderQueue(id, Object.assign({},p,{expectedUpdatedAt:rows.get(id).updated_at}),p);
-                await reconcileFolderPaths();
+                await reconcileFolderPaths(rows);
             });
             panel.querySelector('#folder-sync-revert').onclick = () => run(async () => {
-                if (!cloudReady()) throw new Error('クラウドに接続してから最新の所属を取得してください。');
                 if (!confirm('未同期の所属変更を取り消し、クラウドの最新の所属に戻します。生値と保存済みの補正計算記録は保持します。')) return;
-                const rows = new Map((await Cloud.listProjects()).map(r => [r.id, r]));
+                const rows = new Map((await fetchCurrentCloudRows()).map(r => [r.id, r]));
                 for (const [id,pending] of Object.entries(readFolderChanges())) {
                     const row = rows.get(id), project = await ProjectStorage.getProject(id);
                     if (row && project) {
@@ -1592,16 +1600,9 @@
                 exportOne(target);
             });
             row.querySelector('[data-act="delete"]').addEventListener('click', async () => {
-                // ★ クラウドを使っているときは「どの PC からも消える」ことを明記する。
-                //   1 台の掃除のつもりで全員のデータを消せてしまうため。
-                const msg = cloudOn() && (p.__row || p.cloudUpdatedAt)
-                    ? `「${p.displayName}」を削除します。\nクラウドからも消えるので、他の PC でも開けなくなります。`
-                    : `「${p.displayName}」を削除しますか?`;
-                if (!confirm(msg)) return;
-                await deleteFromCloud(p);
-                await ProjectStorage.deleteProject(p.id);
-                await refreshProjectList();
+                await requestProjectDeletions([p]);
             });
+            row.querySelector('[data-act="delete"]').disabled = deletionBusy;
             return row;
         }
 
@@ -2021,7 +2022,15 @@
                             if (src.cloudUpdatedAt) retained.push(src.displayName);
                             continue;
                         }
-                        if (!await deleteFromCloud(src, row)) retained.push(src.displayName);
+                        const deleted = await deleteFromCloud(src, row);
+                        if (!deleted.ok) retained.push(src.displayName);
+                        else {
+                            await changeFolderQueue(src.id, null);
+                            if (deleted.row && deleted.row.bundle_path) {
+                                try { await Cloud.removeBundle(deleted.row.bundle_path); }
+                                catch (error) { console.warn('[cloud] 未参照の ZIP を消せません', error); }
+                            }
+                        }
                     }
                     if (retained.length) showError('統合結果は送信しました。更新または未同期の内容があるため、クラウドの元データを保持しています: ' + retained.join(' / '));
                 }
@@ -2576,22 +2585,8 @@
         });
 
         document.getElementById('bulk-delete').addEventListener('click', async () => {
-            const ids = selectedIds();
-            if (!ids.length) return;
-            const anyCloud = cloudOn() && ids.some(id => {
-                const p = cache.projects.find(x => x.id === id);
-                return p && (p.__row || p.cloudUpdatedAt);
-            });
-            const msg = anyCloud
-                ? `選択した ${ids.length} 件を削除します。\nクラウドからも消えるので、他の PC でも開けなくなります。`
-                : `選択した ${ids.length} 件を削除しますか?`;
-            if (!confirm(msg)) return;
-            for (const id of ids) {
-                const p = cache.projects.find(x => x.id === id);
-                if (p) await deleteFromCloud(p);
-                await ProjectStorage.deleteProject(id);
-            }
-            await refreshProjectList();
+            const ids = new Set(selectedIds());
+            await requestProjectDeletions(cache.projects.filter(p => ids.has(p.id)));
         });
 
         // =================================================================
@@ -2641,6 +2636,26 @@
 
         function cloudOn() { return !!(window.Cloud && Cloud.configured()); }
         function cloudReady() { return cloudOn() && Cloud.signedIn() && !cloudOffline; }
+
+        // Explicit retry asks the server again; a previous offline observation
+        // must not prevent the very request that can establish recovery.
+        async function fetchCurrentCloudRows() {
+            if (!cloudOn()) throw new Error('クラウドが設定されていません。');
+            if (!Cloud.signedIn()) {
+                showGate('クラウドにログインしてから再試行してください。');
+                throw new Error('クラウドにログインしてから再試行してください。');
+            }
+            try {
+                const rows = await Cloud.listProjects();
+                cloudOffline = false; cloudErrorText = '';
+                return rows;
+            } catch (error) {
+                cloudOffline = true;
+                cloudErrorText = error.status === 401 ? 'ログインが必要' : 'クラウド未接続';
+                if (error.status === 401) showGate(error.message);
+                throw error;
+            } finally { paintCloudChip(); }
+        }
 
         function paintCloudChip() {
             const chip = document.getElementById('cloud-chip');
@@ -2832,26 +2847,195 @@
             }
         }
 
+        function deletionKey(id) { return DELETION_PREFIX + encodeURIComponent(id); }
+        function readDeletion(id) {
+            const raw = localStorage.getItem(deletionKey(id));
+            if (!raw) return null;
+            const operation = JSON.parse(raw);
+            if (!operation || operation.id !== id || !operation.operationId ||
+                !['prepared','remote-deleted'].includes(operation.phase) ||
+                !Object.prototype.hasOwnProperty.call(operation, 'expectedLocalUpdatedAt')) {
+                throw new Error('削除の未完了記録を確認できません。手元のデータを保持しています。');
+            }
+            return operation;
+        }
+        function writeDeletion(operation, expectedOperationId) {
+            const current = readDeletion(operation.id);
+            if ((current && current.operationId || null) !== expectedOperationId) throw new Error('削除の操作記録が変更されています。');
+            const raw = JSON.stringify(operation);
+            localStorage.setItem(deletionKey(operation.id), raw);
+            if (localStorage.getItem(deletionKey(operation.id)) !== raw) throw new Error('削除の操作記録を保存できません。');
+        }
+        function clearDeletion(operation) {
+            if (readDeletion(operation.id)?.operationId !== operation.operationId) throw new Error('削除の操作記録が変更されています。');
+            localStorage.removeItem(deletionKey(operation.id));
+            if (localStorage.getItem(deletionKey(operation.id))) throw new Error('削除の完了記録を保存できません。');
+        }
+        async function withDeletionLock(id, action) {
+            // The journal and remote operation must have one owner across tabs.
+            // Do not fall back to a non-atomic localStorage read/write lock.
+            if (!navigator.locks) throw new Error('このブラウザーでは安全な削除を実行できません。Web Locks 対応のブラウザーで開いてください。');
+            return navigator.locks.request('marmoset-delete-' + id, {ifAvailable:true}, lock => {
+                if (!lock) throw new Error('別の画面でこのデータの削除を処理中です。完了後に確認してください。');
+                return action();
+            });
+        }
+        async function assertDeletionLocalRevision(operation) {
+            const local = await ProjectStorage.getProject(operation.id);
+            if ((local && local.updatedAt || null) !== operation.expectedLocalUpdatedAt) {
+                throw new Error('確認後に手元のデータが更新または削除されました。新しい内容を保持しています。削除を中止して対象を確認してください。');
+            }
+        }
+        async function deleteReviewedProject(reviewed, retry) {
+            let operation, localDeleted = false;
+            try {
+                return await withDeletionLock(reviewed.id, async () => {
+                    const pendingOperation = readDeletion(reviewed.id);
+                    if (!retry && pendingOperation) throw new Error('このデータには未完了の削除があります。今回の削除は実行していません。前の操作を「再試行」または「中止」してから対象を確認してください。');
+                    operation = pendingOperation;
+                    if (retry && (!operation || operation.operationId !== reviewed.operationId)) {
+                        throw new Error('削除の未完了記録が変更されています。現在の対象を確認してください。');
+                    }
+                    if (!operation) {
+                        await assertDeletionLocalRevision(reviewed);
+                        operation = Object.assign({}, reviewed, {operationId:ProjectStorage.uid('delete'),
+                            phase:reviewed.cloudRequired ? 'prepared' : 'remote-deleted'});
+                        // Persist intent before contacting the server. A failed
+                        // journal write must never start a remote deletion.
+                        writeDeletion(operation, null);
+                    }
+                    if (operation.phase === 'prepared') {
+                        await assertDeletionLocalRevision(operation);
+                        if (!cloudOn() || !Cloud.signedIn()) {
+                            if (cloudOn()) showGate('クラウドにログインしてから削除を再試行してください。');
+                            throw new Error('クラウドに接続・ログインしてから削除を再試行してください。');
+                        }
+                        // A prior request may have committed before its response
+                        // was lost. Fresh absence confirms completion; a new
+                        // revision must never be deleted by this old intent.
+                        const remote = await Cloud.getProject(operation.id);
+                        if (remote) {
+                            if (!operation.expectedCloudUpdatedAt || remote.updated_at !== operation.expectedCloudUpdatedAt) {
+                                throw new Error('クラウドで更新されています。クラウドと手元のデータを保持しています。削除を中止して対象を確認してください。');
+                            }
+                            await assertDeletionLocalRevision(operation);
+                            const result = await deleteFromCloud(operation, remote);
+                            if (!result.ok) throw result.error;
+                            operation.deletedBundlePath = result.row.bundle_path || null;
+                        }
+                        operation.phase = 'remote-deleted';
+                        writeDeletion(operation, operation.operationId);
+                    }
+                    // An acknowledged remote deletion is never issued again,
+                    // including when a new remote row now reuses the same ID.
+                    if (readDeletion(operation.id)?.operationId !== operation.operationId) throw new Error('削除の操作記録が変更されています。');
+                    await ProjectStorage.deleteProject(operation.id, {
+                        expectedUpdatedAt:operation.expectedLocalUpdatedAt, allowMissing:true
+                    });
+                    localDeleted = true;
+                    if (operation.folderChange) await changeFolderQueue(operation.id, null, operation.folderChange);
+                    clearDeletion(operation);
+                    // Blob cleanup is secondary to the confirmed row deletion.
+                    // Keep a bundle referenced by a newly created row.
+                    if (operation.deletedBundlePath && cloudOn() && Cloud.signedIn()) {
+                        try {
+                            const current = await Cloud.getProject(operation.id);
+                            if (!current || current.bundle_path !== operation.deletedBundlePath) await Cloud.removeBundle(operation.deletedBundlePath);
+                        } catch (error) { console.warn('[cloud] 未参照の ZIP の整理は未完了です', error); }
+                    }
+                    return {id:operation.id,name:operation.name,status:'deleted',message:'削除しました。'};
+                });
+            } catch (error) {
+                if (error.status === 401 && cloudOn()) showGate(error.message);
+                const remoteDeleted = operation && operation.cloudRequired && operation.phase === 'remote-deleted';
+                return {id:reviewed.id,name:reviewed.name,status:localDeleted ? 'cleanup-pending' : remoteDeleted ? 'local-pending' : 'retained',
+                    message:(localDeleted ? 'データの削除は完了していますが、完了記録の更新が未完了です。再試行してください。 ' :
+                        remoteDeleted ? 'クラウドは削除済みです。手元のデータを保持しています。 ' : '手元のデータを保持しています。 ') + error.message};
+            }
+        }
+        async function requestProjectDeletions(rows, retry = false) {
+            if (deletionBusy || !rows.length) return;
+            deletionBusy = true;
+            renderDeletionStatus(); refreshBulkButtons();
+            document.querySelectorAll('#project-list [data-act="delete"]').forEach(button => { button.disabled = true; });
+            try {
+                const folderChanges = readFolderChanges();
+                const reviewed = retry ? rows : await Promise.all(rows.map(async row => {
+                    const local = await ProjectStorage.getProject(row.id);
+                    return {id:row.id,name:local && local.displayName || row.displayName || row.id,
+                        expectedLocalUpdatedAt:local && local.updatedAt || null,
+                        expectedCloudUpdatedAt:row.__row && row.__row.updated_at || row.cloudUpdatedAt || local && local.cloudUpdatedAt || null,
+                        cloudRequired:!!(row.__row || row.cloudUpdatedAt || local && (local.cloudUpdatedAt || local.cloudBundlePath)),
+                        folderChange:folderChanges[row.id] || null};
+                }));
+                if (!retry && !confirm((reviewed.length === 1 ? '「' + reviewed[0].name + '」' : '選択した ' + reviewed.length + ' 件') +
+                    'を削除しますか？' + (reviewed.some(p => p.cloudRequired) ? '\nクラウドからも消えるので、他の PC でも開けなくなります。' : '') +
+                    '\n確認後に更新されたデータは削除せず保持します。')) return;
+                deletionResults = [];
+                for (const operation of reviewed) {
+                    deletionResults.push(await deleteReviewedProject(operation, retry));
+                    renderDeletionStatus();
+                }
+            } catch (error) { showError('削除を完了できませんでした。手元のデータを保持しています: ' + error.message); }
+            finally {
+                deletionBusy = false;
+                document.querySelectorAll('#project-list [data-act="delete"]').forEach(button => { button.disabled = excelBatchBusy || normalizationBusy; });
+                await refreshProjectList();
+                renderDeletionStatus(); refreshBulkButtons();
+            }
+        }
+        function renderDeletionStatus() {
+            const list = document.getElementById('project-list');
+            if (!list) return;
+            let panel = document.getElementById('deletion-status');
+            if (!panel) { panel = document.createElement('div'); panel.id = 'deletion-status'; panel.setAttribute('role','status'); list.before(panel); }
+            let pending;
+            try {
+                pending = Object.keys(localStorage).filter(key => key.startsWith(DELETION_PREFIX))
+                    .map(key => readDeletion(decodeURIComponent(key.slice(DELETION_PREFIX.length)))).filter(Boolean);
+            } catch (error) { showError(error.message); return; }
+            panel.style.cssText = pending.length || deletionResults.length || deletionBusy ? 'border:1px solid #d97706;background:#fffbeb;padding:10px;margin:8px 0;font-size:12px' : 'display:none';
+            const completed = deletionResults.filter(result => result.status === 'deleted').length;
+            panel.innerHTML = (deletionBusy ? '<strong>削除を確認・処理中…</strong>' : '') +
+                (deletionResults.length ? '<div>削除結果：完了 ' + completed + ' 件 / 未完了 ' + (deletionResults.length-completed) + ' 件</div>' +
+                    deletionResults.map(result => '<div data-deletion-result="' + esc(result.id) + '">' + esc(result.name) + '：' + esc(result.message) + '</div>').join('') : '') +
+                pending.map(operation => '<div style="margin-top:8px">' + esc(operation.name) + '：' +
+                    (!operation.cloudRequired ? '手元の削除が未完了' : operation.phase === 'remote-deleted' ?
+                        'クラウド削除済み・手元の削除確認が未完了' : '削除が未完了（クラウドの結果が未確認の場合も含みます）') +
+                    ' <button class="btn" data-delete-retry="' + esc(operation.id) + '">未完了の削除を再試行</button> ' +
+                    '<button class="btn" data-delete-cancel="' + esc(operation.id) + '">手元のデータを保持して削除を中止</button></div>').join('');
+            panel.querySelectorAll('button').forEach(button => { button.disabled = deletionBusy; });
+            panel.querySelectorAll('[data-delete-retry]').forEach(button => {
+                button.onclick = () => requestProjectDeletions(pending.filter(operation => operation.id === button.dataset.deleteRetry), true);
+            });
+            panel.querySelectorAll('[data-delete-cancel]').forEach(button => {
+                button.onclick = async () => {
+                    if (deletionBusy || !confirm('未完了の削除を中止し、手元のデータを保持します。すでに実行されたクラウド側の削除は元に戻りません。続けますか？')) return;
+                    const operation = pending.find(item => item.id === button.dataset.deleteCancel);
+                    try {
+                        await withDeletionLock(operation.id, () => clearDeletion(operation));
+                        deletionResults = deletionResults.filter(result => result.id !== operation.id);
+                        await refreshProjectList();
+                    } catch (error) { showError(error.message); }
+                    finally { renderDeletionStatus(); }
+                };
+            });
+        }
+
         async function deleteFromCloud(p, expectedRow) {
-            if (!cloudOn() || !Cloud.signedIn()) return false;
             const source = expectedRow || p.__row;
             const expected = source && source.updated_at || p.cloudUpdatedAt;
             try {
+                if (!cloudOn() || !Cloud.signedIn()) throw new Error('クラウドにログインしてから再試行してください。');
                 // Delete only the version the operation actually consumed. The
                 // bundle is kept if a newer row exists or deletion fails.
                 if (!expected) throw new Error('削除元のクラウド版を確認できません');
                 const deleted = await Cloud.removeRowIfUnchanged(p.id, expected);
                 if (!deleted) throw new Error('別の画面で更新されたため、クラウドのデータを保持しました');
-                await changeFolderQueue(p.id, null);
-                if (deleted.bundle_path) {
-                    try { await Cloud.removeBundle(deleted.bundle_path); }
-                    catch (error) { console.warn('[cloud] 未参照の ZIP を消せません', error); }
-                }
-                return true;
+                return {ok:true,row:deleted};
             } catch (error) {
                 console.warn('[cloud] 行を消せません', error);
-                showError('クラウドの削除を完了できませんでした: ' + error.message);
-                return false;
+                return {ok:false,error};
             }
         }
 
@@ -2861,13 +3045,13 @@
          * 一覧を読んだだけでは、ローカルの古い所属を送り返さない。
          */
         let folderSyncTask = null;
-        async function reconcileFolderPaths() {
+        async function reconcileFolderPaths(confirmedRows) {
             if (folderSyncTask) return folderSyncTask;
             pendingFolderChanges = readFolderChanges();
             if (!cloudReady() || !Object.keys(pendingFolderChanges).length) return;
             folderSyncTask = (async () => {
                 const failures = [];
-                const latestRows = new Map((await Cloud.listProjects()).map(row => [row.id, row]));
+                const latestRows = confirmedRows || new Map((await Cloud.listProjects()).map(row => [row.id, row]));
                 for (const [id, pending] of Object.entries(pendingFolderChanges)) {
                     try {
                         const remote = latestRows.get(id);

@@ -374,7 +374,8 @@ test('unsynchronized edits appear as a compact header warning with complete acce
         ensureLocal: id => ProjectStorage.getProject(id),
         statusOf: p => p.id === 'stack-skipped' ? { status: 'current' } : {
           status: 'local-edits', reason: '手元に未同期の編集があります'
-        }
+        },
+        localStatus(p) { const status = this.statusOf(p); return { ...status, remainingLocalEdits: status.status === 'local-edits' }; }
       };`
     }));
     await page.goto(h.baseURL + '/stack3d/index.html');

@@ -37,7 +37,7 @@
         for (const id of cloudQueue) if (!loadedIds.has(id)) { cloudQueue.delete(id); changed = true; }
         if (changed) saveCloudQueue();
       }
-      $('batch-calculate').disabled = unavailable || !!proposal || sections.length < 3;
+      $('batch-calculate').disabled = unavailable || !!proposal || sections.length < 3 || !!context.hasStaleSources?.();
       $('batch-preview').disabled = unavailable || !proposal?.adjusted.length || proposal.adopted || proposal.stale;
       $('batch-preview').setAttribute('aria-pressed', String(!!proposal?.previewing));
       $('batch-preview').textContent = proposal?.previewing ? '元の配置と比較' : '全体の候補を仮表示';
@@ -143,7 +143,7 @@
       }
     }
     async function calculate() {
-      if (locked() || proposal || context.getSections().length < 3) return;
+      if (locked() || proposal || context.getSections().length < 3 || context.hasStaleSources?.()) return;
       context.onBeforeCalculate();
       const token = ++generation;
       working = true; clearResult(); message('全切片のデータとROIを確認しています…'); notify();
@@ -228,7 +228,7 @@
           (cloudReady() ? '\n必要に応じてクラウドにも一括保存できます。' : ''));
       } catch (error) {
         if (proposal === candidate) message(`一括保存できませんでした。候補は未保存のまま保持しています：${error.message}`);
-      } finally { working = false; persisting = false; notify(); }
+      } finally { working = false; persisting = false; notify(); await context.onPersistenceFinished?.(); }
     }
     async function saveCloud() {
       if (locked() || proposal || !context.getSections().length || !cloudQueue.size || !cloudReady()) return;
@@ -242,12 +242,13 @@
           const id = ids[index]; message(`クラウドへ一括保存中… ${index + 1} / ${ids.length}`);
           try {
             if (context.getDirtyIds().has(id)) throw new Error('配置に未保存の変更があります。');
+            if (context.isSourceStale?.(id)) throw new Error('元のデータが更新されています。再読込してから保存してください。');
             const project = await global.ProjectStorage.getProject(id);
             if (!project) throw new Error('保存する切片が見つかりません。');
             const saved = await global.ProjectSync.saveState(project);
             const status = global.ProjectSync.statusOf?.(saved);
-            context.onCloudSaved(saved);
-            if (status && status.status !== 'saved') throw new Error(status.reason || 'クラウド保存後の状態を確認してください。');
+            context.onCloudSaved(saved, status);
+            if (status && (status.status !== 'saved' || status.remainingLocalEdits)) throw new Error(status.reason || 'クラウド保存後の状態を確認してください。');
             cloudQueue.delete(id); saveCloudQueue(); succeeded++;
           } catch (error) {
             const name = context.getSections().find(section => section.id === id)?.name || id;
@@ -257,13 +258,14 @@
         }
         message(`クラウド保存：${succeeded} / ${ids.length}切片を完了しました。` +
           (failures.length ? `\nこのブラウザーへの一括保存は完了しています。未完了の${failures.length}切片だけ再試行できます。\n${failures.join('\n')}` : ''));
-      } finally { working = false; persisting = false; notify(); }
+      } finally { working = false; persisting = false; notify(); await context.onPersistenceFinished?.(); }
     }
-    function sourceChanged(ids) {
+    function sourceChanged(ids, { preserveMessage = false } = {}) {
       if (persisting) return;
       const relevant = !ids?.length || (proposal?.references || context.getSections()).some(reference => ids.includes(reference.id));
       if (!relevant || (!working && !proposal)) return;
-      const text = '参照したデータが更新されました。再読込して全体の候補を計算し直してください。';
+      const previous = preserveMessage && $('batch-message').textContent ? $('batch-message').textContent + '\n' : '';
+      const text = previous + '参照したデータが更新されました。再読込して全体の候補を計算し直してください。';
       if (proposal?.adopted) {
         generation++; working = false; proposal.stale = true;
         message(text + '\n採用した配置は未保存のまま保持しています。「取り消す」で計算前に戻せます。'); notify();

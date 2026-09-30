@@ -7,7 +7,7 @@ const vm = require('node:vm');
 const copy = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 function fixture() {
-  const c = { console, Blob, WeakMap, Map, Set }; c.window = c;
+  const c = { console, Blob, WeakMap, Map, Set, AbortController, setTimeout, clearTimeout }; c.window = c;
   vm.createContext(c);
   for (const file of ['cloud.js', 'project-sync.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../lib', file), 'utf8'), c, { filename: file });
@@ -66,6 +66,75 @@ function fixture() {
     remoteEdit(stateFields) { Object.assign(row.state, copy(stateFields)); row.updated_at = 'remote-' + (++n); },
   };
 }
+
+test('local status evaluates acknowledged fields without cloud reads or mutation', () => {
+  const f = fixture(), before = copy(f.local);
+  assert.equal(f.c.ProjectSync.localStatus(f.local, f.options).status, 'current');
+  f.local.viewerTransform = { scale: 3 };
+  assert.equal(f.c.ProjectSync.localStatus(f.local, f.options).remainingLocalEdits, false);
+  f.local.cloudDisplayName = f.local.displayName;
+  f.local.displayName = 'new name';
+  assert.equal(f.c.ProjectSync.localStatus(f.local, f.options).status, 'local-edits');
+  assert.equal(f.c.ProjectSync.localStatus(f.local, { ...f.options, pendingFolderChanges: { p: true } }).status, 'pending');
+  f.local = before;
+  f.local.cloudPending = true;
+  assert.equal(f.c.ProjectSync.localStatus(f.local, f.options).remainingLocalEdits, true);
+  assert.equal(f.calls.fetch, 0);
+});
+
+test('a saved snapshot reports remaining local edits without acknowledging their content', async () => {
+  const f = fixture(); f.edit({ stack3d: { offsetXUm: 0 } });
+  const send = f.cloud.patchRowIfUnchanged;
+  f.cloud.patchRowIfUnchanged = async (...args) => {
+    const row = await send(...args);
+    f.edit({ stack3d: { offsetXUm: 1234 } });
+    return row;
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-edits');
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(status.remainingLocalEdits, true);
+  assert.equal(result.stack3d.offsetXUm, 1234);
+  assert.equal(f.row.state.stack3d.offsetXUm, 0);
+  assert.equal(result.cloudStateHash, f.cloud.hashState(f.row.state));
+  assert.notEqual(result.cloudStateHash, f.cloud.hashState(f.cloud.stateOf(result)));
+});
+
+test('local viewport edits during a save remain local without a false unsynced warning', async () => {
+  const f = fixture(); f.edit({ roi: { names: ['changed'] } });
+  const send = f.cloud.patchRowIfUnchanged;
+  f.cloud.patchRowIfUnchanged = async (...args) => {
+    const row = await send(...args); f.edit({ viewerTransform: { scale: 3 } }); return row;
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  assert.equal(result.viewerTransform.scale, 3);
+  assert.equal(f.c.ProjectSync.statusOf(result).status, 'saved');
+  assert.equal(f.c.ProjectSync.statusOf(result).remainingLocalEdits, false);
+});
+
+test('an unknown write outcome recovers by reading the accepted state without resending', async () => {
+  const f = fixture(); f.edit({ roi: { names: ['sent'] } });
+  const send = f.cloud.patchRowIfUnchanged;
+  f.cloud.patchRowIfUnchanged = async (...args) => {
+    await send(...args);
+    throw Object.assign(new Error('response lost'), { code: 'CLOUD_TIMEOUT', outcomeUnknown: true });
+  };
+  await assert.rejects(f.c.ProjectSync.saveState(copy(f.local), f.options), error => error.outcomeUnknown);
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  assert.equal(f.calls.patch, 1);
+  assert.equal(f.c.ProjectSync.statusOf(result).status, 'saved');
+  assert.equal(result.cloudUpdatedAt, f.row.updated_at);
+  assert.equal(result.roi.names[0], 'sent');
+});
+
+test('state-save acknowledgement does not claim an unsent rename is synchronized', async () => {
+  const f = fixture(); f.edit({ displayName: 'local rename' });
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  assert.equal(f.c.ProjectSync.statusOf(result).status, 'saved-local-edits');
+  assert.equal(result.displayName, 'local rename');
+  assert.equal(f.row.display_name, 'section');
+});
 
 test('ensureLocal reads current local storage and remote state; stale listing cannot replace newer local profile', async () => {
   const f = fixture();
@@ -333,4 +402,129 @@ test('simple-profile cloud save preserves arbitrary targets and requires explici
   assert.deepEqual(copy(refreshed.normalization), copy(f.row.state.normalization));
   assert.equal(refreshed.molecules[0].blobId, rawBlob);
   assert.equal(f.calls.download, 0);
+});
+
+
+test('confirmed cloud save survives a failed first local reread without overwriting newer data', async () => {
+  const f = fixture(); f.edit({ roi: { names: ['sent ROI'] } });
+  const send = f.cloud.patchRowIfUnchanged;
+  f.cloud.patchRowIfUnchanged = async (...args) => {
+    const saved = await send(...args);
+    f.edit({ roi: { names: ['newer local ROI'] } });
+    f.storage.getProject = async () => { throw new Error('local read unavailable'); };
+    return saved;
+  };
+  const source = copy(f.local), result = await f.c.ProjectSync.saveState(source, f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-unacknowledged');
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(status.remainingLocalEdits, true);
+  assert.equal(status.localStateKnown, false);
+  assert.equal(status.localReadError.message, 'local read unavailable');
+  assert.deepEqual(copy(status.remoteRow), f.row);
+  assert.equal(f.row.state.roi.names[0], 'sent ROI');
+  assert.equal(f.local.roi.names[0], 'newer local ROI');
+  assert.equal(f.local.cloudUpdatedAt, 'remote-1', 'unknown local state is not acknowledged or overwritten');
+  assert.equal(f.calls.patch, 1);
+});
+
+test('acknowledgement failure plus another failed reread still returns confirmed remote success', async () => {
+  const f = fixture(); f.edit({ roi: { names: ['sent ROI'] } });
+  f.storage.patchProjectFields = async () => {
+    f.edit({ roi: { names: ['concurrent after response'] } });
+    f.storage.getProject = async () => { throw new Error('recovery read failed'); };
+    throw new Error('acknowledgement write failed');
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-unacknowledged');
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(status.remainingLocalEdits, true);
+  assert.equal(status.localStateKnown, false);
+  assert.equal(status.error.message, 'acknowledgement write failed');
+  assert.equal(status.localReadError.message, 'recovery read failed');
+  assert.equal(f.row.state.roi.names[0], 'sent ROI');
+  assert.equal(f.local.roi.names[0], 'concurrent after response');
+  assert.equal(f.local.cloudUpdatedAt, 'remote-1');
+  assert.equal(f.calls.patch, 1);
+});
+
+test('an already-saved snapshot remains confirmed when its local acknowledgement loses a race', async () => {
+  const f = fixture();
+  f.storage.patchProjectFields = async () => {
+    f.edit({ roi: { names: ['new local edit during acknowledgement'] } });
+    throw new Error('local CAS conflict');
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-unacknowledged');
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(status.remainingLocalEdits, true);
+  assert.equal(status.localStateKnown, true);
+  assert.equal(result.roi.names[0], 'new local edit during acknowledgement');
+  assert.equal(f.row.state.roi.names[0], 'ROI original');
+  assert.equal(f.calls.patch, 0, 'the confirmed remote snapshot is not sent again');
+});
+
+test('an already-saved snapshot remains confirmed when acknowledgement and recovery reads fail', async () => {
+  const f = fixture();
+  f.storage.patchProjectFields = async () => {
+    f.storage.getProject = async () => { throw new Error('read failed too'); };
+    throw new Error('ack failed');
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-unacknowledged');
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(status.remainingLocalEdits, true);
+  assert.equal(status.localStateKnown, false);
+  assert.equal(status.remoteRow.updated_at, f.row.updated_at);
+  assert.equal(f.calls.patch, 0);
+});
+
+test('a folder move queued while saving remains pending even when the saved state hash matches', async () => {
+  const f = fixture(), pending = {};
+  f.edit({ roi: { names: ['sent ROI'] } });
+  const send = f.cloud.patchRowIfUnchanged;
+  f.cloud.patchRowIfUnchanged = async (...args) => {
+    const saved = await send(...args);
+    f.edit({ folderId: 'new-child-within-same-group' });
+    pending.p = { path: ['Marmoset', 'Coronal', 'New child'] };
+    return saved;
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), { ...f.options, pendingFolderChanges: () => pending });
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(result.cloudStateHash, f.cloud.hashState(f.cloud.stateOf(result)));
+  assert.equal(result.folderId, 'new-child-within-same-group');
+  assert.equal(status.status, 'saved-local-edits');
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(status.remainingLocalEdits, true);
+  assert.deepEqual(pending.p.path, ['Marmoset', 'Coronal', 'New child']);
+  assert.deepEqual(f.row.folder_path, ['Marmoset', 'Coronal']);
+});
+
+test('idempotent acknowledgement also notices a folder intent queued during remote verification', async () => {
+  const f = fixture(), pending = {};
+  const read = f.cloud.getProject;
+  f.cloud.getProject = async (...args) => {
+    const row = await read(...args); pending.p = { path: ['Marmoset', 'Coronal', 'New child'] }; return row;
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), { ...f.options, pendingFolderChanges: () => pending });
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-edits');
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(status.remainingLocalEdits, true);
+  assert.equal(f.calls.patch, 0);
+});
+
+test('local deletion during acknowledgement is reported without resurrecting the record', async () => {
+  const f = fixture(); f.edit({ roi: { names: ['sent before local deletion'] } });
+  f.storage.patchProjectFields = async () => { f.local = null; throw new Error('local record deleted'); };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-deleted');
+  assert.equal(status.localDeleted, true);
+  assert.equal(status.remoteWriteSucceeded, true);
+  assert.equal(f.local, null);
+  assert.equal(f.row.state.roi.names[0], 'sent before local deletion');
 });

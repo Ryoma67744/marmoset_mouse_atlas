@@ -228,21 +228,22 @@
                 </button>
                 <button id="save-png" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="表示中の画像をスケールバー付きの PNG で保存する (ズームは反映せず全体を書き出します)">
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15.75l5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909M18 9h.008v.008H18V9Zm2.25 9.75V5.25A2.25 2.25 0 0 0 18 3H6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 6 21h12a2.25 2.25 0 0 0 2.25-2.25Z"/></svg>
-                    画像を保存
+                    <span id="save-png-label">画像を保存</span>
                 </button>
                 <button id="export-zip" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="作業状態ごと ZIP に書き出す">
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M16.5 12 12 16.5m0 0L7.5 12m4.5 4.5V3"/></svg>
-                    Export
+                    <span id="export-zip-label">Export</span>
                 </button>
                 <input type="file" id="import-zip-input" accept=".zip,application/zip" class="hidden">
                 <button id="import-zip" class="inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-700" title="Export した ZIP を読み込んで続きから作業する">
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M7.5 9 12 4.5m0 0L16.5 9M12 4.5V16"/></svg>
-                    Import
+                    <span id="import-zip-label">Import</span>
                 </button>
                 <a href="../index.html" class="text-xs text-blue-600 hover:underline ml-1">Master</a>
                 <a id="back-stack3d" href="../stack3d/index.html" class="hidden text-xs text-blue-600 hover:underline ml-1">3Dモデルへ戻る</a>
             </div>
         </header>
+        <div id="viewer-action-status" class="hidden text-xs px-4 py-2 bg-amber-50 text-amber-900 border-b shrink-0" role="status" aria-live="polite"></div>
 
         <!-- Three-column full-height layout -->
         <div class="flex flex-1 overflow-hidden gap-1 p-1 min-h-0">
@@ -451,6 +452,11 @@
         let viewerContextRevision = 0;
         let analysisRoiCache = new Map();
         const otsuLockedControls = new Map();
+        // Action buttons derive their state from current operations, never a stale
+        // snapshot of disabled attributes taken by an overlapping Otsu dialog.
+        const viewerActions = { cloud: false, export: false, import: false, png: false };
+        let otsuControlsLocked = false;
+        let viewerActionNotice = '';
 
         function normalizationReasons(codes) {
             return (codes || []).map(code => window.Normalization ? Normalization.reasonText(code) : code).join(' / ');
@@ -636,7 +642,7 @@
             if (!status) return;
             const lines = [valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではありません）' : '生値表示'];
             if (viewerRefreshNotice) lines.unshift(viewerRefreshNotice);
-            if (viewerSaveConflict) lines.unshift('⚠ 保存を停止しました：別タブの更新または保存エラーを検出しました。現在の変更は保存されていません。Master／このページを再読み込みして新しい版を確認してください。');
+            if (viewerSaveConflict) lines.unshift('⚠ 保存を停止しました：別タブの更新または保存エラーを検出しました。編集中の内容はこの画面に保持しています。再読み込みすると未保存の編集が失われるため、内容を確認してください。');
             const profile = currentProject?.normalization;
             if (skipped) {
                 lines.push(skippedNormalizationNotice() + '：d4-5-HTがないため、このデータの補正をスキップしました。');
@@ -983,28 +989,25 @@
         }
 
         /** PNG として保存する。 */
-        function saveViewAsPng() {
-            if (otsuPending || otsuDraft) return;
-            const btn = document.getElementById('save-png');
-            const original = btn ? btn.textContent : '';
+        async function saveViewAsPng() {
+            if (!canStartViewerAction('png')) return;
+            viewerActions.png = true; refreshViewerActionControls();
             try {
-                if (btn) { btn.disabled = true; btn.textContent = '準備中…'; }
                 const out = buildExportCanvas();
                 const name = (currentProject && currentProject.displayName) || 'image';
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-                out.toBlob((blob) => {
-                    if (!blob) { alert('画像を作成できませんでした'); return; }
-                    const a = document.createElement('a');
-                    a.href = URL.createObjectURL(blob);
-                    a.download = (window.ZipIO ? ZipIO.safeName(name) : name) + '_' + ts + '.png';
-                    document.body.appendChild(a); a.click();
-                    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
-                }, 'image/png');
+                const blob = await new Promise(resolve => out.toBlob(resolve, 'image/png'));
+                if (!blob) throw new Error('画像を作成できませんでした');
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = (window.ZipIO ? ZipIO.safeName(name) : name) + '_' + ts + '.png';
+                document.body.appendChild(a); a.click();
+                setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
             } catch (e) {
                 console.error('[savePng]', e);
                 alert('画像の保存に失敗しました: ' + e.message);
             } finally {
-                if (btn) { btn.disabled = false; btn.textContent = original; }
+                viewerActions.png = false; refreshViewerActionControls();
             }
         }
 
@@ -1846,11 +1849,11 @@ function loadAllImages() {
             viewerSaveQueue = operation.catch(error => {
                 if (currentProject?.id === projectId && viewerContextRevision === contextRevision && !viewerSaveConflict) {
                     viewerSaveConflict = true;
+                    viewerActionNotice = '';
                     if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
                     refreshValueDisplayUi();
-                    const cloudButton = document.getElementById('cloud-save');
-                    if (cloudButton) cloudButton.disabled = true;
-                    alert('保存を停止しました。新しいデータは上書きしていません。\n' + error.message + '\nページを再読み込みして新しい版を確認してください。');
+                    refreshViewerActionControls();
+                    alert('保存を停止しました。新しいデータは上書きしていません。\n' + error.message + '\n編集中の内容はこの画面に保持しています。再読み込みすると未保存の編集が失われるため、内容を確認してください。');
                 }
                 throw error;
             });
@@ -1988,12 +1991,9 @@ function loadAllImages() {
                 // HE は縮小がかかるので補間を残す (切るとザラつく)。
                 displayCtx.imageSmoothingEnabled = !isMsiLayer;
 
-                // 「HEのみ」「MSIのみ」の回転。キャンバス中心まわりに回してから
-                // 既存の描画をそのまま行う (変換は 外∘内 で合成されるので、下の
-                // T 適用や CCW90° の分岐はそのまま使える)。
-                // ★ 画面全体の回転と違い、こちらは canvas に焼き込む。片方だけ回すには
-                //   CSS では足りないため。
-                const layerRot = isHeLike ? rotationState.he : (isMsiLayer ? rotationState.msi : 0);
+                // HE-only rotation surrounds its alignment transform. MSI-only
+                // rotation is included in the shared MSI/ROI affine below.
+                const layerRot = isHeLike ? rotationState.he : 0;
                 const needLayerRot = Number.isFinite(layerRot) && layerRot !== 0;
                 if (needLayerRot) {
                     displayCtx.save();
@@ -2023,11 +2023,10 @@ function loadAllImages() {
                     displayCtx.drawImage(tempCanvas, 0, 0);
                     displayCtx.restore();
                 } else if (isMsiLayer) {
-                    // MSI portrait → CCW90° 回転でキャンバス全面にフィット
+                    // The same affine is used for ROI outlines and inverse picking.
                     displayCtx.save();
-                    displayCtx.translate(0, displayCanvas.height);
-                    displayCtx.rotate(-Math.PI / 2);
-                    displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.height, displayCanvas.width);
+                    displayCtx.transform(...msiCanvasTransform(displayCanvas.width, displayCanvas.height));
+                    displayCtx.drawImage(tempCanvas, 0, 0, msiRef.w, msiRef.h);
                     displayCtx.restore();
                 } else {
                     // フォールバック(test1 互換): 従来の landscape/portrait 自動判定
@@ -2407,12 +2406,6 @@ function loadAllImages() {
             const palette = (atlasData.roi && atlasData.roi.palette) ? atlasData.roi.palette : {};
             const showFlags = (atlasData.roi && atlasData.roi.roi_show_flags) || {};
 
-            // MSI座標(縦長)をCCW90°回転して横長キャンバスにマッピング
-            // MSI(mx,my) → portrait(mx*sX, my*sY) → CCW90°→ landscape(my*sY2, canvasH - mx*sX2)
-            const msiRef = getMsiRefSize();
-            const sxFactor = roiCanvas.height / msiRef.w;  // MSI-x → canvas-y方向
-            const syFactor = roiCanvas.width  / msiRef.h;  // MSI-y → canvas-x方向
-
             // キャンバス内部解像度 → CSS 表示サイズ比から、CSS 1px 相当の線幅を算出
             const cssW = roiCanvas.offsetWidth || roiCanvas.width;
             const pxPerCss = roiCanvas.width / Math.max(1, cssW);
@@ -2438,12 +2431,10 @@ function loadAllImages() {
                     if (!Array.isArray(poly) || poly.length < 3) continue;
 
                     roiCtx.beginPath();
-                    const cx0 = poly[0][1] * syFactor;
-                    const cy0 = roiCanvas.height - poly[0][0] * sxFactor;
+                    const [cx0, cy0] = msiToCanvas(...poly[0]);
                     roiCtx.moveTo(cx0, cy0);
                     for (let i = 1; i < poly.length; i++) {
-                        const cx = poly[i][1] * syFactor;
-                        const cy = roiCanvas.height - poly[i][0] * sxFactor;
+                        const [cx, cy] = msiToCanvas(...poly[i]);
                         roiCtx.lineTo(cx, cy);
                     }
                     roiCtx.closePath();
@@ -2949,23 +2940,30 @@ function loadAllImages() {
             return [rgb[0], rgb[1], rgb[2], 255];
         }
 
-        function canvasToMsi(canvasX, canvasY) {
+        // Raw MSI coordinates stay immutable. Only their presentation is rotated.
+        // DOM offsetX/Y already exclude the outer CSS pan/zoom/whole-view rotation.
+        function msiCanvasTransform(width = roiCanvas.width, height = roiCanvas.height) {
             const msiRef = getMsiRefSize();
-            const sxFactor = roiCanvas.height / msiRef.w;
-            const syFactor = roiCanvas.width  / msiRef.h;
-            const mx = (roiCanvas.height - canvasY) / sxFactor;
-            const my = canvasX / syFactor;
-            return [mx, my];
+            const sx = height / msiRef.w, sy = width / msiRef.h;
+            const rad = (Number(rotationState.msi) || 0) * Math.PI / 180;
+            const c = Math.cos(rad), s = Math.sin(rad), cx = width / 2, cy = height / 2;
+            return [s * sx, -c * sx, c * sy, s * sy, cx - c * cx - s * cy, cy - s * cx + c * cy];
+        }
+        function msiToCanvas(mx, my) {
+            const [a, b, c, d, e, f] = msiCanvasTransform();
+            return [a * mx + c * my + e, b * mx + d * my + f];
+        }
+        function canvasToMsi(canvasX, canvasY) {
+            const [a, b, c, d, e, f] = msiCanvasTransform();
+            const determinant = a * d - b * c, x = canvasX - e, y = canvasY - f;
+            return [(d * x - c * y) / determinant, (-b * x + a * y) / determinant];
         }
 
         function drawDrawingPreview() {
             if (!roiCtx) return;
             drawAllRois(document.querySelector('.roi-item.active')?.dataset.roiKey || null);
             if (!drawingVertices.length) return;
-            const msiRef = getMsiRefSize();
-            const sxFactor = roiCanvas.height / msiRef.w;
-            const syFactor = roiCanvas.width  / msiRef.h;
-            const pts = drawingVertices.map(([mx, my]) => [my * syFactor, roiCanvas.height - mx * sxFactor]);
+            const pts = drawingVertices.map(([mx, my]) => msiToCanvas(mx, my));
             const cssW = roiCanvas.offsetWidth || roiCanvas.width;
             const pxPerCss = roiCanvas.width / Math.max(1, cssW);
             roiCtx.save();
@@ -3087,7 +3085,7 @@ function loadAllImages() {
             if (!confirm(sites >= 2
                 ? `この ROI は ${sites} 箇所をまとめています。${sites} 箇所すべてを削除しますか?`
                 : 'この ROI を削除しますか?')) return;
-            const wasActive = document.querySelector(`.roi-item.active[data-roi-key="${CSS.escape(key)}"]`) !== null;
+            const selectedKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
             if (atlasData.roi) {
                 delete atlasData.roi.roi_items[key];
                 delete atlasData.roi.roi_names[key];
@@ -3098,14 +3096,9 @@ function loadAllImages() {
             populateRoiList();
             // 削除した ROI が active なら残った先頭 ROI に切替、そうでなければ現在の active を維持
             const remaining = Object.keys((atlasData.roi && atlasData.roi.roi_items) || {});
-            let nextKey = null;
-            if (wasActive && remaining.length > 0) {
-                nextKey = remaining[0];
-                const nextItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(nextKey)}"]`);
-                if (nextItem) nextItem.classList.add('active');
-            } else {
-                nextKey = document.querySelector('.roi-item.active')?.dataset.roiKey || null;
-            }
+            const nextKey = remaining.includes(selectedKey) ? selectedKey : selectedKey === key ? remaining[0] || null : null;
+            const nextItem = nextKey && document.querySelector(`.roi-item[data-roi-key="${CSS.escape(nextKey)}"]`);
+            if (nextItem) nextItem.classList.add('active');
             drawAllRois(nextKey);
             displayGraphForRoi(nextKey);
         }
@@ -3125,12 +3118,7 @@ function loadAllImages() {
                 const canvasY = e.offsetY * syCss;
                 // 最初の頂点を再クリックしたら閉じる(近接判定)
                 if (drawingVertices.length >= 3) {
-                    const msiRef = getMsiRefSize();
-                    const sxFactor = roiCanvas.height / msiRef.w;
-                    const syFactor = roiCanvas.width  / msiRef.h;
-                    const [mx0, my0] = drawingVertices[0];
-                    const cx0 = my0 * syFactor;
-                    const cy0 = roiCanvas.height - mx0 * sxFactor;
+                    const [cx0, cy0] = msiToCanvas(...drawingVertices[0]);
                     const dx = canvasX - cx0, dy = canvasY - cy0;
                     const threshold = 8 * sxCss;
                     if (Math.sqrt(dx*dx + dy*dy) < threshold) { finalizeDrawing(); return; }
@@ -3187,11 +3175,9 @@ function loadAllImages() {
         }
 
         async function exportZip() {
-            if (otsuPending || otsuDraft || viewerSaveConflict) return;
-            const btn = document.getElementById('export-zip');
-            const original = btn ? btn.textContent : '';
+            if (!canStartViewerAction('export')) return;
+            viewerActions.export = true; refreshViewerActionControls();
             try {
-                if (btn) { btn.disabled = true; btn.textContent = '準備中…'; }
                 buildExportableProject();
                 const proj = await saveViewerProject();
                 const blob = await ZipIO.exportProject(proj);
@@ -3205,16 +3191,14 @@ function loadAllImages() {
                 console.error('[exportZip]', e);
                 alert('Export に失敗しました: ' + e.message);
             } finally {
-                if (btn) { btn.disabled = false; btn.textContent = original; }
+                viewerActions.export = false; refreshViewerActionControls();
             }
         }
 
         async function importZip(file) {
-            if (otsuPending || otsuDraft) return;
-            const btn = document.getElementById('import-zip');
-            const original = btn ? btn.textContent : '';
+            if (!canStartViewerAction('import')) return;
+            viewerActions.import = true; refreshViewerActionControls();
             try {
-                if (btn) { btn.disabled = true; btn.textContent = '読み込み中…'; }
                 const { project, warnings } = await ZipIO.importZip(file);
                 if (warnings.length) console.warn('[importZip] 警告:', warnings);
                 // 読み込んだプロジェクトをそのまま開く
@@ -3222,7 +3206,8 @@ function loadAllImages() {
             } catch (e) {
                 console.error('[importZip]', e);
                 alert('ZIP の読み込みに失敗しました: ' + e.message);
-                if (btn) { btn.disabled = false; btn.textContent = original; }
+            } finally {
+                viewerActions.import = false; refreshViewerActionControls();
             }
         }
 
@@ -3236,36 +3221,63 @@ function loadAllImages() {
         function cloudOn() { return !!(window.Cloud && Cloud.configured() && Cloud.signedIn()); }
 
         function cloudDirty() {
-            if (!cloudOn() || !currentProject || !currentProject.cloudUpdatedAt) return false;
-            return Cloud.hashState(Cloud.stateOf(currentProject)) !== currentProject.cloudStateHash;
+            if (!window.Cloud || !currentProject || !currentProject.cloudUpdatedAt) return false;
+            return ProjectSync.localStatus(currentProject, { cloud: Cloud }).remainingLocalEdits;
         }
 
-        function refreshCloudSaveState() {
-            const btn = document.getElementById('cloud-save');
-            if (!btn) return;
-            if (!cloudOn() || !currentProject || !currentProject.cloudUpdatedAt) {
-                btn.classList.add('hidden');
-                btn.classList.remove('inline-flex');
-                return;
-            }
-            btn.classList.remove('hidden');
-            btn.classList.add('inline-flex');
-            const dirty = cloudDirty();
-            btn.className = 'inline-flex items-center gap-1 px-3 py-1 text-xs font-medium rounded border ' +
-                (dirty ? 'border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-800'
-                       : 'border-gray-300 bg-white hover:bg-gray-50 text-gray-500');
-            const label = document.getElementById('cloud-save-label');
-            if (label) label.textContent = dirty ? 'クラウドに保存 (未保存)' : 'クラウドに保存済み';
-            if (viewerSaveConflict) { btn.disabled = true; if (label) label.textContent = '保存停止・要再読み込み'; }
+        function viewerActionReason(action) {
+            if (!currentProject) return 'データの読み込みを待ってください。';
+            if (viewerActions[action]) return action === 'cloud' ? 'クラウドに保存中です。' : '処理中です。';
+            if (viewerSaveConflict && action !== 'png') return '保存と Export・Import を停止しています。編集中の内容はこの画面に保持しています。再読み込みすると未保存の編集が失われるため、内容を確認してください。';
+            if (otsuControlsLocked || otsuPending || otsuDraft) return '表示マスクの確認・プレビューを確定または取り消してください。';
+            if (viewerActions.import || (action !== 'png' && (viewerActions.cloud || viewerActions.export))) return '進行中の保存・書き出しが完了するまでお待ちください。';
+            if (action === 'cloud' && !cloudOn()) return 'クラウドへの再ログインが必要です。手元の編集は保持しています。別タブの Master でログインしてから、この画面で保存を再試行してください。';
+            if (action === 'cloud' && !currentProject.cloudUpdatedAt) return 'Master からデータ本体をアップロードしてください。';
+            if (action === 'cloud' && currentProject.cloudPending) return 'データ本体に未アップロードの変更があります。手元の編集を保持したまま Master でアップロードしてください。';
+            return '';
         }
+        function refreshViewerActionControls() {
+            const cloudVisible = !!(currentProject?.cloudUpdatedAt && window.Cloud?.configured());
+            const status = document.getElementById('viewer-action-status');
+            const reason = viewerSaveConflict ? viewerActionNotice || viewerActionReason('export')
+                : cloudVisible && (!cloudOn() || currentProject.cloudPending) ? viewerActionReason('cloud') : viewerActionNotice;
+            if (status) {
+                status.textContent = reason; status.classList.toggle('hidden', !reason);
+                if (cloudVisible && !cloudOn()) {
+                    const login = document.createElement('a');
+                    login.href = '../index.html'; login.target = '_blank'; login.rel = 'noopener';
+                    login.textContent = 'Master を別タブで開く'; login.className = 'underline ml-2'; status.appendChild(login);
+                }
+            }
+            const labels = { cloud: viewerActions.cloud ? '保存中…' : viewerSaveConflict ? '保存停止' : !cloudOn() ? '再ログインが必要' : cloudDirty() ? 'クラウドに保存 (未保存)' : 'クラウドに保存済み',
+                export: viewerActions.export ? '準備中…' : 'Export', import: viewerActions.import ? '読み込み中…' : 'Import', png: viewerActions.png ? '準備中…' : '画像を保存' };
+            for (const [action, id] of Object.entries({ cloud: 'cloud-save', export: 'export-zip', import: 'import-zip', png: 'save-png' })) {
+                const button = document.getElementById(id); if (!button) continue;
+                if (!button.dataset.defaultTitle) button.dataset.defaultTitle = button.title;
+                if (action === 'cloud') {
+                    button.className = 'items-center gap-1 px-3 py-1 text-xs font-medium rounded border ' +
+                        (cloudVisible ? 'inline-flex ' : 'hidden ') + (cloudDirty() ? 'border-amber-400 bg-amber-50 text-amber-800' : 'border-gray-300 bg-white text-gray-500');
+                }
+                const blocked = viewerActionReason(action);
+                button.disabled = !!blocked;
+                button.title = blocked || button.dataset.defaultTitle;
+                button.classList.toggle('opacity-50', !!blocked);
+                button.classList.toggle('cursor-not-allowed', !!blocked);
+                button.setAttribute('aria-busy', String(viewerActions[action]));
+                button.setAttribute('aria-describedby', 'viewer-action-status');
+                const label = document.getElementById(id + '-label'); if (label) label.textContent = labels[action];
+            }
+        }
+        function canStartViewerAction(action) {
+            const reason = viewerActionReason(action);
+            if (!reason) { viewerActionNotice = ''; return true; }
+            viewerActionNotice = reason; refreshViewerActionControls(); return false;
+        }
+        function refreshCloudSaveState() { refreshViewerActionControls(); }
 
         async function saveToCloud() {
-            if (otsuPending || otsuDraft || viewerSaveConflict) return;
-            const btn = document.getElementById('cloud-save');
-            const label = document.getElementById('cloud-save-label');
-            if (!cloudOn() || !currentProject) return;
-            if (btn) btn.disabled = true;
-            if (label) label.textContent = '保存中…';
+            if (!canStartViewerAction('cloud')) return;
+            viewerActions.cloud = true; refreshViewerActionControls();
             try {
                 syncProjectFromViewer();
                 const saved = await saveViewerProject();
@@ -3273,17 +3285,36 @@ function loadAllImages() {
                 try {
                     const acknowledged = await ProjectSync.saveState(saved, { storage: ProjectStorage, cloud: Cloud });
                     if (currentProject?.id !== saved.id) throw new Error('保存中に表示対象が変わりました。再読み込みしてください。');
+                    const status = ProjectSync.statusOf(acknowledged);
+                    // A peer can update storage while the request is in flight.
+                    // Never rebase the screen onto fields it has not displayed:
+                    // syncProjectFromViewer would write the old atlas/rotation back.
+                    const screenFields = ['displayName', 'grid', 'molecules', 'images', 'normalization', 'normalizationBinding', 'folderId', ...viewerEditableFields];
+                    const unseen = screenFields.some(key => !sameViewerField(acknowledged[key], saved[key]) &&
+                        !sameViewerField(acknowledged[key], currentProject[key]) && !sameViewerField(acknowledged[key], viewerStoredProject?.[key]));
+                    if (unseen || status.localDeleted || status.localStateKnown === false) {
+                        viewerSaveConflict = true;
+                        if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+                        viewerActionNotice = (status.remoteWriteSucceeded ? '送信した内容はクラウドに保存されました。' : '') +
+                            (status.localStateKnown === false ? '手元の最新データを確認できませんでした。' : '保存中に別の画面でデータが変更されました。') +
+                            '新しいデータを上書きしないよう保存と Export・Import を停止しています。この画面の編集も保持しています。再読み込み前に内容を確認してください。';
+                        refreshValueDisplayUi();
+                        return;
+                    }
                     const subsequent = viewerChanges(currentProject, saved);
                     currentProject = { ...acknowledged, ...subsequent };
                     viewerStoredProject = structuredClone(acknowledged);
                     viewerStoredUpdatedAt = acknowledged.updatedAt;
+                    viewerActionNotice = status.reason || 'クラウドに保存しました。';
+                    if (cloudDirty() && !status.remainingLocalEdits) viewerActionNotice += ' 手元の新しい編集は未保存です。';
                 } finally { viewerSaving--; }
             } catch (e) {
                 console.error('[cloud-save]', e);
-                alert('クラウドへの保存に失敗しました: ' + e.message);
+                viewerActionNotice = e.outcomeUnknown ? 'クラウドへの保存結果を確認できませんでした。手元の編集は保持しています。再試行時に保存済み内容を確認します。'
+                    : 'クラウドへの保存を完了できませんでした。手元の編集は保持しています。' + e.message;
+                alert(viewerActionNotice);
             } finally {
-                if (btn) btn.disabled = viewerSaveConflict;
-                refreshCloudSaveState();
+                viewerActions.cloud = false; refreshViewerActionControls();
             }
         }
 
@@ -3338,7 +3369,7 @@ function loadAllImages() {
             rotationState[tgt] = v;
             // 全体は CSS だけで済むが、片方だけの回転は焼き込みなので描き直す
             if (tgt === 'all') applyViewTransform();
-            else renderCompositeImage();
+            else { renderCompositeImage(); drawDrawingPreview(); }
             if (!keepInput) refreshRotationUi();
             persistRotation();
         }
@@ -3350,6 +3381,7 @@ function loadAllImages() {
             applyViewTransform();
             renderCompositeImage();
             refreshRotationUi();
+            drawDrawingPreview();
             persistRotation();
             persistViewTransform();
         }
@@ -3525,7 +3557,8 @@ function loadAllImages() {
                 currentProject?.grid, currentProject?.molecules?.map(m => [m.key, m.blobId]), normalizationEvaluation?.fingerprint]);
         }
         function lockOtsuControls(locked) {
-            const controls = document.querySelectorAll('#save-png, #export-zip, #import-zip, #cloud-save, #otsu-toggle, #otsu-reset, #value-display-controls button, #value-display-controls select, #layer-settings-strip input, #layer-settings-strip button, #align-btn, #rot-group input, #rot-group select, #rot-group button');
+            otsuControlsLocked = locked;
+            const controls = document.querySelectorAll('#otsu-toggle, #otsu-reset, #value-display-controls button, #value-display-controls select, #layer-settings-strip input, #layer-settings-strip button, #align-btn, #rot-group input, #rot-group select, #rot-group button');
             if (locked) for (const element of controls) {
                 if (!otsuLockedControls.has(element)) otsuLockedControls.set(element, element.disabled);
                 element.disabled = true;
@@ -3534,6 +3567,7 @@ function loadAllImages() {
                 for (const [element, disabled] of otsuLockedControls) element.disabled = disabled;
                 otsuLockedControls.clear();
             }
+            refreshViewerActionControls();
         }
         async function confirmOtsuAction(action) {
             if (otsuPending) return false;
@@ -4273,6 +4307,7 @@ function loadAllImages() {
     }
     function setupViewerRefresh() {
       viewerReady = true;
+      Cloud.subscribeSessionChanges?.(() => { viewerActionNotice = ''; refreshViewerActionControls(); });
       ProjectStorage.subscribeChanges?.(event => {
         if (viewerSaving || !currentProject) return;
         if (event.projectIds?.length || event.folderIds?.length) refreshViewerProject();
