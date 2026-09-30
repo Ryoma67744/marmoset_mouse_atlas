@@ -4,7 +4,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const copy = value => value == null ? value : JSON.parse(JSON.stringify(value));
+// IndexedDB preserves undefined properties; the cloud JSON transport does not.
+const copy = value => value == null ? value : structuredClone(value);
+const wireCopy = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 function fixture() {
   const c = { console, Blob, WeakMap, Map, Set, AbortController, setTimeout, clearTimeout }; c.window = c;
@@ -20,7 +22,7 @@ function fixture() {
     cloudUpdatedAt: 'remote-1', cloudBundlePath: 'p/bundle-1.zip', cloudRev: 1 };
   local.cloudStateHash = c.Cloud.hashState(c.Cloud.stateOf(local));
   let row = { id: 'p', updated_at: 'remote-1', display_name: 'section', folder_path: ['Marmoset', 'Coronal'],
-    bundle_path: 'p/bundle-1.zip', bundle_rev: 1, state: copy(c.Cloud.stateOf(local)), meta: c.Cloud.metaOf(local) };
+    bundle_path: 'p/bundle-1.zip', bundle_rev: 1, state: wireCopy(c.Cloud.stateOf(local)), meta: wireCopy(c.Cloud.metaOf(local)) };
   const folders = [{ id: 'f1', name: 'Marmoset', parentId: null },
     { id: 'f2', name: 'Coronal', parentId: 'f1', normalizationGroupId: 'g1' }];
   const calls = { fetch: 0, download: 0, import: 0, patch: 0, commit: 0, unconditional: 0 };
@@ -42,13 +44,13 @@ function fixture() {
   };
   const cloud = Object.assign({}, c.Cloud, {
     configured: () => true, signedIn: () => true,
-    getProject: async () => { calls.fetch++; return copy(row); },
-    listProjects: async () => row ? [copy(row)] : [],
+    getProject: async () => { calls.fetch++; return wireCopy(row); },
+    listProjects: async () => row ? [wireCopy(row)] : [],
     downloadBundle: async () => { calls.download++; return new Blob(['mock']); },
     patchRowIfUnchanged: async (id, patch, expected) => {
       calls.patch++;
       if (!row || row.updated_at !== expected) return null;
-      row = Object.assign(row, copy(patch), { updated_at: 'remote-' + (++n) }); return copy(row);
+      row = Object.assign(row, wireCopy(patch), { updated_at: 'remote-' + (++n) }); return wireCopy(row);
     },
     patchRow: async () => { calls.unconditional++; throw new Error('unsafe'); },
   });
@@ -63,9 +65,143 @@ function fixture() {
     get local() { return local; }, set local(v) { local = v; },
     get row() { return row; }, set row(v) { row = v; },
     edit(fields) { Object.assign(local, copy(fields)); local.updatedAt = 'local-' + (++n); },
-    remoteEdit(stateFields) { Object.assign(row.state, copy(stateFields)); row.updated_at = 'remote-' + (++n); },
+    remoteEdit(stateFields) { Object.assign(row.state, wireCopy(stateFields)); row.updated_at = 'remote-' + (++n); },
   };
 }
+
+test('JSON-equivalent HE and manual alignment settings stay saved across retry and reload', async () => {
+  const f = fixture();
+  f.edit({ layerDisplay: { HE_Stain: { opacity: 1, rawRange: undefined, normalizedRange: undefined } },
+    alignment: { HE_Stain: { x: 1, autoAligned: undefined } } });
+  const before = copy(f.local);
+  const first = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  assert.equal(f.c.ProjectSync.statusOf(first).status, 'saved');
+  assert.equal(f.c.ProjectSync.localStatus(await f.storage.getProject('p'), f.options).status, 'current');
+  assert.ok(Object.hasOwn(f.local.layerDisplay.HE_Stain, 'rawRange'));
+  assert.equal(Object.hasOwn(f.row.state.layerDisplay.HE_Stain, 'rawRange'), false);
+  const second = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  assert.equal(f.c.ProjectSync.statusOf(second).status, 'saved');
+  assert.equal(f.calls.patch, 1);
+  assert.deepEqual(f.local.roi, before.roi);
+  assert.deepEqual(f.local.normalization, before.normalization);
+  assert.deepEqual(f.local.molecules, before.molecules);
+});
+
+test('legacy upload hash is repaired only after a fresh exact-state check', async () => {
+  const f = fixture();
+  f.local.layerDisplay = { HE_Stain: { rawRange: undefined, opacity: 1 } };
+  f.row.state = wireCopy(f.cloud.stateOf(f.local));
+  f.local.cloudStateHash = f.cloud.hashState(f.cloud.stateOf(f.local));
+  assert.notEqual(f.local.cloudStateHash, f.cloud.hashState(f.row.state));
+  const result = await f.c.ProjectSync.ensureLocal('p', f.options);
+  assert.equal(result.cloudStateHash, f.cloud.hashState(f.row.state));
+  assert.equal(f.c.ProjectSync.localStatus(result, f.options).status, 'current');
+  assert.equal(f.calls.fetch, 1);
+  assert.equal(f.calls.patch, 0);
+  assert.equal(f.calls.commit, 0);
+});
+
+test('legacy upload hash with real local changes is not blessed or overwritten', async () => {
+  const f = fixture();
+  f.local.layerDisplay = { HE_Stain: { rawRange: undefined, opacity: 1 } };
+  f.row.state = wireCopy(f.cloud.stateOf(f.local));
+  f.local.cloudStateHash = f.cloud.hashState(f.cloud.stateOf(f.local));
+  const oldHash = f.local.cloudStateHash;
+  f.edit({ roi: { names: ['new ROI'] } });
+  const result = await f.c.ProjectSync.ensureLocal('p', f.options);
+  assert.equal(result.cloudStateHash, oldHash);
+  assert.equal(result.roi.names[0], 'new ROI');
+  assert.equal(f.c.ProjectSync.statusOf(result).status, 'conflict');
+  assert.equal(f.calls.commit, 0);
+  await assert.rejects(f.c.ProjectSync.saveState(copy(f.local), f.options), /最新の設定/);
+  assert.equal(f.calls.patch, 0);
+});
+
+test('legacy hash repair refuses an edit that races its local acknowledgement', async () => {
+  const f = fixture();
+  f.local.layerDisplay = { HE_Stain: { rawRange: undefined } };
+  f.row.state = wireCopy(f.cloud.stateOf(f.local));
+  f.local.cloudStateHash = f.cloud.hashState(f.cloud.stateOf(f.local));
+  const oldHash = f.local.cloudStateHash, patch = f.storage.patchProjectFields;
+  f.storage.patchProjectFields = async (...args) => {
+    f.edit({ roi: { names: ['concurrent ROI'] } });
+    return patch(...args);
+  };
+  await assert.rejects(f.c.ProjectSync.ensureLocal('p', f.options), /local conflict/);
+  assert.equal(f.local.cloudStateHash, oldHash);
+  assert.equal(f.local.roi.names[0], 'concurrent ROI');
+});
+
+test('legacy repair requires full state equality even if two wire digests collide', async () => {
+  const f = fixture();
+  f.local.cloudStateHash = 'legacy-pre-json-hash';
+  f.cloud.hashSyncState = () => 'same-digest';
+  f.edit({ roi: { names: ['actual local change'] } });
+  const result = await f.c.ProjectSync.ensureLocal('p', f.options);
+  assert.equal(f.c.ProjectSync.statusOf(result).status, 'conflict');
+  assert.equal(result.cloudStateHash, 'legacy-pre-json-hash');
+  assert.equal(result.roi.names[0], 'actual local change');
+  assert.equal(f.calls.commit, 0);
+  assert.equal(f.calls.patch, 0);
+});
+
+test('a legacy baseline is not repaired offline or with a pending folder move', async () => {
+  const f = fixture();
+  f.local.layerDisplay = { HE_Stain: { rawRange: undefined } };
+  f.row.state = wireCopy(f.cloud.stateOf(f.local));
+  f.local.cloudStateHash = f.cloud.hashState(f.cloud.stateOf(f.local));
+  const oldHash = f.local.cloudStateHash;
+  const pending = await f.c.ProjectSync.ensureLocal('p', { ...f.options, pendingFolderChanges: { p: true } });
+  assert.equal(pending.cloudStateHash, oldHash);
+  assert.equal(f.calls.fetch, 0);
+  f.cloud.getProject = async () => { throw new Error('offline'); };
+  const offline = await f.c.ProjectSync.ensureLocal('p', f.options);
+  assert.equal(offline.cloudStateHash, oldHash);
+  assert.equal(f.c.ProjectSync.statusOf(offline).status, 'offline');
+});
+
+test('save result identifies state fields and metadata still unsynced', async () => {
+  const f = fixture(); f.edit({ rotation: { all: 90 }, displayName: 'local name' });
+  const send = f.cloud.patchRowIfUnchanged;
+  f.cloud.patchRowIfUnchanged = async (...args) => {
+    const row = await send(...args);
+    f.edit({ roi: { names: ['later ROI'] }, layerDisplay: { HE_Stain: { opacity: 0.5 } } });
+    return row;
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-edits');
+  assert.deepEqual(Array.from(status.changedFields).sort(), ['layerDisplay', 'roi']);
+  assert.deepEqual(Array.from(status.changeReasons, r => r.code).sort(), ['name', 'state']);
+  assert.match(status.reason, /ROI/);
+  assert.match(status.reason, /表示設定/);
+  assert.match(status.reason, /名前/);
+  assert.equal(f.row.display_name, 'section');
+});
+
+test('a setting removed during saving remains removed locally and is reported unsynced', async () => {
+  const f = fixture(); f.edit({ rotation: { all: 90 } });
+  const send = f.cloud.patchRowIfUnchanged;
+  f.cloud.patchRowIfUnchanged = async (...args) => {
+    const row = await send(...args); f.edit({ rotation: undefined }); return row;
+  };
+  const result = await f.c.ProjectSync.saveState(copy(f.local), f.options);
+  const status = f.c.ProjectSync.statusOf(result);
+  assert.equal(status.status, 'saved-local-edits');
+  assert.deepEqual(Array.from(status.changedFields), ['rotation']);
+  assert.equal(result.rotation, undefined);
+  assert.equal(f.row.state.rotation.all, 90);
+  assert.match(status.reason, /回転/);
+});
+
+test('unknown remote fields cannot be erased by an older state writer', async () => {
+  const f = fixture();
+  f.row.state.futureSetting = { valid: true };
+  f.local.cloudStateHash = f.cloud.hashState(f.row.state);
+  await assert.rejects(f.c.ProjectSync.saveState(copy(f.local), f.options), /新しい形式/);
+  assert.equal(f.calls.patch, 0);
+  assert.equal(f.row.state.futureSetting.valid, true);
+});
 
 test('local status evaluates acknowledged fields without cloud reads or mutation', () => {
   const f = fixture(), before = copy(f.local);

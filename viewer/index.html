@@ -1719,9 +1719,15 @@ function loadAllImages() {
             for (const [key, s] of Object.entries(imageSettings)) {
                 const record = { ...(currentProject.layerDisplay[key] || {}),
                     vmin: s.vmin, vmax: s.vmax, opacity: s.opacity, applyOpacity: s.applyOpacity !== false,
-                    grayscale: !!s.grayscale, rawRange: s.rawRange, normalizedRange: s.normalizedRange,
+                    grayscale: !!s.grayscale,
                     ...(s.displayWindow ? { effectiveDisplayRange: { ...s.displayWindow, mode: rangeModeForKey(key) } } : {}),
                 };
+                // HE/IF have no quantitative ranges. Omit absent properties just as
+                // the JSON transport does, including undefined values in old records.
+                for (const range of ['rawRange', 'normalizedRange']) {
+                    if (s[range] === undefined) delete record[range];
+                    else record[range] = s[range];
+                }
                 currentProject.layerDisplay[key] = valueRasters[key] ? DisplayRange.serializeLayer(displayRangeProject, key, record) : record;
             }
         }
@@ -3269,17 +3275,22 @@ function loadAllImages() {
         function refreshViewerActionControls() {
             const cloudVisible = !!(currentProject?.cloudUpdatedAt && window.Cloud?.configured());
             const status = document.getElementById('viewer-action-status');
+            const local = cloudVisible ? ProjectSync.localStatus(currentProject, { cloud: Cloud }) : null;
+            const reasons = local?.changeReasons || [];
+            const namePending = reasons.some(reason => reason.code === 'name');
+            const nameOnly = namePending && reasons.every(reason => reason.code === 'name');
+            const nameNotice = nameOnly ? '表示設定はクラウドに保存済みです。名前は未同期です。名前の同期は Master で確認してください。' : '';
             const reason = viewerSaveConflict ? viewerActionNotice || viewerActionReason('export')
-                : cloudVisible && (!cloudOn() || currentProject.cloudPending) ? viewerActionReason('cloud') : viewerActionNotice;
+                : cloudVisible && (!cloudOn() || currentProject.cloudPending) ? viewerActionReason('cloud') : viewerActionNotice || nameNotice || (namePending ? local.reason : '');
             if (status) {
                 status.textContent = reason; status.classList.toggle('hidden', !reason);
-                if (cloudVisible && !cloudOn()) {
+                if (cloudVisible && (!cloudOn() || namePending)) {
                     const login = document.createElement('a');
                     login.href = '../index.html'; login.target = '_blank'; login.rel = 'noopener';
                     login.textContent = 'Master を別タブで開く'; login.className = 'underline ml-2'; status.appendChild(login);
                 }
             }
-            const labels = { cloud: viewerActions.cloud ? '保存中…' : viewerSaveConflict ? '保存停止' : !cloudOn() ? '再ログインが必要' : cloudDirty() ? 'クラウドに保存 (未保存)' : 'クラウドに保存済み',
+            const labels = { cloud: viewerActions.cloud ? '保存中…' : viewerSaveConflict ? '保存停止' : !cloudOn() ? '再ログインが必要' : nameOnly ? '設定保存済み・名前未同期' : cloudDirty() ? 'クラウドに保存 (未保存)' : 'クラウドに保存済み',
                 export: viewerActions.export ? '準備中…' : 'Export', import: viewerActions.import ? '読み込み中…' : 'Import', png: viewerActions.png ? '準備中…' : '画像を保存' };
             for (const [action, id] of Object.entries({ cloud: 'cloud-save', export: 'export-zip', import: 'import-zip', png: 'save-png' })) {
                 const button = document.getElementById(id); if (!button) continue;
@@ -3336,7 +3347,13 @@ function loadAllImages() {
                     viewerStoredProject = structuredClone(acknowledged);
                     viewerStoredUpdatedAt = acknowledged.updatedAt;
                     viewerActionNotice = status.reason || 'クラウドに保存しました。';
-                    if (cloudDirty() && !status.remainingLocalEdits) viewerActionNotice += ' 手元の新しい編集は未保存です。';
+                    const local = ProjectSync.localStatus(currentProject, { cloud: Cloud, remoteRow: status.remoteRow });
+                    if (status.remoteWriteSucceeded && local.remainingLocalEdits) {
+                        const additionalReasons = (local.changeReasons || []).map(reason => reason.reason)
+                            .filter(reason => reason && !viewerActionNotice.includes(reason));
+                        if (additionalReasons.length) viewerActionNotice += ' 手元の追加変更：' + additionalReasons.join('。') + '。';
+                        else if (!status.remainingLocalEdits) viewerActionNotice += ' 手元の新しい編集は未保存です。';
+                    }
                 } finally { viewerSaving--; }
             } catch (e) {
                 console.error('[cloud-save]', e);
@@ -4237,7 +4254,7 @@ function loadAllImages() {
           scale_pct: state.scale_pct, rotate_deg: state.rotate_deg,
           offx: state.offx, offy: state.offy,
           landmarks: { he: state.landmarks.he.map(p => p.slice()), msi: state.landmarks.msi.map(p => p.slice()) },
-          autoAligned: autoMeta || undefined,
+          ...(autoMeta ? { autoAligned: autoMeta } : {}),
         };
         if (currentProject) {
           currentProject.world_coords = atlasData.world_coords;

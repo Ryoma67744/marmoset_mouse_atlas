@@ -57,6 +57,17 @@ retains blobs referenced by another project. The UI offers retry or cancellation
 of pending operations and reports partial results. Network fixtures and local
 storage in these tests are isolated from the production service.
 
+The v2.21.3 synchronization checks distinguish IndexedDB structured clones from
+JSON cloud transport. HE/IF and manual-alignment undefined properties must not
+leave a saved project dirty, and repeat saves verify agreement without another
+PATCH. Legacy pre-JSON baselines are repaired only after fresh, exact state,
+bundle, revision and name agreement, with local CAS protection. Tests preserve
+explicit nulls, meaningful settings, raw arrays, ROI statistics and historical
+profile hashes. Confirmed saves identify later ROI/display edits and unsent
+names; unknown remote fields cannot be silently discarded by a state writer.
+Master uploads and ZIP imports acknowledge the actual remote state. Fixtures
+contain only synthetic data and never contact the production service.
+
 The v2.21.2 Viewer checks keep selected molecules in separate analytical charts
 with their own units and statistics; the controls request individual display,
 not cross-molecule concentration comparison. MSI thumbnails compose the same

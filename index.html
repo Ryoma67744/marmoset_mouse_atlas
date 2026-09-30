@@ -1933,7 +1933,7 @@
                 const remote = ProjectSync.statusOf(p).remoteRow;
                 if (remote && p.cloudBundlePath === remote.bundle_path &&
                     (p.cloudRev | 0) === (remote.bundle_rev | 0) && !p.cloudPending &&
-                    Cloud.hashState(Cloud.stateOf(p)) === Cloud.hashState(remote.state || {})) {
+                    Cloud.sameSyncState(Cloud.stateOf(p), remote.state || {})) {
                     sourceRows.set(id, remote);
                 }
                 list.push(p);
@@ -2744,7 +2744,7 @@
                 return pill('名前が未同期', 'bg-amber-50 text-amber-700 border-amber-200');
             }
             if (r.updated_at !== p.cloudUpdatedAt) return pill('クラウドが新しい', 'bg-blue-50 text-blue-700 border-blue-200');
-            if (Cloud.hashState(Cloud.stateOf(p)) !== p.cloudStateHash) {
+            if (Cloud.hashSyncState(Cloud.stateOf(p)) !== p.cloudStateHash) {
                 return pill('未保存の変更', 'bg-amber-50 text-amber-700 border-amber-200');
             }
             return pill('同期済み', 'bg-green-50 text-green-700 border-green-200');
@@ -2777,7 +2777,7 @@
                 await Cloud.uploadBundle(path, blob, onProgress);
                 const fresh = await ProjectStorage.getProject(current.id);
                 if (!fresh || fresh.updatedAt !== expectedLocal) throw new Error('送信中にこの PC のデータが変更されました。新しい内容を保持して中止しました。');
-                const state = Cloud.stateOf(current);
+                const state = Cloud.serializableState(Cloud.stateOf(current));
                 const patch = {display_name:current.displayName,folder_path:current.folderPath,
                     meta:Cloud.metaOf(current),state,bundle_path:path,bundle_rev:rev};
                 const row = remote ? await Cloud.patchRowIfUnchanged(current.id,patch,remote.updated_at)
@@ -2785,8 +2785,8 @@
                 if (!row) throw new Error('クラウドで更新されています。新しい内容を確認してから送信してください。');
                 published = true;
                 const saved = await ProjectStorage.patchProjectFields(current.id, {
-                    cloudRev:rev,cloudBundlePath:path,cloudUpdatedAt:row.updated_at,
-                    cloudStateHash:Cloud.hashState(state),cloudDisplayName:row.display_name,cloudPending:false
+                    cloudRev:row.bundle_rev | 0,cloudBundlePath:row.bundle_path,cloudUpdatedAt:row.updated_at,
+                    cloudStateHash:Cloud.hashSyncState(row.state || {}),cloudDisplayName:row.display_name,cloudPending:false
                 }, {expectedUpdatedAt:expectedLocal});
                 Object.assign(p, saved);
                 // Keep previous bundles available for readers whose download is

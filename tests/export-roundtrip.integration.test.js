@@ -378,6 +378,34 @@ test('real JSZip CSV9 round-trip remaps IDs but preserves raw bits, grid metadat
   assert.equal(c.Cloud.hashState(c.Cloud.stateOf(result.project)), c.Cloud.hashState(c.Cloud.stateOf(f.project)));
 });
 
+test('cloud ZIP import retains the authoritative complete wire-state baseline and raw fingerprints', requiresDependencies, async () => {
+  const c = app(), f = fixture(c, false);
+  f.project.layerDisplay.HE_Stain = { vmin: 4, vmax: 331, rawRange: undefined, normalizedRange: undefined };
+  f.project.alignment.HE_Stain = { scale_pct: 100, autoAligned: undefined };
+  const rawFingerprint = c.Normalization.fingerprint(f.project, f.rasters);
+  const state = JSON.parse(JSON.stringify(c.Cloud.stateOf(f.project)));
+  // Unknown fields must remain part of the remote baseline. The older client
+  // cannot claim its narrower supported project state is identical to this row.
+  state.futureServerField = { version: 1 };
+  const row = { id: f.project.id, display_name: f.project.displayName, state,
+    bundle_path: 'synthetic/current.zip', bundle_rev: 7, updated_at: '2026-01-01T00:00:07.000Z' };
+  const archive = await c.ZipIO.exportProject(f.project, { storage: f.storage });
+  const { project } = await c.ZipIO.importZip(await archive.arrayBuffer(), {
+    storage: f.storage, id: row.id, state, cloudRow: row, expectedUpdatedAt: null,
+  });
+  assert.equal(project.cloudStateHash, c.Cloud.hashSyncState(row.state));
+  assert.notEqual(project.cloudStateHash, c.Cloud.hashSyncState(c.Cloud.stateOf(project)));
+  assert.equal(project.cloudUpdatedAt, row.updated_at);
+  assert.equal(project.cloudBundlePath, row.bundle_path);
+  assert.equal(project.cloudRev, row.bundle_rev);
+  assert.equal(project.cloudPending, false);
+  assert.equal(Object.prototype.hasOwnProperty.call(project.layerDisplay.HE_Stain, 'rawRange'), false);
+  const rasters = await c.Normalization.loadRasters(project, { storage: f.storage });
+  assert.equal(c.Normalization.fingerprint(project, rasters), rawFingerprint);
+  project.molecules.forEach((m, i) => assert.deepEqual(Buffer.from(f.data[m.blobId].buffer),
+    Buffer.from(f.data[f.project.molecules[i].blobId].buffer)));
+});
+
 test('schema2 standalone ZIP preserves portable membership, frozen factors and per-row Excel provenance', requiresDependencies, async () => {
   const c = app(), f = fixture(c, false, true);
   const before = c.Normalization.evaluate(f.project, f.rasters);
