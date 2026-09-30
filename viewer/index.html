@@ -165,9 +165,8 @@
             pointer-events: none; text-shadow: 0 0 2px #000;
         }
         .resid-out { background: #fef2f2; color: #b91c1c; }
-        /* サムネイルを Image Viewer と同じ向きで見せるラッパ。
-           MSI サムネだけ −180° 回転し、HE/IF は T_he_to_msi が画像内部で
-           既に 180° を吸収しているため 0° のまま表示する。 */
+        /* MSI は中央表示と同じ合成角で描いた画像を等比で収める。
+           HE/IF・Atlas のサムネイルの向きは従来どおり。 */
         .thumb-rot-box {
             position: relative;
             width: 100%;
@@ -184,7 +183,8 @@
             transform-origin: 50% 50%;
         }
         .thumb-rot-box > img.msi-thumb {
-            transform: rotate(-180deg);
+            height: 100% !important;
+            max-height: none !important;
         }
         .thumb-rot-box > .thumbnail {
             position: absolute;
@@ -353,11 +353,13 @@
                         </svg>
                     </div>
                     <div id="analysis-graph-content" class="flex-1 flex flex-col overflow-hidden min-h-0 mt-1">
-                        <div class="flex items-center gap-1 text-xs mb-1 shrink-0 flex-wrap">
+                        <p id="graph-selection-label" class="text-xs text-gray-600 mb-1 shrink-0">表示する分子（最大3分子）</p>
+                        <div role="group" aria-labelledby="graph-selection-label" class="flex items-center gap-1 text-xs mb-1 shrink-0 flex-wrap">
+                            <label for="graph-select-1">分子1</label>
                             <select id="graph-select-1" class="text-xs border-gray-300 rounded py-0.5 px-1"></select>
-                            <span class="text-gray-400">vs</span>
+                            <label for="graph-select-2">追加表示2</label>
                             <select id="graph-select-2" class="text-xs border-gray-300 rounded py-0.5 px-1"></select>
-                            <span class="text-gray-400">vs</span>
+                            <label for="graph-select-3">追加表示3</label>
                             <select id="graph-select-3" class="text-xs border-gray-300 rounded py-0.5 px-1"></select>
                         </div>
                         <div id="graph-container" class="flex-1 border border-gray-300 rounded overflow-auto min-h-0">
@@ -1015,13 +1017,40 @@
          * IMAGES のサムネイル。着色は常に分子ごとの固定色 (メインキャンバスと同じ)。
          * 表示の ON/OFF で絵が変わらないので、一覧として落ち着いて見られる。
          */
+        function setMsiThumbnailImage(thumbEl, source) {
+            // 中央はラスタ→canvas の −90°、外側 CSS の all−90°、MSI 追加角。
+            // 初期向きの −180° を含め、同じ合成角で回転後の全体を収める。
+            const angle = ((Number(rotationState.all) || 0) + (Number(rotationState.msi) || 0) - 180) * Math.PI / 180;
+            const c = Math.abs(Math.cos(angle)), s = Math.abs(Math.sin(angle));
+            const width = source.width * c + source.height * s;
+            const height = source.width * s + source.height * c;
+            const scale = Math.min(1, 512 / Math.max(width, height));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.ceil(width * scale - 1e-9));
+            canvas.height = Math.max(1, Math.ceil(height * scale - 1e-9));
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = scale < 1;
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(angle);
+            ctx.scale(scale, scale);
+            ctx.drawImage(source, -source.width / 2, -source.height / 2);
+            thumbEl.classList.add('msi-thumb');
+            thumbEl.src = canvas.toDataURL();
+            // 再描画時は次の load を待たず、回転後の縦横比で配置する。
+            thumbEl.closest('.thumb-rot-box')?.style.setProperty('--rot-ar', canvas.width + ' / ' + canvas.height);
+        }
+
+        function refreshMsiThumbnailRotation() {
+            msiThumbRefs.forEach((thumb, key) => renderMsiThumbnail(key, thumb));
+        }
+
         function renderMsiThumbnail(key, thumbEl) {
             if (!thumbEl) return;
             // 生値ラスタがあるならそちらから描く (生単位のウィンドウ + 大津法が効く)
             const vr = displayRaster(key);
             if (vr) {
                 const canvas = paintDisplayRaster(key);
-                thumbEl.src = canvas.toDataURL();
+                setMsiThumbnailImage(thumbEl, canvas);
                 thumbEl.title = formatDisplayName(key) + ' — ' + channelUnit(key) + (channelResult(key)?.reasonCodes?.length ? '\n' + normalizationReasons(channelResult(key).reasonCodes) : '');
                 thumbEl.classList.add('msi-thumb');
                 return;
@@ -1029,8 +1058,11 @@
             const source = imageSources[key];
             if (!source || !source.complete || source.naturalWidth === 0) return;
             if (valueDisplay.mode === 'normalized' && /^MSI_/i.test(key)) {
-                const blank = document.createElement('canvas'); blank.width = 1; blank.height = 1;
-                thumbEl.src = blank.toDataURL(); thumbEl.title = formatDisplayName(key) + ': 生値ラスタなし・補正画像算出不可';
+                const blank = document.createElement('canvas');
+                const scale = Math.min(1, 512 / Math.max(source.naturalWidth, source.naturalHeight));
+                blank.width = Math.max(1, Math.round(source.naturalWidth * scale));
+                blank.height = Math.max(1, Math.round(source.naturalHeight * scale));
+                setMsiThumbnailImage(thumbEl, blank); thumbEl.title = formatDisplayName(key) + ': 生値ラスタなし・補正画像算出不可';
                 return;
             }
             const iw = source.naturalWidth;
@@ -1061,10 +1093,7 @@
                 }
             }
             tctx.putImageData(imgData, 0, 0);
-            // 回転は親 .thumb-rot-box の CSS transform に一本化。ここでは着色済み
-            // 非回転データ URL を src に差し替えるだけ。
-            thumbEl.src = tc.toDataURL();
-            thumbEl.classList.add('msi-thumb');
+            setMsiThumbnailImage(thumbEl, tc);
         }
 
         // DOMContentLoaded でコンテキスト初期化 → resolve で IIFE に通知
@@ -2143,7 +2172,7 @@ function loadAllImages() {
                 slotWrapper.style.maxWidth = cellBasis;
                 slotWrapper.dataset.slotNumber = index + 1;
 
-                // 回転ラッパ。MSI だけ CSS で −180° 回転。aspect は --rot-ar = iw/ih。
+                // MSI は回転後、他の画像は元画像の縦横比で収める。
                 const rotBox = document.createElement('div');
                 rotBox.className = 'thumb-rot-box';
 
@@ -2172,7 +2201,8 @@ function loadAllImages() {
                     rotBox.style.setProperty('--rot-ar', `${iw} / ${ih}`);
                 };
                 if (thumb.complete && thumb.naturalWidth > 0) applyRotAr();
-                else thumb.addEventListener('load', applyRotAr, { once: true });
+                if (key.startsWith('MSI_')) thumb.addEventListener('load', applyRotAr);
+                else if (!thumb.complete || !thumb.naturalWidth) thumb.addEventListener('load', applyRotAr, { once: true });
 
                 if (key.startsWith('MSI_')) {
                   msiThumbRefs.set(key, thumb);
@@ -2449,7 +2479,7 @@ function loadAllImages() {
             const select3 = document.getElementById('graph-select-3');
             // 実際に読み込まれている画像レイヤから作る。
             // (以前はスタブの graphData から作っていたため、登録データや MSI_TIC が選べなかった)
-            // 参照画像は定量値ではないので、比較の対象には出さない。
+            // 参照画像は定量値ではないので、分子の表示対象には出さない。
             const allKeys = Object.keys(atlasData.images || {}).filter(k => !isRefKey(k));
             const graphKeys = allKeys.filter(k => /^MSI_/i.test(k));
             if (!graphKeys.length) graphKeys.push.apply(graphKeys, allKeys);
@@ -2457,9 +2487,9 @@ function loadAllImages() {
             [select1, select2, select3].forEach(s => s.innerHTML = '');
 
             graphKeys.forEach(key => select1.add(new Option(formatDisplayName(key), key)));
-            select2.add(new Option('-', 'none'));
+            select2.add(new Option('表示しない', 'none'));
             graphKeys.forEach(key => select2.add(new Option(formatDisplayName(key), key)));
-            select3.add(new Option('-', 'none'));
+            select3.add(new Option('表示しない', 'none'));
             graphKeys.forEach(key => select3.add(new Option(formatDisplayName(key), key)));
 
             const msiKeys = graphKeys.filter(k => k.startsWith('MSI_'));
@@ -2595,7 +2625,7 @@ function loadAllImages() {
             }
             const note = document.createElement('p');
             note.className = 'text-xs p-2 text-gray-600';
-            note.textContent = '分子ごとに独立した軸。平均・SD は元の MSI 座標の ROI 全体（Otsu の非表示画素を含む）。SD は画素間分布で、切片間の誤差ではありません。';
+            note.textContent = '選択した分子を個別に表示します。分子間ではイオン化効率や単位が異なるため、棒の高さから濃度の大小は比較できません。各グラフの軸は独立しています。平均・SD は元の MSI 座標の ROI 全体（Otsu の非表示画素を含む）。SD は画素間分布で、切片間の誤差ではありません。';
             graphContainer.appendChild(note);
             const fmt = value => Number.isFinite(value) ? String(Number(value.toPrecision(6))) : '—';
             for (const key of channels) {
@@ -3370,6 +3400,7 @@ function loadAllImages() {
             // 全体は CSS だけで済むが、片方だけの回転は焼き込みなので描き直す
             if (tgt === 'all') applyViewTransform();
             else { renderCompositeImage(); drawDrawingPreview(); }
+            if (tgt === 'all' || tgt === 'msi') refreshMsiThumbnailRotation();
             if (!keepInput) refreshRotationUi();
             persistRotation();
         }
@@ -3380,6 +3411,7 @@ function loadAllImages() {
             viewTransform.tx = 0; viewTransform.ty = 0; viewTransform.scale = 1;
             applyViewTransform();
             renderCompositeImage();
+            refreshMsiThumbnailRotation();
             refreshRotationUi();
             drawDrawingPreview();
             persistRotation();
