@@ -1920,6 +1920,38 @@
         // ---- 複数の登録データを 1 つに統合 -------------------------------------
         // 「1 切片なのに分子ごとに別データになってしまった」のを後から直すための操作。
         // 分子(レイヤ)を 1 つのプロジェクトに集約する。
+        // Source datasets are deleted after a successful merge, so preserve their
+        // references as labeled rows instead of losing conflicting fixed URLs.
+        function mergeDatasetNotes(targetNotes, source) {
+            const sourceNotes = source.notes;
+            if (!sourceNotes || typeof sourceNotes !== 'object' || Array.isArray(sourceNotes)) return targetNotes;
+            if (!targetNotes || typeof targetNotes !== 'object' || Array.isArray(targetNotes)) return structuredClone(sourceNotes);
+            const merged = structuredClone(targetNotes);
+            merged.others = Array.isArray(merged.others) ? merged.others : [];
+            const usedIds = new Set(merged.others.map(item => item?.id).filter(Boolean));
+            const sourceName = source.displayName || source.id;
+            const newId = () => {
+                let id;
+                do { id = ProjectStorage.uid('note'); } while (usedIds.has(id));
+                usedIds.add(id); return id;
+            };
+            for (const [key, label] of [['atlasUrl', 'marmoset Atlas URL'], ['geneAtlasUrl', 'marmoset Gene Atlas URL']]) {
+                const incoming = sourceNotes[key];
+                if (typeof incoming !== 'string' || !incoming.trim()) continue;
+                if (typeof merged[key] !== 'string' || !merged[key].trim()) merged[key] = incoming;
+                else if (merged[key] !== incoming) merged.others.push({ id: newId(), label: sourceName + ' / ' + label, url: incoming, text: '' });
+            }
+            for (const item of Array.isArray(sourceNotes.others) ? sourceNotes.others : []) {
+                if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+                const row = structuredClone(item);
+                row.label = sourceName + ' / ' + (typeof row.label === 'string' && row.label ? row.label : 'メモ');
+                if (!row.id || usedIds.has(row.id)) row.id = newId();
+                else usedIds.add(row.id);
+                merged.others.push(row);
+            }
+            return merged;
+        }
+
         async function mergeProjects(ids) {
             const list = [];
             const sourceRows = new Map();
@@ -1968,6 +2000,8 @@
             const usedKeys = new Set((target.molecules || []).map(m => m.key));
             const usedNames = new Set((target.molecules || []).map(m => m.name));
             for (const src of rest) {
+                const mergedNotes = mergeDatasetNotes(target.notes, src);
+                if (mergedNotes !== undefined) target.notes = mergedNotes;
                 for (const m of (src.molecules || [])) {
                     // 分子名が衝突したら連番を振る (別条件の同分子を持ち込めるように)
                     let name = m.name, k = 2;

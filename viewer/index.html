@@ -25,6 +25,7 @@
     <script src="../lib/cloud-config.js"></script>
     <script src="../lib/cloud.js"></script>
     <script src="../lib/project-sync.js"></script>
+    <script src="./notes.js"></script>
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -192,6 +193,31 @@
             width: 100%;
             height: 100%;
         }
+        /* Reference notes stay bounded as rows are added. */
+        #notes-panel { background:#fff; padding:8px; border-radius:4px; min-width:0;
+            height:clamp(190px, 28vh, 300px); box-sizing:border-box; display:flex; flex-direction:column; }
+        #notes-panel h2 { margin:0; font-size:13px; font-weight:600; }
+        .notes-header { display:flex; flex-wrap:wrap; justify-content:space-between; gap:4px; margin-bottom:5px; }
+        #notes-status { font-size:11px; color:#475569; }
+        #notes-status[data-state="error"] { color:#b91c1c; }
+        #notes-status[data-state="pending"] { color:#92400e; }
+        #notes-fields { border:0; margin:0; padding:0 4px 0 0; min-width:0; overflow:auto; flex:1; }
+        #notes-panel label { display:block; font-size:12px; margin:5px 0 2px; }
+        #notes-panel input, #notes-panel textarea { box-sizing:border-box; width:100%; min-width:0;
+            border:1px solid #cbd5e1; border-radius:4px; padding:4px 6px; color:#1e293b; background:#fff; font:12px/1.4 sans-serif; }
+        #notes-panel input:focus, #notes-panel textarea:focus { outline:2px solid #93c5fd; outline-offset:1px; }
+        #notes-panel textarea { display:block; resize:vertical; min-height:48px; max-height:160px; margin-top:4px; }
+        .notes-url-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:4px; align-items:center; }
+        #notes-panel a, #notes-panel button { font-size:12px; white-space:nowrap; border:1px solid #cbd5e1;
+            border-radius:4px; padding:3px 7px; color:#1d4ed8; background:#f8fafc; cursor:pointer; text-decoration:none; }
+        #notes-panel a[aria-disabled="true"] { color:#94a3b8; cursor:default; }
+        .notes-url-hint { grid-column:1/-1; font-size:11px; color:#9a3412; overflow-wrap:anywhere; }
+        .notes-url-hint[hidden] { display:none; }
+        .notes-others-heading, .notes-row-heading { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+        .notes-others-heading { margin-top:8px; font-size:12px; font-weight:600; }
+        .notes-other-row { border-top:1px solid #e2e8f0; padding-top:6px; margin-top:6px; }
+        .notes-row-heading { margin-bottom:4px; }
+        #notes-panel .notes-help { font-size:11px; color:#64748b; margin:5px 0 0; }
     </style>
 </head>
 <body class="text-gray-800">
@@ -239,7 +265,7 @@
                     <svg class="w-3.5 h-3.5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M7.5 9 12 4.5m0 0L16.5 9M12 4.5V16"/></svg>
                     <span id="import-zip-label">Import</span>
                 </button>
-                <a href="../index.html" class="text-xs text-blue-600 hover:underline ml-1">Master</a>
+                <a id="back-master" href="../index.html" class="text-xs text-blue-600 hover:underline ml-1">Master</a>
                 <a id="back-stack3d" href="../stack3d/index.html" class="hidden text-xs text-blue-600 hover:underline ml-1">3Dモデルへ戻る</a>
             </div>
         </header>
@@ -286,7 +312,7 @@
                 </div>
             </aside>
 
-            <!-- Center + Right: CSS Grid (2×2) to align IMAGES and Mass測定情報 tops -->
+            <!-- Center + Right: CSS Grid (2×2) to align IMAGES and reference notes tops -->
             <div class="flex-1 min-w-0 overflow-hidden" style="display:grid; grid-template-columns:1fr 650px; grid-template-rows:1fr auto; gap:4px;">
 
                 <!-- Row 1, Col 1: Image Viewer -->
@@ -381,13 +407,30 @@
                     </div>
                 </div>
 
-                <!-- Row 2, Col 2: Mass測定情報 -->
-                <div class="flex items-center justify-center rounded shadow-sm" style="background-color: #1a5c5c;">
-                    <div class="text-white text-center">
-                        <p class="text-xl font-semibold">Mass測定情報</p>
-                        <p class="text-lg mt-1">(今後、作製)</p>
+                <!-- Row 2, Col 2: dataset reference notes -->
+                <section id="notes-panel" class="shadow-sm" aria-labelledby="notes-heading">
+                    <div class="notes-header">
+                        <h2 id="notes-heading">メモ・参考リンク</h2>
+                        <span id="notes-status" role="status" aria-live="polite">読み込み中…</span>
                     </div>
-                </div>
+                    <fieldset id="notes-fields" disabled aria-label="このデータのメモ">
+                        <label for="notes-atlas-url">marmoset Atlas URL</label>
+                        <div class="notes-url-row">
+                            <input id="notes-atlas-url" type="url" placeholder="https://…" aria-describedby="notes-atlas-hint">
+                            <a id="notes-atlas-open" target="_blank" rel="noopener noreferrer" aria-disabled="true" tabindex="-1" aria-label="marmoset Atlas URL を別タブで開く">開く</a>
+                            <small id="notes-atlas-hint" class="notes-url-hint" hidden>http:// または https:// のURLを入力してください（入力内容は保持します）。</small>
+                        </div>
+                        <label for="notes-gene-atlas-url">marmoset Gene Atlas URL</label>
+                        <div class="notes-url-row">
+                            <input id="notes-gene-atlas-url" type="url" placeholder="https://…" aria-describedby="notes-gene-atlas-hint">
+                            <a id="notes-gene-atlas-open" target="_blank" rel="noopener noreferrer" aria-disabled="true" tabindex="-1" aria-label="marmoset Gene Atlas URL を別タブで開く">開く</a>
+                            <small id="notes-gene-atlas-hint" class="notes-url-hint" hidden>http:// または https:// のURLを入力してください（入力内容は保持します）。</small>
+                        </div>
+                        <div class="notes-others-heading"><span>others</span><button id="notes-add" type="button">＋ 項目を追加</button></div>
+                        <div id="notes-others"></div>
+                        <p class="notes-help">このデータごとに自動保存します。他のPCへの共有は「クラウドに保存」を押してください。</p>
+                    </fieldset>
+                </section>
 
             </div>
 
@@ -435,8 +478,13 @@
         let viewerRefreshTask = null;
         let viewerRefreshNotice = '';
         let viewerScopePath = null;
+        let notesPanel = null;
+        let notesEditRevision = 0;
+        let notesPendingSave = false;
+        let notesNavigationPending = false;
+        let viewerNavigationCommitted = false;
         const viewerEditableFields = ['valueDisplay', 'visibleLayers', 'viewerTransform', 'rotation', 'otsu',
-            'roi', 'world_coords', 'alignment', 'layerDisplay'];
+            'roi', 'world_coords', 'alignment', 'layerDisplay', 'notes'];
         const sameViewerField = (left, right) => JSON.stringify(left) === JSON.stringify(right);
         // 大津法の状態
         let otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
@@ -1134,6 +1182,7 @@
             setupCollapsibleSections();
             setupDrawingHandlers();
             setupZipButtons();
+            setupNotesPanel();
             setupRotationControls();
             setupViewTransform();
             setupOtsuUi();
@@ -1832,6 +1881,72 @@ function loadAllImages() {
             queueSaveProject();
         }
 
+        function notesChanged() {
+            return !sameViewerField(currentProject?.notes, viewerStoredProject?.notes);
+        }
+        function notesWorkPending() {
+            return notesPendingSave || notesChanged() || !!notesPanel?.composing;
+        }
+        function refreshNotesStatus() {
+            const status = document.getElementById('notes-status');
+            if (!status || !notesPanel) return;
+            const pending = notesWorkPending();
+            status.dataset.state = viewerSaveConflict ? 'error' : pending ? 'pending' : 'saved';
+            status.textContent = viewerSaveConflict ? '保存できませんでした（入力は保持しています）'
+                : pending ? (notesPanel.composing ? '入力中・未保存' : 'このPCに保存中…')
+                : currentProject?.notes ? 'このPCに保存済み' : '未入力';
+        }
+        function setupNotesPanel() {
+            const root = document.getElementById('notes-panel');
+            notesPanel = ViewerNotes.create(root, {
+                onChange(notes) {
+                    if (!currentProject) return;
+                    currentProject.notes = notes;
+                    notesEditRevision++; notesPendingSave = true;
+                    if (!notesPanel.composing) queueSaveProject();
+                    refreshCloudSaveState();
+                },
+                onCompositionChange(active) {
+                    if (active && saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+                    if (!active && notesChanged()) queueSaveProject();
+                    refreshViewerActionControls();
+                },
+            });
+            notesPanel.render(currentProject?.notes);
+            document.getElementById('notes-fields').disabled = false;
+            refreshNotesStatus();
+            document.getElementById('back-master').addEventListener('click', async event => {
+                if (event.button || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+                // Preserve the existing behavior unless there is an actual notes draft.
+                if (!notesWorkPending()) return;
+                event.preventDefault();
+                await leaveViewerAfterNotesSave(event.currentTarget.href);
+            });
+            window.addEventListener('beforeunload', event => {
+                if (!viewerNavigationCommitted && notesWorkPending()) {
+                    event.preventDefault(); event.returnValue = '';
+                }
+            });
+        }
+        async function leaveViewerAfterNotesSave(href) {
+            if (notesNavigationPending) return;
+            if (notesPanel?.composing) return;
+            notesNavigationPending = true;
+            try {
+                await flushViewerEdits();
+                // A save may finish while the user is still typing.
+                if (notesWorkPending()) return;
+                viewerNavigationCommitted = true;
+                location.href = href;
+            } catch (_) { refreshNotesStatus(); }
+            finally { notesNavigationPending = false; }
+        }
+        async function flushViewerEdits() {
+            if (notesPanel?.composing) throw new Error('メモの日本語入力を確定してから操作してください。');
+            if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
+            return await saveViewerProject();
+        }
+
         let saveTimer = 0;
         // Only locally changed Viewer fields are written. Latest normalization,
         // folder membership and other untouched fields are never sent by this path.
@@ -1847,7 +1962,7 @@ function loadAllImages() {
                 if (viewerSaveConflict) throw new Error('保存停止中です。新しい版を再読み込みしてください。');
                 viewerSaving++;
                 try {
-                    const snapshot = structuredClone(currentProject), baseline = viewerStoredProject;
+                    const snapshot = structuredClone(currentProject), baseline = viewerStoredProject, notesRevision = notesEditRevision;
                     const fields = viewerChanges(snapshot, baseline);
                     const latest = await ProjectStorage.getProject(projectId);
                     if (!latest) throw new Error('保存先のデータが削除されています。');
@@ -1875,11 +1990,12 @@ function loadAllImages() {
                         currentProject = { ...saved, ...subsequent };
                         viewerStoredProject = structuredClone(saved);
                         viewerStoredUpdatedAt = saved.updatedAt;
+                        if (notesEditRevision === notesRevision) notesPendingSave = false;
                         if (normalizationChanged) await refreshViewerEvaluation();
                     }
                     refreshCloudSaveState();
                     return saved;
-                } finally { viewerSaving--; }
+                } finally { viewerSaving--; refreshNotesStatus(); }
             });
             viewerSaveQueue = operation.catch(error => {
                 if (currentProject?.id === projectId && viewerContextRevision === contextRevision && !viewerSaveConflict) {
@@ -1896,14 +2012,16 @@ function loadAllImages() {
         }
 
         function queueSaveProject() {
-            if (!currentProject || viewerSaveConflict) return;
+            if (!currentProject || viewerSaveConflict) { refreshNotesStatus(); return; }
             if (saveTimer) clearTimeout(saveTimer);
+            if (notesPanel?.composing) { saveTimer = 0; refreshNotesStatus(); return; }
             saveTimer = setTimeout(() => {
                 saveTimer = 0;
                 saveViewerProject().catch(e => console.warn('[save] 失敗', e));
                 // 作業中の保存はこの PC の中だけ。クラウドへ送るかどうかはボタンで決める
                 if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
             }, 400);
+            refreshNotesStatus();
         }
 
         // 大津法: このレイヤに適用する keep マスク (トグル OFF なら null)
@@ -3173,6 +3291,9 @@ function loadAllImages() {
 
             document.addEventListener('keydown', (e) => {
                 if (!drawingMode) return;
+                const inputTarget = e.target;
+                if (e.isComposing || e.keyCode === 229 || inputTarget &&
+                    (inputTarget.tagName === 'INPUT' || inputTarget.tagName === 'TEXTAREA' || inputTarget.isContentEditable)) return;
                 if (e.key === 'Escape') { toggleDrawingMode(false); }
                 else if (e.key === 'Enter') { finalizeDrawing(); }
                 else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === 'z' || e.key === 'Z')) {
@@ -3215,7 +3336,7 @@ function loadAllImages() {
             viewerActions.export = true; refreshViewerActionControls();
             try {
                 buildExportableProject();
-                const proj = await saveViewerProject();
+                const proj = await flushViewerEdits();
                 const blob = await ZipIO.exportProject(proj);
                 const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
                 const a = document.createElement('a');
@@ -3235,8 +3356,15 @@ function loadAllImages() {
             if (!canStartViewerAction('import')) return;
             viewerActions.import = true; refreshViewerActionControls();
             try {
+                await flushViewerEdits();
                 const { project, warnings } = await ZipIO.importZip(file);
                 if (warnings.length) console.warn('[importZip] 警告:', warnings);
+                // Keep an edit made while the ZIP was being read on the current screen.
+                if (notesWorkPending() || viewerSaveConflict) {
+                    viewerActionNotice = 'ZIPは登録しました。現在のメモの編集を保持するため画面を切り替えていません。保存後にMasterから開いてください。';
+                    return;
+                }
+                viewerNavigationCommitted = true;
                 // 読み込んだプロジェクトをそのまま開く
                 location.href = 'index.html?project=' + encodeURIComponent(project.id);
             } catch (e) {
@@ -3263,6 +3391,7 @@ function loadAllImages() {
 
         function viewerActionReason(action) {
             if (!currentProject) return 'データの読み込みを待ってください。';
+            if (notesPanel?.composing && action !== 'png') return 'メモの日本語入力を確定してから操作してください。';
             if (viewerActions[action]) return action === 'cloud' ? 'クラウドに保存中です。' : '処理中です。';
             if (viewerSaveConflict && action !== 'png') return '保存と Export・Import を停止しています。編集中の内容はこの画面に保持しています。再読み込みすると未保存の編集が失われるため、内容を確認してください。';
             if (otsuControlsLocked || otsuPending || otsuDraft) return '表示マスクの確認・プレビューを確定または取り消してください。';
@@ -3273,6 +3402,7 @@ function loadAllImages() {
             return '';
         }
         function refreshViewerActionControls() {
+            refreshNotesStatus();
             const cloudVisible = !!(currentProject?.cloudUpdatedAt && window.Cloud?.configured());
             const status = document.getElementById('viewer-action-status');
             const local = cloudVisible ? ProjectSync.localStatus(currentProject, { cloud: Cloud }) : null;
@@ -3321,7 +3451,7 @@ function loadAllImages() {
             viewerActions.cloud = true; refreshViewerActionControls();
             try {
                 syncProjectFromViewer();
-                const saved = await saveViewerProject();
+                const saved = await flushViewerEdits();
                 viewerSaving++;
                 try {
                     const acknowledged = await ProjectSync.saveState(saved, { storage: ProjectStorage, cloud: Cloud });
@@ -3342,7 +3472,7 @@ function loadAllImages() {
                         refreshValueDisplayUi();
                         return;
                     }
-                    const subsequent = viewerChanges(currentProject, saved);
+                    const subsequent = { ...viewerChanges(currentProject, saved), ...viewerChanges(currentProject, viewerStoredProject) };
                     currentProject = { ...acknowledged, ...subsequent };
                     viewerStoredProject = structuredClone(acknowledged);
                     viewerStoredUpdatedAt = acknowledged.updatedAt;
@@ -3354,7 +3484,7 @@ function loadAllImages() {
                         if (additionalReasons.length) viewerActionNotice += ' 手元の追加変更：' + additionalReasons.join('。') + '。';
                         else if (!status.remainingLocalEdits) viewerActionNotice += ' 手元の新しい編集は未保存です。';
                     }
-                } finally { viewerSaving--; }
+                } finally { viewerSaving--; refreshNotesStatus(); }
             } catch (e) {
                 console.error('[cloud-save]', e);
                 viewerActionNotice = e.outcomeUnknown ? 'クラウドへの保存結果を確認できませんでした。手元の編集は保持しています。再試行時に保存済み内容を確認します。'
@@ -4324,14 +4454,15 @@ function loadAllImages() {
       if (title) title.textContent = currentProject.displayName;
     }
     function viewerHasPendingEdits() {
-      return !!(saveTimer || viewerSaving || viewerSaveConflict || Object.keys(viewerChanges()).length ||
+      return !!(saveTimer || viewerSaving || viewerSaveConflict || notesWorkPending() ||
+        document.querySelector('#notes-panel input:focus, #notes-panel textarea:focus') || Object.keys(viewerChanges()).length ||
         drawingMode || drawingVertices.length || document.querySelector('.modal-backdrop') || otsuPending || otsuDraft);
     }
     function refreshViewerProject({ remote = false } = {}) {
       if (!viewerReady || !currentProject || viewerRefreshTask) return viewerRefreshTask;
       viewerRefreshTask = (async () => {
         if (viewerHasPendingEdits()) {
-          viewerRefreshNotice = '更新の確認を保留しています。編集中の ROI・位置合わせを保持しています。編集を保存してから画面に戻ると確認できます。';
+          viewerRefreshNotice = '更新の確認を保留しています。編集中のメモ・ROI・位置合わせを保持しています。編集を保存し、入力欄から離れて画面に戻ると確認できます。';
           refreshValueDisplayUi(); return;
         }
         const id = currentProject.id, revision = viewerContextRevision;
@@ -4345,6 +4476,7 @@ function loadAllImages() {
         currentProject = latest;
         viewerStoredProject = structuredClone(latest);
         viewerStoredUpdatedAt = latest.updatedAt;
+        notesPanel?.render(latest.notes);
         if (!remote) viewerRefreshNotice = '';
         await refreshViewerEvaluation();
         refreshCloudSaveState();
@@ -4463,8 +4595,9 @@ function loadAllImages() {
           return;
         }
         try {
-          if (saveTimer) { clearTimeout(saveTimer); saveTimer = 0; }
-          await saveViewerProject();
+          await flushViewerEdits();
+          if (notesWorkPending()) return;
+          viewerNavigationCommitted = true;
           location.href = link.href;
         } catch (error) {
           viewerRefreshNotice = '編集を保存できなかったため、この画面を保持しています。' + error.message;
