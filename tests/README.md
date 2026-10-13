@@ -57,6 +57,34 @@ retains blobs referenced by another project. The UI offers retry or cancellation
 of pending operations and reports partial results. Network fixtures and local
 storage in these tests are isolated from the production service.
 
+The v2.22 notes persistence checks use real JSZip round trips and simulated cloud
+responses. They preserve fixed Atlas URLs, optional reference URLs, Japanese and
+multiline text, row IDs and row order. Missing notes remain absent in legacy
+records; explicitly cleared notes remain empty, including when a stale bundle
+contains an older value. Cloud comparisons identify notes edits and acknowledge
+only the sent snapshot. Concurrent local or remote edits must preserve the newer
+record and keep the unsaved draft. Notes are metadata and must not change source
+rasters, ROI coordinates, display settings or normalization results.
+
+The notes browser regressions exercise legacy read-only loading, independent
+per-project edits, stable row IDs, deletion and full clearing across reloads,
+without changing analytical results. Unsafe links remain disabled and imported
+markup stays literal text. Japanese composition, newlines and text undo do not
+trigger ROI drawing shortcuts. Failed writes and peer conflicts retain drafts;
+idle refreshes update notes while composing or pending edits stay untouched.
+Cloud/local in-flight save scenarios retain subsequent edits and reversions,
+including beforeunload protection and immediate Master navigation waiting for
+the final local value to persist. Focused autosaved inputs retain their DOM and
+focus. Export, Import and the 3D return path flush pending local notes before
+continuing; edits made during Import keep the current Viewer visible.
+
+Master merge regressions preserve references from datasets removed by a merge.
+They cover source-note adoption, blank fixed URL filling, conflicting URL rows,
+source provenance, unknown row fields, colliding and stable IDs, and legacy
+absence. Both stored input records remain unchanged until the guarded commit;
+all raw raster bits survive. A concurrent source notes edit rejects the merge
+without deleting or overwriting either dataset.
+
 The v2.21.3 synchronization checks distinguish IndexedDB structured clones from
 JSON cloud transport. HE/IF and manual-alignment undefined properties must not
 leave a saved project dirty, and repeat saves verify agreement without another
