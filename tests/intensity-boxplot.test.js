@@ -113,3 +113,150 @@ test('compact height preserves DPR, finite geometry and current selection hit te
   assert.equal(draw(canvas, { height: NaN }).height, 320);
   assert.equal(draw(canvas, {}).height, 320);
 });
+
+test('wrapped rows share the full channel axis while drawing and selecting only their own groups', () => {
+  const first = setup(), second = setup();
+  const low = { key: 'low', distribution: distribution() };
+  const high = { key: 'high', distribution: distribution({ max: 1000 }) };
+  const axisRois = [low, high];
+  const selected = [];
+  const left = first.draw(first.canvas, { width: 350, height: 360, fitWidth: true,
+    rois: [low], axisRois, onSelect: key => selected.push(key) });
+  const right = second.draw(second.canvas, { width: 350, height: 360, fitWidth: true,
+    rois: [high], axisRois });
+  assert.deepEqual(Array.from(left.domain), Array.from(right.domain));
+  assert.ok(left.domain[1] >= 1000, 'a later row determines the shared upper limit');
+  assert.equal(left.groups.length, 1);
+  assert.equal(first.calls.filter(call => call.method === 'strokeRect').length, 1);
+  assert.equal(first.calls.filter(call => call.method === 'arc').length, low.distribution.points.length);
+  assert.doesNotMatch(first.attributes['aria-label'], /high:/, 'off-row groups only supply the axis');
+  assert.deepEqual(first.calls.filter(call => call.method === 'arc').map(call => call.args[1]),
+    second.calls.filter(call => call.method === 'arc').map(call => call.args[1]),
+    'the same intensities occupy the same y coordinates on both rows');
+  first.canvas.onclick({ clientX: -110 + left.groups[0].center / 2, clientY: 80 + 100 / 2 });
+  assert.deepEqual(selected, ['low']);
+  const independent = first.draw(first.canvas, { rois: [low] });
+  assert.ok(independent.domain[1] < 1000, 'the default still derives its scale from visible groups');
+});
+
+test('fitWidth fits a narrow row without changing legacy widths, DPR or hit testing', () => {
+  const { draw, canvas, calls } = setup(2);
+  const roi = { key: 'narrow', distribution: distribution() }, selected = [];
+  const result = draw(canvas, { width: 220, height: 360, fitWidth: true,
+    rois: [roi], onSelect: key => selected.push(key) });
+  assert.equal(result.width, 220);
+  assert.equal(canvas.width, 440);
+  assert.equal(canvas.height, 720);
+  assert.equal(canvas.style.width, '220px');
+  assert.ok(result.groups[0].left >= 84 && result.groups[0].right <= 200);
+  canvas.onclick({ clientX: -110 + result.groups[0].center / 2, clientY: 80 + 100 / 2 });
+  assert.deepEqual(selected, ['narrow']);
+  for (const call of calls) for (const arg of call.args) if (typeof arg === 'number') assert.ok(Number.isFinite(arg));
+  assert.equal(draw(canvas, { width: 180, fitWidth: true, rois: [roi] }).width, 220);
+  assert.equal(draw(canvas, { width: 220, rois: [roi] }).width, 300);
+  const rois = Array.from({ length: 4 }, (_, index) => ({ key: String(index), distribution: distribution() }));
+  assert.equal(draw(canvas, { width: 460, fitWidth: true, rois }).width, 460);
+  assert.equal(draw(canvas, { width: 460, rois }).width, 510);
+});
+
+test('explicit finite domain overrides row and full-channel limits without changing 2D defaults', () => {
+  const { draw, canvas } = setup();
+  const roi = { key: 'a', distribution: distribution({ max: 1000 }) };
+  const axisRois = [{ key: 'other-row', distribution: distribution({ max: 10000 }) }];
+  const domain = [0, 5];
+  const result = draw(canvas, { domain, rois: [roi], axisRois });
+  assert.deepEqual(Array.from(result.domain), domain);
+  result.domain[1] = 6;
+  assert.deepEqual(domain, [0, 5], 'drawing geometry does not alias the caller domain');
+  for (const invalid of [[0, 0], [5, 0], [0, Infinity], [NaN, 5], [0, 5, 10], null]) {
+    const fallback = draw(canvas, { domain: invalid, rois: [roi], axisRois });
+    assert.ok(fallback.domain[1] >= 10000, 'invalid domains retain the full-channel fallback');
+  }
+  const legacy = draw(canvas, { width: 220, rois: [roi] });
+  assert.equal(legacy.height, 320);
+  assert.equal(legacy.width, 300);
+  assert.ok(legacy.domain[1] >= 1000);
+});
+
+test('upper-edge labels use exact supplied population count, not sampled point counts', () => {
+  const { draw, canvas, calls, attributes } = setup();
+  const name = 'A long complete anatomical ROI name that does not fit its axis slot';
+  const d = distribution({ n: 10000, max: 5000, sampled: true, points: [
+    { value: 2, rank: 2 }, { value: 1000, rank: 9999 }
+  ] });
+  const before = JSON.stringify(d);
+  const result = draw(canvas, { width: 400, fitWidth: true, domain: [0, 5], compactTitle: true,
+    title: 'DA', rois: [{ key: 'long', name, distribution: d, aboveCount: 1234 }] });
+  assert.equal(result.outsideCounts.long.above, 1234);
+  assert.equal(result.outsideCounts.long.max, 5000);
+  assert.equal(calls.filter(call => call.method === 'arc').length, 1);
+  assert.ok(calls.some(call => call.method === 'fillText' && call.args[0] === '↑ 1,234画素'));
+  assert.ok(calls.some(call => call.method === 'fillText' && call.args[0] === '最大 5000'));
+  assert.ok(!calls.some(call => call.method === 'fillText' && call.args[0] === 'DA'), 'compact titles are not duplicated');
+  assert.match(attributes['aria-label'], /DA Intensity Box Plot/);
+  assert.ok(attributes['aria-label'].includes(name));
+  assert.ok(attributes['aria-description'].includes(name));
+  assert.match(attributes['aria-description'], /表示範囲 0–5/);
+  assert.match(attributes['aria-description'], /1,234画素、最大 5000/);
+  assert.match(attributes['aria-description'], /範囲外の値も統計に含みます/);
+  assert.equal(JSON.stringify(d), before, 'the renderer leaves statistics and observations unchanged');
+});
+
+test('observations beyond either bound are omitted rather than relocated to the visible edges', () => {
+  const { draw, canvas, calls } = setup();
+  const points = [-100, 0, 2, 5, 100].map((value, rank) => ({ value, rank }));
+  const result = draw(canvas, { domain: [0, 5], height: 360, compactTitle: true,
+    rois: [{ key: 'a', aboveCount: 1, distribution: distribution({ min: -100, max: 100, points }) }] });
+  assert.deepEqual(Array.from(result.domain), [0, 5]);
+  const arcs = calls.filter(call => call.method === 'arc');
+  assert.equal(arcs.length, 3, 'only the values 0, 2 and 5 are drawn');
+  assert.deepEqual(arcs.map(call => call.args[1]), [312, 206.39999999999998, 48]);
+  assert.deepEqual(calls.filter(call => call.method === 'fill').map(call => call.fillStyle),
+    ['#2496ed', '#2496ed', '#f08080'], 'point colors still use P99, independently of the visible domain');
+});
+
+test('missing or invalid supplied counts never become sample-derived count labels', () => {
+  const { draw, canvas, calls, attributes } = setup();
+  const d = distribution({ max: 1000 });
+  for (const aboveCount of [undefined, -1, 1.5, NaN, Infinity, 6]) {
+    calls.length = 0;
+    const result = draw(canvas, { domain: [0, 3], rois: [{ key: 'a', distribution: d, aboveCount }] });
+    assert.equal(result.outsideCounts.a.above, null);
+    assert.ok(!calls.some(call => call.method === 'fillText' && call.args[0].startsWith('↑')));
+    assert.doesNotMatch(attributes['aria-description'], /画素/);
+  }
+  draw(canvas, { domain: [0, 3], rois: [{ key: 'a', distribution: d, aboveCount: 2 }] });
+  assert.match(attributes['aria-description'], /2画素/);
+  calls.length = 0;
+  const zero = draw(canvas, { rois: [{ key: 'a', distribution: d, aboveCount: 0 }] });
+  assert.equal(zero.outsideCounts.a.above, 0);
+  assert.equal(attributes['aria-description'], '', 'redrawing clears the old clipping description');
+  assert.ok(!calls.some(call => call.method === 'fillText' && call.args[0].startsWith('↑')));
+});
+
+test('upper-edge annotations preserve title space, fitWidth and current ROI hit testing', () => {
+  const { draw, canvas, calls } = setup(2);
+  const selected = [];
+  const result = draw(canvas, { width: 260, height: 400, fitWidth: true, title: 'DA', domain: [0, 5],
+    rois: [{ key: 'a', aboveCount: 1, distribution: distribution({ max: 100 }) }],
+    onSelect: key => selected.push(key) });
+  assert.equal(result.width, 260);
+  assert.equal(canvas.width, 520);
+  assert.equal(canvas.height, 800);
+  const labels = calls.filter(call => call.method === 'fillText');
+  assert.equal(labels.find(call => call.args[0] === 'DA').args[2], 22);
+  assert.equal(labels.find(call => call.args[0] === '↑ 1画素').args[2], 40);
+  assert.equal(labels.find(call => call.args[0] === '最大 100').args[2], 56);
+  canvas.onclick({ clientX: -110 + result.groups[0].center / 2, clientY: 80 + 100 / 2 });
+  canvas.onclick({ clientX: -110 + result.groups[0].center / 2, clientY: 80 + 40 / 2 });
+  assert.deepEqual(selected, ['a'], 'marker text above the chart does not select an ROI');
+});
+
+test('explicit domains keep clipped box geometry finite even with extreme finite statistics', () => {
+  const { draw, canvas, calls } = setup();
+  const d = distribution({ min: -1e308, max: 1e308, q1: -1e308, median: 0, q3: 1e308,
+    whiskerLow: -1e308, whiskerHigh: 1e308, points: [{ value: -1e308 }, { value: 0 }, { value: 1e308 }] });
+  draw(canvas, { domain: [-1e-200, 1e-200], compactTitle: true, rois: [{ key: 'a', distribution: d }] });
+  assert.equal(calls.filter(call => call.method === 'arc').length, 1);
+  for (const call of calls) for (const arg of call.args) if (typeof arg === 'number') assert.ok(Number.isFinite(arg), call.method);
+});

@@ -83,6 +83,28 @@ test('deterministic sampling preserves full-population summaries and represents 
   for (const maxPoints of [0, 1, 2.5, NaN, Infinity]) assert.throws(() => D.summarize(values, { maxPoints }), /maxPoints/);
 });
 
+test('optional exact upper-tail metadata is compact, sorted, independent of drawing samples and absent by default', () => {
+  const values = Float64Array.from({ length: 10001 }, (_, i) => (i * 7919) % 10001);
+  const before = Buffer.from(values.buffer).toString('hex');
+  const ordinary = D.summarize(values, { maxPoints: 2 });
+  const compact = D.summarize(values, { maxPoints: 2, includeUpperTailValues: true });
+  const detailed = D.summarize(values, { maxPoints: 2000, includeUpperTailValues: true });
+  const { upperTailValues, ...withoutTail } = compact;
+  assert.deepEqual(plain(withoutTail), plain(ordinary), 'the option changes no scientific or sampling field');
+  assert.equal(Object.hasOwn(ordinary, 'upperTailValues'), false);
+  assert.equal(Object.hasOwn(D.summarize(values, { includeUpperTailValues: false }), 'upperTailValues'), false);
+  assert.deepEqual(Array.from(upperTailValues), Array.from({ length: 100 }, (_, i) => 9901 + i));
+  assert.deepEqual(Array.from(upperTailValues), Array.from(detailed.upperTailValues));
+  assert.equal(upperTailValues.length, compact.upperTailCount);
+  assert.equal(upperTailValues.buffer.byteLength, upperTailValues.length * 8, 'the tail must not retain a full sorted backing buffer');
+  assert.notEqual(upperTailValues.buffer, values.buffer);
+  assert.equal(Buffer.from(values.buffer).toString('hex'), before);
+  const tied = D.summarize([...Array(98).fill(0), 1, 1], { includeUpperTailValues: true });
+  assert.equal(tied.upperTailValues.length, 0, 'values equal to P99 are not upper-tail metadata');
+  const cloned = structuredClone(compact);
+  assert.deepEqual(Array.from(cloned.upperTailValues), Array.from(upperTailValues), 'worker metadata survives structured clone');
+});
+
 test('opt-in distributions add only requested channels and leave every legacy field and raw bit unchanged', () => {
   const e = entry({ h: [0, 4, 8, NaN], d: [2, 2, 2, NaN], g: [2, 4, 6, NaN] }); apply(e);
   const before = Object.fromEntries(Object.entries(e.rasters).map(([key, r]) => [key, Buffer.from(r.values.buffer).toString('hex')]));

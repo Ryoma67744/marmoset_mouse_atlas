@@ -18,12 +18,17 @@ async function settle(page, expected = {}) {
 }
 async function result(page) { return page.evaluate(() => Atlas3D.analysis.getState().result); }
 function group(result, channel, roi) { return result.channels.find(item => item.key === channel).groups.find(item => item.roiName === roi); }
+async function openConditions(page) {
+  if (!await page.locator('.analysis-controls').evaluate(node => node.open)) await page.locator('#analysis-conditions-summary').click();
+}
 async function applyRange(page, text, count) {
+  await openConditions(page);
   await page.locator('#analysis-range').fill(text); await page.locator('#analysis-apply-range').click();
   await settle(page, { count });
 }
 async function mode(page, name, count) {
   await page.locator('[data-analysis-mode="' + name + '"]').click(); await settle(page, { mode: name, count });
+  await openConditions(page);
 }
 async function useRois(page, names) {
   const inputs = page.locator('#analysis-roi-checks input[data-roi-name]');
@@ -58,7 +63,8 @@ test('3D analysis uses real ROI pixels for all three modes and arbitrary section
     let current = await result(page);
     assert.equal(current.mode, 'selected'); assert.deepEqual(current.selection.sectionIds, [sectionId(46)]);
     assert.equal(await page.locator('#analysis-charts .analysis-molecule').count(), 3);
-    assert.equal(await page.locator('#analysis-charts canvas').count(), 3);
+    assert.equal(await page.locator('#analysis-charts .analysis-molecule:visible').count(), 1);
+    assert.equal(await page.locator('#analysis-charts canvas').count(), 1);
     await mode(page, 'pooled'); await useRois(page, ['Caudate', 'Putamen', 'Thalamus']); await applyRange(page, '5-20', 16);
     current = await result(page); const expected = expectedCaudate(Array.from({ length: 16 }, (_, index) => index + 5));
     for (const channel of ['DA', 'NE', '5-HT']) {
@@ -73,6 +79,7 @@ test('3D analysis uses real ROI pixels for all three modes and arbitrary section
     assert.equal(missing.counts.targetSections, 16); assert.equal(missing.counts.roiSections, 14); assert.equal(missing.counts.includedSections, 14);
     assert.deepEqual(missing.exclusions.map(item => item.sectionId).sort(), [sectionId(7), sectionId(14)].sort());
     const row = page.locator('.analysis-molecule[data-channel="DA"] .analysis-table tr[data-roi-name="Caudate"]');
+    await page.locator('.analysis-molecule[data-channel="DA"] .analysis-table-details > summary').click();
     assert.match(await row.locator('[data-stat="count"]').innerText(), new RegExp(String(expected.n)));
     assert.ok((await row.locator('[data-stat="median"]').innerText()).length > 0);
     await applyRange(page, '5-20,24,30-35', 23);
@@ -83,6 +90,8 @@ test('3D analysis uses real ROI pixels for all three modes and arbitrary section
     current = await result(page); assert.equal(current.channels[0].groups.length, 16);
     const absent = current.channels[0].groups.find(item => item.sectionId === sectionId(7));
     assert.equal(absent.distribution, null); assert.equal(absent.counts.nIncluded, 0);
+    const comparisonTable = page.locator('.analysis-molecule[data-channel="DA"] .analysis-table-details');
+    if (!await comparisonTable.evaluate(node => node.open)) await comparisonTable.locator('summary').click();
     assert.match(await page.locator('.analysis-molecule[data-channel="DA"] tr[data-section-id="' + sectionId(7) + '"]').innerText(), /ROI|領域|欠損|なし|—/);
     await page.locator('.analysis-molecule[data-channel="DA"] tr[data-section-id="' + sectionId(8) + '"] .analysis-section-link').click();
     await page.waitForFunction(id => Atlas3D.sections[Atlas3D.selected].id === id, sectionId(8));
@@ -205,12 +214,19 @@ test('large distribution worker matches exact statistics, preserves source buffe
         const pending = worker.summarize(values, { signal: controller.signal, maxPoints: 300 }).then(() => 'resolved', error => error.name);
         controller.abort(); const cancelled = await pending;
         const recovered = await worker.summarize(values, { maxPoints: 300 });
+        const tailExpected = RoiDistribution.summarize(values, { maxPoints: 300, includeUpperTailValues: true });
+        const tailResult = await worker.summarize(values, { maxPoints: 300, includeUpperTailValues: true });
+        const small = values.slice(0, 300);
+        const smallExpected = RoiDistribution.summarize(small, { includeUpperTailValues: true });
+        const smallResult = await worker.summarize(small, { includeUpperTailValues: true });
         const after = new Uint8Array(values.buffer);
-        return { expected, result, recovered, cancelled, byteLength: values.byteLength,
+        return { expected, result, recovered, cancelled, tailExpected, tailResult, smallExpected, smallResult, byteLength: values.byteLength,
           unchanged: after.length === bytes.length && after.every((value, index) => value === bytes[index]) };
       } finally { worker.dispose(); }
     });
     assert.deepEqual(actual.result, actual.expected); assert.deepEqual(actual.recovered, actual.expected);
+    assert.deepEqual(actual.tailResult, actual.tailExpected); assert.deepEqual(actual.smallResult, actual.smallExpected);
+    assert.ok(Object.values(actual.tailResult.upperTailValues).length > 0);
     assert.equal(actual.cancelled, 'AbortError'); assert.equal(actual.byteLength, 100003 * 8); assert.equal(actual.unchanged, true);
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }

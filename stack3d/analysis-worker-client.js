@@ -26,10 +26,11 @@
     async function summarize(values, options = {}) {
       if (disposed || options.signal?.aborted) throw abortError();
       const maxPoints = options.maxPoints === undefined ? global.RoiDistribution.DEFAULT_MAX_POINTS : options.maxPoints;
+      const includeUpperTailValues = options.includeUpperTailValues === true;
       if (values.length < 50000 || !global.Worker || disabled) {
         await new Promise(resolve => setTimeout(resolve, 0));
         if (disposed || options.signal?.aborted) throw abortError();
-        return global.RoiDistribution.summarize(values, { maxPoints });
+        return global.RoiDistribution.summarize(values, { maxPoints, includeUpperTailValues });
       }
       return new Promise((resolve, reject) => {
         const id = ++nextId;
@@ -40,7 +41,7 @@
           pending.set(id, { resolve, reject, cleanup });
           options.signal?.addEventListener('abort', onAbort, { once: true });
           if (options.signal?.aborted) { onAbort(); return; }
-          target.postMessage({ id, values: copy, maxPoints }, [copy.buffer]);
+          target.postMessage({ id, values: copy, maxPoints, includeUpperTailValues }, [copy.buffer]);
         } catch (error) {
           pending.delete(id); cleanup(); reject(error);
         }

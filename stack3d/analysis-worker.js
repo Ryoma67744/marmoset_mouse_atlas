@@ -2,9 +2,11 @@
 'use strict';
 importScripts('../lib/roi-distribution.js');
 self.onmessage = event => {
-  const { id, values, maxPoints } = event.data;
+  const { id, values, maxPoints, includeUpperTailValues } = event.data;
   try {
-    self.postMessage({ id, distribution: self.RoiDistribution.summarize(values, { maxPoints }) });
+    const distribution = self.RoiDistribution.summarize(values, { maxPoints, includeUpperTailValues });
+    const tail = distribution && distribution.upperTailValues;
+    self.postMessage({ id, distribution }, tail ? [tail.buffer] : []);
   } catch (error) {
     self.postMessage({ id, error: error.message || String(error) });
   }
