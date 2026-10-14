@@ -22,7 +22,7 @@
   let pendingPreview = null, previewWorker = null;
   let alignmentProposal = null, alignmentWorking = false, alignmentGeneration = 0;
   const alignmentSaveGuards = new Map();
-  let batchAlignmentUI = null;
+  let batchAlignmentUI = null, analysisUI = null;
   const dirtyPlacements = new Set(), commonRanges = new Map(), hePlanes = new Map(), hiddenSectionIds = new Set();
   const staleSections = new Map(), pendingSourceIds = new Set();
   let pendingFolderChange = false, sourceChangeWorker = null, syncWarningGeneration = 0, loadedFolderFingerprint = '[]';
@@ -60,6 +60,7 @@
   }
   function markStale(section, message = STALE_PLACEMENT_MESSAGE) {
     staleSections.set(section.id, message); sourceChanged = true;
+    analysisUI?.markStale([section.id]);
     if (sections[selected]?.id === section.id) $('placement-status').textContent = message;
   }
   function acknowledgeCloudSave(section, project, status) {
@@ -101,6 +102,7 @@
           }
         }
         if (changed.length) {
+          analysisUI?.markStale(changed);
           batchAlignmentUI?.sourceChanged(changed, { preserveMessage: preserveNotice });
           if (alignmentWorking || alignmentProposal?.references.some(reference => changed.includes(reference.id))) {
             cancelAlignment('参照したデータが更新されたため、候補を取り消しました。再読込して計算し直してください。');
@@ -233,6 +235,7 @@
     return { projects, allProjects: locals, folders: await ProjectStorage.listFolders(), notices, unsynced };
   }
   async function load() {
+    analysisUI?.beginLoad();
     batchAlignmentUI?.reset();
     cancelAlignment();
     setBusy(true); renderGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
@@ -254,6 +257,7 @@
       sections = loaded; rendered = []; commonRanges.clear(); hiddenSectionIds.clear(); dirtyPlacements.clear(); alignmentSaveGuards.clear(); staleSections.clear(); sourceChanged = false; selected = 0;
       loadedFolderFingerprint = JSON.stringify(source.folders);
       if (!sections.length) {
+        analysisUI?.setSections();
         renderer?.setSections([]); $('section-list').replaceChildren(); replacePreview($('section-preview'), null, '切片を選択してください');
         $('section-name').textContent = '—'; $('section-metadata').textContent = ''; $('section-status').textContent = '';
         emptyState(source.blocked || (source.projects.length ? '切片を読み込めませんでした' : '表示するCor切片がありません'));
@@ -274,13 +278,14 @@
       updateLabels(); setRange(); buildList(); await repaint();
       if (generation !== loadGeneration) return;
       $('scene-message').hidden = true; setBusy(false); if (!renderer) $('save-image').disabled = true; selectSection(selected);
+      analysisUI?.setSections();
       const issues = [...source.notices, ...loaded.errors.map(error => `${error.name}: ${error.message}`)];
       if (issues.length) notice(issues.join(' / '), true);
       if (!unsubscribe && ProjectStorage.subscribeChanges) unsubscribe = ProjectStorage.subscribeChanges(onSourceChange);
       await flushSourceChanges();
       global.__stack3dReady = true;
 
-    } catch (error) { setBusy(false); emptyState('読み込みを完了できませんでした'); notice(error.message, true); }
+    } catch (error) { analysisUI?.loadFailed(error.message); setBusy(false); emptyState('読み込みを完了できませんでした'); notice(error.message, true); }
   }
   function releaseRender(result) { if (result) for (const canvas of [result.canvas, result.previewCanvas]) if (canvas) { canvas.width = 0; canvas.height = 0; } }
   function updateLabels() {
@@ -387,6 +392,7 @@
     $('previous-section').disabled = selected === 0; $('next-section').disabled = selected === sections.length - 1;
     $('save-cloud').hidden = !(global.Cloud?.configured?.() && global.Cloud?.signedIn?.());
     syncAlignmentControls(); updateList(); refreshPreview().catch(error => notice(error.message)); saveView();
+    analysisUI?.selectionChanged();
   }
   function setRange() {
     if (!sections.length) return;
@@ -682,7 +688,7 @@
       if (referenceProjects) saveOptions.expectedProjectRevisions = Array.from(referenceProjects.values(), project => ({ id: project.id, updatedAt: project.updatedAt }));
       const saved = await ProjectStorage.patchProjectFields(section.id, { stack3d }, saveOptions);
       section.project = saved; section.sourceRevision = saved.updatedAt; dirtyPlacements.delete(section.id); alignmentSaveGuards.delete(section.id);
-      if (changedSinceLoad) sourceChanged = true;
+      if (changedSinceLoad) { sourceChanged = true; analysisUI?.markStale([section.id]); }
       if (sections[selected]?.id === section.id) $('placement-status').textContent = 'このブラウザーに配置を保存しました。ZIP出力にも含まれます。';
       updateList(); notice(`${section.name} の配置を保存しました。` + (sourceChanged ? ' 他の更新内容は「再読込」で表示に反映できます。' : ''), sourceChanged);
     } catch (error) { notice(`配置を保存できませんでした：${error.message}`, true); }
@@ -718,8 +724,8 @@
     saveView();
     location.href = '../viewer/index.html?project=' + encodeURIComponent(sections[selected].id) + '&from=stack3d';
   }
-  for (const input of document.querySelectorAll('input[name=channel]')) input.addEventListener('change', requestRepaint);
-  $('value-mode').addEventListener('change', requestRepaint);
+  for (const input of document.querySelectorAll('input[name=channel]')) input.addEventListener('change', () => { requestRepaint(); analysisUI?.valueModeChanged(); });
+  $('value-mode').addEventListener('change', () => { requestRepaint(); analysisUI?.valueModeChanged(); });
   $('threshold').addEventListener('input', requestRepaint);
   $('opacity').addEventListener('input', () => { renderer?.setOpacity(Number($('opacity').value)); updateLabels(); saveView(); });
   for (const id of ['roi-visible', 'roi-labels', 'roi-region']) $(id).addEventListener('change', () => {
@@ -760,6 +766,7 @@
   global.addEventListener('beforeunload', event => { saveView(); if (dirtyPlacements.size) { event.preventDefault(); event.returnValue = ''; } });
   global.addEventListener('pagehide', event => {
     batchAlignmentUI?.cancel(); cancelAlignment(); saveView(); if (event.persisted) return; renderGeneration++; loadGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
+    analysisUI?.dispose();
     unsubscribe?.(); renderer?.dispose(); rendered.forEach(releaseRender); sections.forEach(Stack3D.releaseSection);
     hePlanes.forEach(releasePreview); hePlanes.clear();
   });
@@ -768,6 +775,12 @@
     if (input) input.closest('label').querySelector('.swatch').style.backgroundColor = `rgb(${color.join(',')})`;
   }
   global.AppVersion?.paint?.();
+  analysisUI = Stack3DAnalysisUI.create({
+    root: $('analysis-panel'), getSections: () => sections, getSelected: () => selected, getOptions: options,
+    getDisplayedSectionIds: () => sections.filter((section, index) => index >= Number($('range-start').value) - 1 &&
+      index <= Number($('range-end').value) - 1 && !hiddenSectionIds.has(section.id)).map(section => section.id),
+    onSelect: id => { const index = sections.findIndex(section => section.id === id); if (index >= 0) selectSection(index); }, session
+  });
   batchAlignmentUI = Stack3DBatchUI.create({
     getSections: () => sections, getSelected: () => selected,
     isLocked: () => busy || saving || alignmentWorking,
@@ -797,6 +810,7 @@
   });
   global.Atlas3D = { get sections() { return sections; }, get selected() { return selected; }, get rendered() { return rendered; },
     get hiddenSectionIds() { return [...hiddenSectionIds]; },
+    get analysis() { return analysisUI; },
     get renderer() { return renderer; }, get sourceChanged() { return sourceChanged; }, options, selectSection };
   load();
 })(window);

@@ -98,3 +98,18 @@ test('many ROI groups receive a scrollable width and long labels are abbreviated
   assert.ok(calls.some(call => call.method === 'fillText' && call.args[0].endsWith('…')));
   assert.match(attributes['aria-label'], /Very long ROI name for the full numeric table 11/);
 });
+
+test('compact height preserves DPR, finite geometry and current selection hit testing', () => {
+  const { draw, canvas, calls } = setup(2), selected = [];
+  const result = draw(canvas, { width: 420, height: 228,
+    rois: [{ key: 'compact', distribution: distribution() }], onSelect: key => selected.push(key) });
+  assert.equal(result.height, 228);
+  assert.equal(canvas.height, 456);
+  assert.equal(canvas.style.height, '228px');
+  canvas.onclick({ clientX: -110 + result.groups[0].center / 2, clientY: 80 + 100 / 2 });
+  assert.deepEqual(selected, ['compact']);
+  for (const call of calls) for (const arg of call.args) if (typeof arg === 'number') assert.ok(Number.isFinite(arg));
+  assert.equal(draw(canvas, { height: 0 }).height, 228);
+  assert.equal(draw(canvas, { height: NaN }).height, 320);
+  assert.equal(draw(canvas, {}).height, 320);
+});

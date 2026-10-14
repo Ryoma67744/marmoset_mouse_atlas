@@ -1,0 +1,84 @@
+/* The analysis dock shares the center column, beneath the existing slice bar. */
+.workspace{min-height:0}
+.scene-panel{overflow:hidden}
+.scene-viewport{position:relative;display:flex;flex:1 1 auto;min-width:0;min-height:260px;overflow:hidden}
+.scene-viewport #scene{width:100%;min-height:0}
+.scene-viewport .brain-context-note{bottom:14px}
+.scene-panel>.scene-bottom,.scene-panel>.slice-scrubber{flex-shrink:0}
+#analysis-panel{height:465px;flex:0 0 465px;min-height:0;min-width:0;display:flex;flex-direction:column;background:#111824;color:#e8edf6;overflow:hidden;container-type:inline-size;container-name:analysis;font-size:12px;line-height:1.45}
+#analysis-resizer{height:7px;flex:0 0 7px;display:grid;place-items:center;border-top:1px solid #344b68;border-bottom:1px solid #344b68;background:#172436;cursor:row-resize;touch-action:none}
+#analysis-resizer::after{content:'';width:52px;height:2px;background:#8ba4c6;border-radius:2px}
+body.resizing-analysis-panel,body.resizing-analysis-panel *{cursor:row-resize!important;user-select:none}
+#analysis-panel .analysis-header{display:flex;align-items:center;gap:9px;min-height:42px;flex:0 0 auto;padding:8px 14px}
+#analysis-title{margin:0;font-size:12px;font-weight:600;letter-spacing:1.3px;line-height:1.4}
+#analysis-value-badge{margin-left:auto;color:#b2cfff;font-size:11px;white-space:nowrap}
+#analysis-panel button,#analysis-panel select,#analysis-panel input{font:inherit}
+#analysis-panel button,#analysis-panel select,#analysis-panel input[type=text]{border:1px solid #344357;border-radius:4px;background:#1b2534;color:#e8edf6;min-height:29px;padding:5px 9px}
+#analysis-panel select{width:auto;max-width:100%;min-width:140px}
+#analysis-panel button:hover{background:#29384b}
+#analysis-panel button[aria-pressed=true],#analysis-panel #analysis-apply-range{background:#b2cfff;border-color:#b2cfff;color:#102139}
+#analysis-panel input[type=checkbox]{accent-color:#b2cfff;vertical-align:middle;margin:0 5px 0 0}
+#analysis-panel .analysis-header button{font-size:11px;min-height:25px;padding:3px 7px;white-space:nowrap}
+#analysis-panel .analysis-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;overflow:auto;scrollbar-width:thin;scrollbar-color:#435b79 transparent}
+#analysis-panel .analysis-controls{flex-shrink:0}
+#analysis-panel .analysis-mode-row{display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+#analysis-pooling-note{color:#9babc0;font-size:11px;margin:0 14px 7px}
+#analysis-panel .analysis-legend{display:flex;align-items:center;flex-wrap:wrap;gap:12px;padding:0 14px 7px;font-size:11px;color:#9babc0;flex-shrink:0}
+#analysis-panel .analysis-legend span{display:inline-flex;align-items:center;gap:5px}
+#analysis-panel .analysis-blue-dot,#analysis-panel .analysis-red-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#2496ed}
+#analysis-panel .analysis-red-dot{background:#f08080}
+#analysis-panel .analysis-modes,#analysis-panel .analysis-target,#analysis-panel .analysis-range-controls,#analysis-panel .analysis-roi-controls{display:flex;align-items:center;flex-wrap:wrap;gap:7px;padding:0 14px;margin:0 0 7px;flex-shrink:0}
+#analysis-panel .analysis-modes{gap:4px}
+#analysis-panel .analysis-target{font-size:11px;color:#a8bbd5}
+#analysis-panel #analysis-target-detail{color:#b2cfff;overflow-wrap:anywhere}
+#analysis-range{width:175px;max-width:100%;font-variant-numeric:tabular-nums}
+#analysis-panel .analysis-roi-controls{font-size:12px;margin-bottom:8px}
+#analysis-roi-checks{display:flex;align-items:center;flex-wrap:wrap;gap:6px 14px;max-height:90px;overflow-y:auto}
+#analysis-roi-checks label{display:inline-flex;align-items:center;overflow-wrap:anywhere}
+#analysis-panel #analysis-range-error,#analysis-panel #analysis-selection-note,#analysis-panel #analysis-stale,#analysis-panel #analysis-status{margin:0 14px 7px;font-size:11px;line-height:1.5;overflow-wrap:anywhere;flex-shrink:0}
+#analysis-range-error{color:#ffb6b6}
+#analysis-selection-note{color:#afbfce}
+#analysis-stale{color:#efd297;background:#29261c;padding:6px 8px;border-left:2px solid #b99751}
+#analysis-status{color:#afbfce}
+/* The completed count is already in the target row. Keep the live announcement
+   accessible without repeating it above every chart. Errors/progress stay visible. */
+#analysis-panel[aria-busy=false]:has(.analysis-molecule) #analysis-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+#analysis-charts{min-height:0;min-width:0;flex:0 0 auto;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));align-content:start;align-items:start;gap:14px;overflow:visible;padding:8px 14px 12px;border-top:1px solid #263143}
+#analysis-panel[data-mode=by-section] #analysis-charts{grid-template-columns:1fr}
+#analysis-panel .analysis-molecule{min-width:0}
+#analysis-panel .analysis-molecule-heading{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:5px;margin:0 0 6px;font-size:11px;color:#9babc0}
+#analysis-panel .analysis-molecule-heading h3,#analysis-panel .analysis-molecule-heading strong{font-size:13px;margin:0;color:#e8edf6;font-weight:600}
+#analysis-panel .analysis-plot{overflow-x:auto;background:#fff;border-radius:2px;scrollbar-width:thin;scrollbar-color:#809cc2 #e8edf6}
+#analysis-panel .analysis-plot canvas{max-width:none}
+#analysis-panel .analysis-table-wrap{overflow:auto;max-height:240px;margin-top:6px;scrollbar-width:thin;scrollbar-color:#435b79 transparent}
+#analysis-panel .analysis-table{width:100%;border-collapse:collapse;font-size:11px;font-variant-numeric:tabular-nums;line-height:1.4}
+#analysis-panel .analysis-table th{color:#9babc0;font-weight:400;border-bottom:1px solid #344357;padding:5px 4px;text-align:right;white-space:nowrap}
+#analysis-panel .analysis-table td{padding:6px 4px;border-bottom:1px solid #263143;text-align:right;white-space:nowrap}
+#analysis-panel .analysis-table td:first-child,#analysis-panel .analysis-table th:first-child{text-align:left;white-space:normal;min-width:80px;overflow-wrap:anywhere}
+#analysis-panel .analysis-table td small{display:block;color:#9babc0;font-size:11px}
+#analysis-panel .analysis-table tr[aria-selected=true],#analysis-panel .analysis-table tr.analysis-selected{background:#1d3048}
+#analysis-panel .analysis-table button{padding:2px 3px;text-align:left;white-space:normal;background:transparent;border-color:transparent;color:#b2cfff}
+#analysis-panel .analysis-exclusions{font-size:11px;color:#b0c1d4;overflow-wrap:anywhere;margin-top:7px}
+#analysis-panel .analysis-exclusions summary{cursor:pointer;color:#b2cfff}
+#analysis-panel .analysis-sampling-note,#analysis-panel .analysis-unavailable{font-size:11px;line-height:1.5;color:#9babc0;overflow-wrap:anywhere;margin:7px 0}
+#analysis-panel .analysis-unavailable{color:#efd297}
+#analysis-panel .analysis-warning{font-size:11px;color:#efd297;line-height:1.5;overflow-wrap:anywhere;margin:6px 0}
+#analysis-target-list{font-size:11px;color:#a8bbd5;margin:0 14px 7px}
+#analysis-target-list summary{cursor:pointer;color:#b2cfff}
+#analysis-target-list ul{max-height:150px;overflow:auto;margin:5px 0;padding-left:20px;scrollbar-width:thin}
+#analysis-panel .analysis-exclusions ul{padding-left:19px;max-height:180px;overflow:auto}
+#analysis-panel .analysis-footnote{font-size:10px;color:#9babc0;line-height:1.5;padding:5px 14px 7px;margin:0;border-top:1px solid #263143;flex-shrink:0}
+#analysis-panel .analysis-empty{color:#9babc0;font-size:12px;grid-column:1/-1;padding:18px 0;overflow-wrap:anywhere}
+@container analysis (max-width:900px){#analysis-charts{grid-template-columns:1fr}#analysis-panel .analysis-header{flex-wrap:wrap}#analysis-title{letter-spacing:.8px}}
+@media(max-height:750px) and (min-width:761px){.scene-viewport{min-height:230px}#analysis-panel .analysis-roi-controls{max-height:60px;overflow-y:auto}}
+@media(max-width:760px){
+  .scene-panel{height:auto;min-height:0;overflow:visible}
+  .scene-viewport{height:55dvh;min-height:300px;flex:none}
+  #analysis-panel{height:auto;flex:none;overflow:visible;grid-column:1/-1}
+  #analysis-resizer{display:none}
+  #analysis-panel .analysis-body{overflow:visible}
+  #analysis-charts{overflow:visible;display:grid;grid-template-columns:1fr}
+  #analysis-panel .analysis-header{flex-wrap:wrap}
+  #analysis-panel .analysis-table-wrap{max-height:260px}
+  #analysis-panel .analysis-footnote{font-size:11px}
+}
