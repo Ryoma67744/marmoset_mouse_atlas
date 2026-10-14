@@ -9,7 +9,7 @@ function app() {
   const c = { console, Float32Array, Float64Array, Uint8Array, ArrayBuffer, DataView, Date, setTimeout };
   c.window = c; vm.createContext(c);
   for (const file of ['msi.js', 'normalization-scope.js', 'normalization.js', 'display-range.js', 'section-display.js',
-    'stack3d.js', 'roi-distribution.js', 'stack3d-analysis.js']) {
+    'stack3d.js', 'roi-distribution.js', 'intensity-axis.js', 'stack3d-analysis.js']) {
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../lib', file), 'utf8'), c, { filename: file });
   }
   return c;
@@ -151,7 +151,9 @@ test('common normalized reference permits different legitimate section factors a
   const expected = c.Normalization.quantifyRoi(source[0].project, source[0].rasters, loaded[0].evaluation, mask,
     { distribution: { mode: 'normalized', keys: ['da'] } }).find(row => row.key === 'da');
   const single = one(await c.Stack3DAnalysis.analyze(loaded, request(['1'], { mode: 'selected', valueMode: 'normalized' })));
-  assert.deepEqual(plain(single.distribution), plain(expected.distribution));
+  const { aboveAutoCount, ...singleStatistics } = single.distribution;
+  assert.deepEqual(plain(singleStatistics), plain(expected.distribution));
+  assert.equal(aboveAutoCount, 0);
   assert.deepEqual(plain(single.statistics), plain(expected.normalized));
 });
 
@@ -207,6 +209,43 @@ test('large samples preserve full statistics; Worker hook receives a dedicated t
   assert.equal(calls, 1); assert.equal(group.distribution.n, 3001); assert.equal(group.distribution.points.length, 2000);
   assert.equal(group.distribution.median, 1500); assert.equal(group.distribution.whiskerHigh, 2970);
   assert.equal(group.statistics.mean, 1500); assert.equal(bits(source[0].rasters.da.values), original);
+  assert.equal(group.distribution.aboveAutoCount, 0);
+  assert.equal(Object.hasOwn(group.distribution, 'upperTailValues'), false);
+});
+
+test('automatic-axis counts are exact above the final shared axis and independent of point sampling', async () => {
+  const c = app();
+  const low = [...Array(990).fill(10), 11, 12, 20, 30, 40, 50, 60, 70, 1000, 2000];
+  const high = [...Array(990).fill(100), ...Array(5).fill(120), ...Array(5).fill(10000)];
+  const source = [entry('1', low), entry('2', high)];
+  source[0].project.roi.roi_names.region = 'A'; source[1].project.roi.roi_names.region = 'B';
+  const loaded = sections(c, source), before = source.map(item => bits(item.rasters.da.values));
+  const options = request(['1', '2'], { roiNames: ['A', 'B'] });
+  const compact = await c.Stack3DAnalysis.analyze(loaded, options, { maxPoints: 2 });
+  const detailed = await c.Stack3DAnalysis.analyze(loaded, options, { maxPoints: 2000 });
+  const channel = compact.channels[0], upper = channel.plot.autoDomain[1];
+  assert.ok(upper >= Math.max(...channel.groups.map(group => group.distribution.whiskerHigh)));
+  for (const [index, values] of [low, high].entries()) {
+    const distribution = channel.groups[index].distribution;
+    assert.equal(distribution.aboveAutoCount, values.filter(value => value > upper).length);
+    assert.equal(distribution.aboveAutoCount, detailed.channels[0].groups[index].distribution.aboveAutoCount);
+    assert.equal(Object.hasOwn(distribution, 'upperTailValues'), false);
+    assert.ok(distribution.sampled);
+  }
+  assert.ok(channel.groups[0].distribution.aboveAutoCount < channel.groups[0].distribution.upperTailCount,
+    'P99 tail count is not mistaken for the count above a shared rounded upper bound');
+  assert.deepEqual(source.map(item => bits(item.rasters.da.values)), before);
+});
+
+test('zero-heavy automatic plots keep outliers in statistics and count them without expanding the P99 axis', async () => {
+  const c = app(), source = [entry('1', [...Array(999).fill(0), 1e10])];
+  const result = await c.Stack3DAnalysis.analyze(sections(c, source), request(['1']));
+  assert.deepEqual(plain(result.channels[0].plot.autoDomain), [0, 1]);
+  assert.equal(one(result).distribution.aboveAutoCount, 1);
+  assert.equal(one(result).distribution.n, 1000);
+  assert.equal(one(result).statistics.mean, 1e7);
+  assert.equal(one(result).distribution.max, 1e10);
+  assert.equal(Object.hasOwn(one(result).distribution, 'upperTailValues'), false);
 });
 
 test('disjoint pooled ROIs still share an axis and cannot hide incompatible normalized sources', async () => {
@@ -218,6 +257,8 @@ test('disjoint pooled ROIs still share an axis and cannot hide incompatible norm
   assert.equal(result.channels[0].status, 'BLOCKED');
   assert.ok(result.channels[0].groups.every(group => group.distribution === null && group.counts.nIncluded === 0));
   assert.ok(result.channels[0].groups.every(group => group.exclusions.some(row => row.reasonCodes.includes('NORMALIZATION_INCOMPATIBLE'))));
+  assert.deepEqual(plain(result.channels[0].plot.autoDomain), [0, 1], 'blocked groups do not set the displayed axis');
+  assert.ok(!JSON.stringify(result).includes('upperTailValues'), 'temporary tails never become retained output');
 });
 
 test('one legacy section with several ROIs is still a single source, not a mixed normalization group', async () => {
