@@ -73,10 +73,10 @@ test('Analysis molecule selection retains raw and normalized ROI means, pixel SD
         const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
         const sd = Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length);
         const cells = await tables.nth(i).locator('tr').nth(1).locator('td').allTextContents();
-        const reported = cells[1].split(' ± ').map(Number);
+        const reported = cells[2].split(' ± ').map(Number);
         assert.ok(Math.abs(reported[0] - mean) < 0.0001, mode + ' mean for molecule ' + i);
         assert.ok(Math.abs(reported[1] - sd) < 0.0001, mode + ' pixel SD for molecule ' + i);
-        assert.match(cells[2], /^8 \/ 8 \/ 8/);
+        assert.match(cells[3], /^8 \/ 8 \/ 8/);
       }
       const axisLabels = await page.evaluate(() => {
         const labels = [], original = CanvasRenderingContext2D.prototype.fillText;

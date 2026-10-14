@@ -504,8 +504,8 @@ test('Skipped correction keeps a persistent raw notice, ROI values and PNG prove
     });
     assert.equal(await page.evaluate(()=>valueDisplay.mode),'raw');
     const cells=await page.locator('#graph-container table tr').nth(1).locator('td').allTextContents();
-    assert.ok(Math.abs(Number.parseFloat(cells[1])-64/7)<0.00001,'ROI must show the raw mean');
-    assert.match(cells[3],/内部標準なし・未補正（生値表示）/);
+    assert.ok(Math.abs(Number.parseFloat(cells[2])-64/7)<0.00001,'ROI must show the raw mean');
+    assert.match(await page.locator('#graph-container [data-field="status"]').first().innerText(),/内部標準なし・未補正（生値表示）/);
     assert.doesNotMatch(await page.locator('#graph-container').innerText(),/絶対定量|検量線/);
     const pngLabels=await page.evaluate(()=>{
       const labels=[], original=CanvasRenderingContext2D.prototype.fillText;
@@ -609,10 +609,10 @@ test('Simple Viewer reports partial 5-HT coverage without hiding its mean; expli
         displayGraphForRoi('all');
       });
       const cells=await page.locator('#graph-container table tr').nth(1).locator('td').allTextContents();
-      assert.match(cells[2],/5 \/ 8 \/ 8/);
-      assert.match(cells[2],/62\.5%/);
-      if(enforceCoverage) assert.equal(cells[1],'算出不可');
-      else {assert.match(cells[1],/^5\.4 ± /);assert.doesNotMatch(cells[3],/UNAVAILABLE/);}
+      assert.match(cells[3],/5 \/ 8 \/ 8/);
+      assert.match(cells[3],/62\.5%/);
+      if(enforceCoverage) { assert.equal(cells[2],'算出不可'); assert.equal(cells[1],'算出不可'); }
+      else {assert.match(cells[2],/^5\.4 ± /);assert.doesNotMatch(await page.locator('#graph-container [data-field="status"]').first().innerText(),/UNAVAILABLE/);}
       assert.doesNotMatch(await page.locator('#graph-container').innerText(),/絶対定量|CALIBRATION_MISSING|検量線が未登録/);
     }
     const legacyId=await seedViewerProject(page,baseURL,{id:'legacy-low-coverage'});
@@ -636,7 +636,7 @@ test('Simple Viewer reports partial 5-HT coverage without hiding its mean; expli
       document.getElementById('graph-select-3').value='none';
       displayGraphForRoi('all');
     });
-    assert.equal(await page.locator('#graph-container table tr').nth(1).locator('td').nth(1).innerText(),'算出不可','legacy saved thresholds retain suppression');
+    assert.equal(await page.locator('#graph-container table tr').nth(1).locator('[data-field="mean"]').innerText(),'算出不可','legacy saved thresholds retain suppression');
     assert.deepEqual(errors,[]);
   } finally {await harness.close();}
 });

@@ -17,7 +17,9 @@
     <script src="../lib/align.js"></script>
     <script src="../lib/msi.js"></script>
     <script src="../lib/normalization-scope.js"></script>
+    <script src="../lib/roi-distribution.js"></script>
     <script src="../lib/normalization.js"></script>
+    <script src="../lib/intensity-boxplot.js"></script>
     <script src="../lib/display-range.js"></script>
     <script src="../lib/ingest.js"></script>
     <script src="../lib/imzml.js"></script>
@@ -193,6 +195,18 @@
             width: 100%;
             height: 100%;
         }
+        /* Statistics remain readable independently of the plot's horizontal scroll. */
+        .analysis-plot { overflow-x:auto; background:#fff; }
+        .analysis-section { border-top:1px solid #d1d5db; padding-bottom:8px; }
+        .analysis-table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:11px; line-height:1.5; }
+        .analysis-table th, .analysis-table td { border:1px solid #e5e7eb; padding:4px 6px; vertical-align:top; overflow-wrap:anywhere; }
+        .analysis-table th { background:#f9fafb; text-align:left; font-weight:600; }
+        .analysis-table [data-selected="true"] { background:#eff6ff; }
+        .analysis-table button { text-align:left; cursor:pointer; color:inherit; font:inherit; text-decoration:underline; text-underline-offset:2px; }
+        .analysis-table button:focus-visible { outline:2px solid #2563eb; outline-offset:2px; }
+        .analysis-status { color:#4b5563; white-space:pre-line; }
+        .analysis-legend { display:flex; flex-wrap:wrap; gap:4px 14px; padding:6px 10px; font-size:11px; color:#4b5563; }
+        .analysis-point { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:4px; vertical-align:middle; }
         /* Reference notes stay bounded as rows are added. */
         #notes-panel { background:#fff; padding:8px; border-radius:4px; min-width:0;
             height:clamp(190px, 28vh, 300px); box-sizing:border-box; display:flex; flex-direction:column; }
@@ -501,6 +515,9 @@
         let otsuPending = false;
         let viewerContextRevision = 0;
         let analysisRoiCache = new Map();
+        let analysisResizeObserver = null;
+        let analysisResizeFrame = 0;
+        let analysisDrawCallbacks = [];
         const otsuLockedControls = new Map();
         // Action buttons derive their state from current operations, never a stale
         // snapshot of disabled attributes taken by an overlapping Otsu dialog.
@@ -2719,63 +2736,123 @@ function loadAllImages() {
             return { mean, sd: Math.sqrt(variance), n };
         }
 
+        // Cache only the visible ROI masks, summaries and bounded drawing samples.
+        // Raster/profile replacement also clears this cache in the existing reload paths.
+        function analysisResultsForRoi(roiKey, channels) {
+            const polygons = atlasData.roi?.roi_items?.[roiKey] || [];
+            const geometry = JSON.stringify(polygons);
+            const ref = Object.values(valueRasters)[0];
+            if (!ref || !normalizationEvaluation) return null;
+            let entry = analysisRoiCache.get(roiKey);
+            if (!entry || entry.geometry !== geometry || entry.evaluation !== normalizationEvaluation || entry.rasters !== valueRasters) {
+                const mask = new Uint8Array(ref.W * ref.H);
+                for (const poly of polygons) if (poly?.poly_msi?.length >= 3) MSIRaster.markRoiMask(mask, ref.W, ref.H, poly.poly_msi);
+                entry = { geometry, evaluation: normalizationEvaluation, rasters: valueRasters, mask, values: [], distributions: new Map() };
+                analysisRoiCache.set(roiKey, entry);
+            }
+            const mode = valueDisplay.mode;
+            const retained = new Set(channels.flatMap(key => ['raw:' + key, 'normalized:' + key]));
+            for (const key of entry.distributions.keys()) if (!retained.has(key)) entry.distributions.delete(key);
+            const missing = channels.filter(key => !entry.distributions.has(mode + ':' + key));
+            if (missing.length) {
+                const project = { ...normalizationProjectForEvaluation(), roi: atlasData.roi };
+                const rows = Normalization.quantifyRoi(project, valueRasters, normalizationEvaluation, entry.mask,
+                    { distribution: { keys: missing, mode, maxPoints: 2000 } });
+                // Do not retain extra references to old samples when replacing a channel.
+                entry.values = rows.map(({ distribution, ...row }) => row);
+                for (const key of missing) entry.distributions.set(mode + ':' + key, rows.find(row => row.key === key)?.distribution || null);
+            }
+            return entry;
+        }
+
+        function selectAnalysisRoi(key) {
+            const item = Array.from(document.querySelectorAll('.roi-item')).find(node => node.dataset.roiKey === key);
+            if (item) item.click();
+        }
+
+        function observeAnalysisSize(container) {
+            if (analysisResizeObserver || !window.ResizeObserver) return;
+            let lastWidth = container.clientWidth;
+            analysisResizeObserver = new ResizeObserver(() => {
+                const width = container.clientWidth;
+                if (width === lastWidth) return;
+                lastWidth = width;
+                if (!width) return;
+                cancelAnimationFrame(analysisResizeFrame);
+                analysisResizeFrame = requestAnimationFrame(() => analysisDrawCallbacks.forEach(draw => draw()));
+            });
+            analysisResizeObserver.observe(container);
+        }
+
         function displayGraphForRoi(highlightRoiKey) {
             const graphContainer = document.getElementById('graph-container');
-            const select1Val = document.getElementById('graph-select-1').value;
-            const select2Val = document.getElementById('graph-select-2').value;
-            const select3Val = document.getElementById('graph-select-3').value;
+            const scrollTop = graphContainer.scrollTop;
+            const plotScrolls = new Map(Array.from(graphContainer.querySelectorAll('.analysis-section'), section => [section.dataset.channel, section.querySelector('.analysis-plot').scrollLeft]));
+            const focused = document.activeElement;
+            const focusKey = graphContainer.contains(focused) && focused.closest('[data-roi-key]')?.dataset.roiKey;
+            const focusChannel = focusKey && focused.closest('[data-channel]')?.dataset.channel;
+            const channels = [...new Set([1, 2, 3].map(i => document.getElementById('graph-select-' + i).value))].filter(key => key && key !== 'none');
             graphContainer.replaceChildren();
+            analysisDrawCallbacks = [];
+            observeAnalysisSize(graphContainer);
             const roiItems = atlasData.roi?.roi_items || {};
             const roiNames = atlasData.roi?.roi_names || {};
-            const palette = atlasData.roi?.palette || {};
             const showFlags = atlasData.roi?.roi_show_flags || {};
             const roiKeys = Object.keys(roiItems).filter(k => showFlags[k] !== false);
-            if (roiKeys.length === 0) {
+            for (const key of analysisRoiCache.keys()) if (!roiKeys.includes(key)) analysisRoiCache.delete(key);
+            if (!roiKeys.length) {
                 graphContainer.textContent = '表示中の ROI がありません';
                 return;
             }
-            const channels = [...new Set([select1Val, select2Val, select3Val])].filter(key => key && key !== 'none');
-            const roiResults = {};
-            const ref = Object.values(valueRasters)[0];
-            if (ref && normalizationEvaluation) for (const roiKey of roiKeys) {
-                const cacheKey = roiKey + ':' + JSON.stringify(roiItems[roiKey]);
-                if (!analysisRoiCache.has(cacheKey)) {
-                    const mask = new Uint8Array(ref.W * ref.H);
-                    for (const poly of roiItems[roiKey] || []) if (poly?.poly_msi?.length >= 3) MSIRaster.markRoiMask(mask, ref.W, ref.H, poly.poly_msi);
-                    const project = { ...normalizationProjectForEvaluation(), roi: atlasData.roi };
-                    analysisRoiCache.set(cacheKey, { mask, values: Normalization.quantifyRoi(project, valueRasters, normalizationEvaluation, mask) });
-                }
-                roiResults[roiKey] = analysisRoiCache.get(cacheKey);
-            }
+            const roiResults = Object.fromEntries(roiKeys.map(key => [key, analysisResultsForRoi(key, channels)]));
             const note = document.createElement('p');
             note.className = 'text-xs p-2 text-gray-600';
-            note.textContent = '選択した分子を個別に表示します。分子間ではイオン化効率や単位が異なるため、棒の高さから濃度の大小は比較できません。各グラフの軸は独立しています。平均・SD は元の MSI 座標の ROI 全体（Otsu の非表示画素を含む）。SD は画素間分布で、切片間の誤差ではありません。';
+            note.textContent = 'Intensity Box Plot — 選択した分子を個別に表示します。分子間ではイオン化効率や単位が異なるため、分布の高さから濃度の大小は比較できません。各グラフの軸は独立しています。統計は元の MSI 座標の ROI 全体（Otsu の非表示画素を含む）。SD は画素間分布で、切片間の誤差ではありません。';
             graphContainer.appendChild(note);
+            const legend = document.createElement('div'); legend.className = 'analysis-legend';
+            const specification = document.createElement('span'); specification.textContent = '箱 P25–P75・中央値 ｜ ひげ P0–P99（線形補間）'; legend.appendChild(specification);
+            for (const [color, label] of [['#2496ed', '≤ P99'], ['#f08080', '> P99（集計に含む）']]) {
+                const item = document.createElement('span'), dot = document.createElement('i');
+                dot.className = 'analysis-point'; dot.style.background = color; item.append(dot, label); legend.appendChild(item);
+            }
+            graphContainer.appendChild(legend);
             const fmt = value => Number.isFinite(value) ? String(Number(value.toPrecision(6))) : '—';
             for (const key of channels) {
-                const stats = {};
+                const corrected = valueDisplay.mode === 'normalized' && isCorrectedChannel(channelResult(key));
+                const stats = {}, distributions = {};
                 for (const roiKey of roiKeys) {
-                    const result = roiResults[roiKey]?.values.find(row => row.key === key);
-                    const corrected = valueDisplay.mode === 'normalized' && isCorrectedChannel(channelResult(key));
-                    stats[roiKey] = result ? (corrected ? result.normalized : result.raw) : calcStats(extractRoiPixels(key, roiKey));
+                    const entry = roiResults[roiKey], result = entry?.values.find(row => row.key === key);
+                    // Preserve the legacy HE-only reference view, explicitly as brightness.
+                    // Image-only MSI is never quantified from display pixels.
+                    const referenceValues = !result && !/^MSI_/i.test(key) ? extractRoiPixels(key, roiKey) : [];
+                    stats[roiKey] = result ? (corrected ? result.normalized : result.raw) : calcStats(referenceValues);
+                    distributions[roiKey] = entry?.distributions.get(valueDisplay.mode + ':' + key) || (referenceValues.length ? RoiDistribution.summarize(referenceValues) : null);
                 }
+                const section = document.createElement('section'); section.className = 'analysis-section'; section.dataset.channel = key;
+                const plot = document.createElement('div'); plot.className = 'analysis-plot';
                 const canvas = document.createElement('canvas');
-                canvas.className = 'w-full h-auto';
                 if (!graphContainer.querySelector('canvas')) canvas.id = 'graph-canvas';
-                graphContainer.appendChild(canvas);
-                drawBarChart(canvas, roiKeys, roiNames, palette, stats, key, highlightRoiKey);
-                const table = document.createElement('table');
-                table.className = 'text-xs w-full border-collapse mb-3';
+                plot.appendChild(canvas); section.appendChild(plot); graphContainer.appendChild(section);
+                const draw = () => IntensityBoxPlot.draw(canvas, {
+                    width: graphContainer.clientWidth - 2,
+                    title: `${formatDisplayName(key)} — ${corrected ? '補正・正規化' : '生値'}`,
+                    unit: /^MSI_/i.test(key) ? channelUnit(key) : '画像輝度 (a.u.)', highlightRoiKey,
+                    rois: roiKeys.map(roiKey => ({ key: roiKey, name: roiNames[roiKey] || roiKey, distribution: distributions[roiKey] })),
+                    onSelect: selectAnalysisRoi,
+                });
+                analysisDrawCallbacks.push(draw); draw();
+                plot.scrollLeft = plotScrolls.get(key) || 0;
+                const table = document.createElement('table'); table.className = 'analysis-table';
+                table.setAttribute('aria-label', formatDisplayName(key) + ' ROI 統計');
                 const header = document.createElement('tr');
-                for (const title of ['ROI', '平均 ± SD', '表示値有効 / 測定 / ROI', valueDisplay.mode === 'normalized' ? (showsAbsoluteQuantification() ? '状態・絶対定量' : '補正の状態') : '生値の状態']) {
-                    const th = document.createElement('th'); th.textContent = title; th.className = 'border p-1 text-left'; header.appendChild(th);
+                for (const [title, width] of [['ROI', '20%'], ['中央値 [Q1–Q3]', '29%'], ['平均 ± SD', '25%'], ['有効 / 測定 / ROI', '26%']]) {
+                    const th = document.createElement('th'); th.scope = 'col'; th.textContent = title; th.style.width = width; header.appendChild(th);
                 }
                 table.appendChild(header);
                 for (const roiKey of roiKeys) {
                     const result = roiResults[roiKey]?.values.find(row => row.key === key);
-                    const stat = stats[roiKey];
-                    const corrected = valueDisplay.mode === 'normalized' && isCorrectedChannel(channelResult(key));
-                    let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : '生値ラスタなし：MSI 定量は算出不可';
+                    const stat = stats[roiKey], distribution = distributions[roiKey];
+                    let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : /^MSI_/i.test(key) ? '生値ラスタなし：MSI 定量は算出不可' : '参考画像の輝度（MSI 強度ではありません）';
                     if (isNormalizationSkipped()) reason = skippedNormalizationNotice() + (reason ? '\n' + reason : '');
                     const abs = result?.absolute;
                     if (corrected && result?.role === 'ht' && showsAbsoluteQuantification()) reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
@@ -2790,251 +2867,40 @@ function loadAllImages() {
                         }
                         reason += '\nOtsu 表示画素 ' + visible + '（うち判定不可 ' + unknown + '、解析有効数とは別）';
                     }
-                    const row = document.createElement('tr');
-                    const coverage = !corrected ? '対象外' : result?.coverage == null ? '—' : fmt(result.coverage * 100) + '%';
-                    const cells = [roiNames[roiKey] || roiKey, stat.n && Number.isFinite(stat.mean) ? fmt(stat.mean) + ' ± ' + fmt(stat.sd) : '算出不可', result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry}` + (corrected ? ` (補正 coverage ${coverage})` : '') : String(stat.n), (corrected ? result?.status || 'UNAVAILABLE' : result?.rawStatus || (stat.n ? 'RAW' : 'UNAVAILABLE')) + (reason ? '\n' + reason : '')];
-                    for (const text of cells) { const td = document.createElement('td'); td.textContent = text; td.className = 'border p-1 align-top'; td.style.whiteSpace = 'pre-line'; row.appendChild(td); }
+                    const row = document.createElement('tr'); row.dataset.roiKey = roiKey; row.dataset.selected = String(roiKey === highlightRoiKey);
+                    const coverage = result?.coverage == null ? '—' : fmt(result.coverage * 100) + '%';
+                    const cells = [
+                        ['roi', roiNames[roiKey] || roiKey],
+                        ['median', distribution ? fmt(distribution.median) + ' [' + fmt(distribution.q1) + '–' + fmt(distribution.q3) + ']' : '算出不可'],
+                        ['mean', stat.n && Number.isFinite(stat.mean) ? fmt(stat.mean) + ' ± ' + fmt(stat.sd) : '算出不可'],
+                        ['count', result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry}` + (corrected ? `\n補正 coverage ${coverage}` : '') : String(stat.n)],
+                    ];
+                    for (const [field, text] of cells) {
+                        const td = document.createElement('td'); td.dataset.field = field; td.style.whiteSpace = 'pre-line';
+                        if (field === 'roi') {
+                            const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+                            button.setAttribute('aria-pressed', String(roiKey === highlightRoiKey));
+                            button.addEventListener('click', () => selectAnalysisRoi(roiKey)); td.appendChild(button);
+                        } else td.textContent = text;
+                        row.appendChild(td);
+                    }
                     table.appendChild(row);
+                    const statusRow = document.createElement('tr'); statusRow.dataset.roiStatus = roiKey; statusRow.dataset.selected = row.dataset.selected;
+                    const statusCell = document.createElement('td'); statusCell.colSpan = 4; statusCell.className = 'analysis-status'; statusCell.dataset.field = 'status';
+                    statusCell.textContent = (corrected ? result?.status || 'UNAVAILABLE' : result?.rawStatus || (stat.n ? 'REFERENCE' : 'UNAVAILABLE')) + (reason.trim() ? ' — ' + reason.trim() : '');
+                    if (distribution?.sampled) statusCell.textContent += `\n点群表示 ${distribution.points.length.toLocaleString()} / 統計対象 ${distribution.n.toLocaleString()} 画素（通常域・上側域から抽出、箱・統計は全画素）`;
+                    statusRow.appendChild(statusCell); table.appendChild(statusRow);
                 }
-                graphContainer.appendChild(table);
+                section.appendChild(table);
+            }
+            graphContainer.scrollTop = scrollTop;
+            if (focusKey && focusChannel) {
+                const section = Array.from(graphContainer.querySelectorAll('.analysis-section')).find(node => node.dataset.channel === focusChannel);
+                const row = section && Array.from(section.querySelectorAll('[data-roi-key]')).find(node => node.dataset.roiKey === focusKey);
+                row?.querySelector('button')?.focus({ preventScroll: true });
             }
         }
 
-        function drawBarChart(canvas, roiKeys, roiNames, palette, statsPerRoi, imageKey, highlightRoiKey) {
-            const nBars = roiKeys.length;
-            const container = document.getElementById('graph-container');
-            const cw = container ? container.clientWidth : 500;
-            const W = Math.max(cw, nBars * 40 + 80), H = 280;
-            canvas.width = W; canvas.height = H;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
-
-            const margin = { top: 45, right: 30, bottom: 100, left: 75 };
-            const pw = W - margin.left - margin.right;
-            const ph = H - margin.top - margin.bottom;
-
-            // Y軸の最大値（meanの最大）
-            let yMax = 0;
-            for (const rk of roiKeys) {
-                const s = statsPerRoi[rk];
-                yMax = Math.max(yMax, s.mean);
-            }
-            if (yMax === 0) yMax = 1;
-            yMax *= 1.15; // 余白
-
-            const barW = pw / nBars;
-            const barPad = barW * 0.2;
-
-            // グリッド線
-            ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
-            const nTicks = 5;
-            for (let i = 1; i <= nTicks; i++) {
-                const y = H - margin.bottom - (i / nTicks) * ph;
-                ctx.beginPath(); ctx.moveTo(margin.left, y); ctx.lineTo(W - margin.right, y); ctx.stroke();
-            }
-
-            // 軸
-            ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(margin.left, margin.top);
-            ctx.lineTo(margin.left, H - margin.bottom);
-            ctx.lineTo(W - margin.right, H - margin.bottom);
-            ctx.stroke();
-
-            // MSI色を取得
-            const msiColor = getMsiColor(imageKey);
-
-            // バー描画
-            for (let i = 0; i < nBars; i++) {
-                const rk = roiKeys[i];
-                const s = statsPerRoi[rk];
-                const rgba = palette[rk] || [150, 150, 150, 255];
-                const isHighlight = (rk === highlightRoiKey);
-
-                // バーの色: ROIパレット色をベースに、MSI色があればそちらを使い、ROI色は枠線に
-                let fillColor, strokeColor;
-                if (msiColor) {
-                    const alpha = isHighlight ? 0.9 : 0.65;
-                    fillColor = `rgba(${msiColor[0]},${msiColor[1]},${msiColor[2]},${alpha})`;
-                    strokeColor = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},1)`;
-                } else {
-                    const alpha = isHighlight ? 0.9 : 0.65;
-                    fillColor = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${alpha})`;
-                    strokeColor = `rgb(${Math.max(0,rgba[0]-40)},${Math.max(0,rgba[1]-40)},${Math.max(0,rgba[2]-40)})`;
-                }
-
-                const barH = s.n && Number.isFinite(s.mean) ? (s.mean / yMax) * ph : 0;
-                const x = margin.left + i * barW + barPad;
-                const bw = barW - barPad * 2;
-                const y = H - margin.bottom - barH;
-
-                ctx.fillStyle = fillColor;
-                ctx.fillRect(x, y, bw, barH);
-                ctx.strokeStyle = strokeColor;
-                ctx.lineWidth = isHighlight ? 2.5 : 1;
-                ctx.strokeRect(x, y, bw, barH);
-                if (!s.n || !Number.isFinite(s.mean)) {
-                    ctx.fillStyle = '#777'; ctx.font = '10px sans-serif'; ctx.textAlign = 'center';
-                    ctx.fillText('N/A', x + bw / 2, y - 4);
-                }
-
-                // X軸ラベル（ROI名） - 45°回転で長名でも隣と重ならないように描画
-                const cx = x + bw / 2;
-                ctx.fillStyle = isHighlight ? '#000' : '#444';
-                ctx.font = isHighlight ? 'bold 14px sans-serif' : '13px sans-serif';
-                const name = roiNames[rk] || rk;
-                ctx.save();
-                ctx.translate(cx, H - margin.bottom + 10);
-                ctx.rotate(-Math.PI / 4);
-                ctx.textAlign = 'right';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(name, 0, 0);
-                ctx.restore();
-            }
-
-            // Y軸ラベル
-            ctx.fillStyle = '#333'; ctx.font = '11px sans-serif'; ctx.textAlign = 'right';
-            for (let i = 0; i <= nTicks; i++) {
-                const v = (i / nTicks) * yMax;
-                const y = H - margin.bottom - (i / nTicks) * ph;
-                ctx.fillText(formatAxisValue(v), margin.left - 8, y + 4);
-            }
-            ctx.save(); ctx.translate(18, H / 2); ctx.rotate(-Math.PI / 2);
-            ctx.textAlign = 'center'; ctx.font = '12px sans-serif';
-            ctx.fillText(channelUnit(imageKey), 0, 0); ctx.restore();
-
-            // タイトル
-            ctx.fillStyle = '#222'; ctx.font = 'bold 14px sans-serif'; ctx.textAlign = 'center';
-            ctx.fillText(`${formatDisplayName(imageKey)} — ROI 平均 (${valueDisplay.mode === 'normalized' ? '補正・正規化' : '生値'})`, W / 2, 26);
-        }
-
-        function drawMultiBarChart(canvas, roiKeys, roiNames, palette, allStats, channels, highlightRoiKey) {
-            const nRoi = roiKeys.length;
-            const nCh = channels.length;
-            const container = document.getElementById('graph-container');
-            const cw = container ? container.clientWidth : 550;
-            const ch = container ? container.clientHeight : 420;
-            const W = Math.max(cw, nRoi * (nCh * 16 + 20) + 100), H = Math.max(ch, 200);
-            canvas.width = W; canvas.height = H;
-            const ctx = canvas.getContext('2d');
-            ctx.fillStyle = '#fafafa'; ctx.fillRect(0, 0, W, H);
-
-            const margin = { top: 50, right: 30, bottom: 110, left: 75 };
-            const pw = W - margin.left - margin.right;
-            const ph = H - margin.top - margin.bottom;
-
-            // Y軸最大値
-            let yMax = 0;
-            for (const ch of channels) {
-                for (const rk of roiKeys) {
-                    yMax = Math.max(yMax, allStats[ch][rk].mean);
-                }
-            }
-            if (yMax === 0) yMax = 1;
-            yMax *= 1.15;
-
-            const groupW = pw / nRoi;
-            const padRatio = 0.1;
-            const innerW = groupW * (1 - 2 * padRatio);
-            const barW = innerW / nCh - 2;
-            const gap = 2;
-
-            // グリッド線
-            ctx.strokeStyle = '#e0e0e0'; ctx.lineWidth = 0.5;
-            const nTicks = 5;
-            for (let i = 1; i <= nTicks; i++) {
-                const y = H - margin.bottom - (i / nTicks) * ph;
-                ctx.beginPath(); ctx.moveTo(margin.left, y); ctx.lineTo(W - margin.right, y); ctx.stroke();
-            }
-
-            // 軸
-            ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(margin.left, margin.top);
-            ctx.lineTo(margin.left, H - margin.bottom);
-            ctx.lineTo(W - margin.right, H - margin.bottom);
-            ctx.stroke();
-
-            // チャネルごとの色
-            const chColors = channels.map(ch => getMsiColor(ch) || [100, 100, 200]);
-
-            for (let ri = 0; ri < nRoi; ri++) {
-                const rk = roiKeys[ri];
-                const isHighlight = (rk === highlightRoiKey);
-                const rgba = palette[rk] || [150, 150, 150, 255];
-                const gx = margin.left + ri * groupW + groupW * padRatio;
-
-                for (let ci = 0; ci < nCh; ci++) {
-                    const ch = channels[ci];
-                    const s = allStats[ch][rk];
-                    const color = chColors[ci];
-                    const alpha = isHighlight ? 0.9 : 0.6;
-                    const bx = gx + ci * (barW + gap);
-                    const barH = (s.mean / yMax) * ph;
-                    const by = H - margin.bottom - barH;
-
-                    ctx.fillStyle = `rgba(${color[0]},${color[1]},${color[2]},${alpha})`;
-                    ctx.fillRect(bx, by, barW, barH);
-                    // 枠線はROIの色
-                    ctx.strokeStyle = `rgb(${rgba[0]},${rgba[1]},${rgba[2]})`;
-                    ctx.lineWidth = isHighlight ? 2.5 : 1.5;
-                    ctx.strokeRect(bx, by, barW, barH);
-                }
-
-                // X軸ラベル - 45°回転で長名でも隣と重ならないように描画
-                const cx = margin.left + ri * groupW + groupW / 2;
-                const name = roiNames[rk] || rk;
-                ctx.fillStyle = isHighlight ? '#000' : '#444';
-                ctx.font = isHighlight ? 'bold 14px sans-serif' : '13px sans-serif';
-                ctx.save();
-                ctx.translate(cx, H - margin.bottom + 10);
-                ctx.rotate(-Math.PI / 4);
-                ctx.textAlign = 'right';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(name, 0, 0);
-                ctx.restore();
-            }
-
-            // Y軸ラベル
-            ctx.fillStyle = '#333'; ctx.font = '11px sans-serif'; ctx.textAlign = 'right';
-            for (let i = 0; i <= nTicks; i++) {
-                const v = (i / nTicks) * yMax;
-                const y = H - margin.bottom - (i / nTicks) * ph;
-                ctx.fillText(formatAxisValue(v), margin.left - 8, y + 4);
-            }
-            ctx.save(); ctx.translate(18, H / 2); ctx.rotate(-Math.PI / 2);
-            ctx.textAlign = 'center'; ctx.font = '12px sans-serif';
-            ctx.fillText('Mean Intensity', 0, 0); ctx.restore();
-
-            // 凡例（中央揃え）
-            const legY = 10;
-            const legItemW = 110;
-            const legTotalW = nCh * legItemW;
-            const legStartX = (W - legTotalW) / 2;
-            for (let ci = 0; ci < nCh; ci++) {
-                const color = chColors[ci];
-                const lx = legStartX + ci * legItemW;
-                ctx.fillStyle = `rgb(${color[0]},${color[1]},${color[2]})`;
-                ctx.fillRect(lx, legY, 14, 14);
-                ctx.fillStyle = '#333'; ctx.font = '11px sans-serif'; ctx.textAlign = 'left';
-                ctx.fillText(formatDisplayName(channels[ci]), lx + 18, legY + 12);
-            }
-
-            // タイトル
-            const title = channels.map(ch => formatDisplayName(ch)).join(' vs ');
-            ctx.fillStyle = '#222'; ctx.font = 'bold 13px sans-serif'; ctx.textAlign = 'center';
-            ctx.fillText(`${title} — ROI Mean Intensity`, W / 2, 40);
-        }
-
-        /** Y軸の値をフォーマット（大きい値は科学表記） */
-        function formatAxisValue(v) {
-            if (v === 0) return '0';
-            if (v >= 1e6) return v.toExponential(1);
-            if (v >= 1000) return Math.round(v).toLocaleString();
-            if (v >= 1) return v.toFixed(1);
-            return v.toFixed(2);
-        }
-        
         function setupCollapsibleSections() {
             const setupToggle = (toggleId, contentId, iconId) => {
                 const toggleEl = document.getElementById(toggleId);
