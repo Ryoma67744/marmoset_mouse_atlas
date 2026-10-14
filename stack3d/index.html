@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>3D Atlas — Marmoset / Mouse Atlas</title>
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="analysis.css">
 </head>
 <body>
   <header class="topbar">
@@ -34,13 +35,16 @@
       <p class="sidebar-foot">XY：保存された画素サイズ<br>前後：欠番を詰めた切片順<br><a href="../STACK3D_GUIDE.md">3D表示の使い方</a></p>
     </aside>
     <section class="scene-panel" aria-label="インタラクティブ3Dモデル">
+      <div class="scene-viewport">
       <div class="scene-top"><span class="pill" id="mode-label">DA + NE + 5-HT</span><span id="render-state" role="status" aria-live="polite">準備中</span></div>
       <div id="scene" tabindex="0" aria-label="ドラッグで回転、ホイールで拡大縮小、切片をクリックして選択"></div>
       <span id="brain-context-note" class="brain-context-note" hidden>脳模式図 · 位置合わせ未実施</span>
       <div id="scene-message" class="scene-message"><strong>切片を読み込んでいます</strong><span id="load-progress"></span></div>
       <div id="render-error" class="error-panel" hidden role="alert"><strong>3D表示を開始できませんでした</strong><p id="render-error-text"></p><p>右の切片一覧から断面を確認できます。</p></div>
+      </div>
       <div class="scene-bottom"><span>ドラッグ：回転　右ドラッグ：移動　スクロール：拡大</span><span>小脳側 → 嗅球側（初期視点）</span></div>
       <div class="slice-scrubber"><span id="scrubber-hint" class="scrubber-hint">表示：小脳側 ～ 選択断面</span><button id="previous-section" aria-label="前の切片">‹</button><input id="section-slider" type="range" min="0" max="0" value="0" step="1" aria-label="断面を選択し、それより後の切片を隠す" aria-describedby="scrubber-hint" title="選択した断面より後（嗅球側）の切片を隠します"><button id="next-section" aria-label="次の切片">›</button><output id="section-position">—</output></div>
+      <section id="analysis-panel" aria-label="切片のIntensity Box Plot"></section>
     </section>
     <div id="section-resizer" role="separator" tabindex="0" aria-label="右側パネルの幅" aria-orientation="vertical" aria-controls="section-panel" title="ドラッグまたは左右矢印キーで幅を変更（ダブルクリックで元に戻す）"></div>
     <aside id="section-panel" class="section-panel" aria-label="選択切片">
@@ -109,6 +113,9 @@
   <script src="../lib/project-sync.js"></script>
   <script src="../lib/section-display.js"></script>
   <script src="../lib/stack3d.js"></script>
+  <script src="../lib/roi-distribution.js"></script>
+  <script src="../lib/intensity-boxplot.js"></script>
+  <script src="../lib/stack3d-analysis.js"></script>
   <script src="../lib/stack3d-alignment.js"></script>
   <script src="../lib/stack3d-batch-alignment.js"></script>
   <script src="vendor/three-orbit.min.js"></script>
@@ -117,6 +124,9 @@
   <script src="renderer.js"></script>
   <script src="panel-resize.js"></script>
   <script src="batch-alignment.js"></script>
+  <script src="analysis-worker-client.js"></script>
+  <script src="analysis-resize.js"></script>
+  <script src="analysis.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

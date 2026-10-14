@@ -37,6 +37,16 @@ The browser suite exercises Master selection, WebGL rendering, controls,
 section-detail navigation and return state, and concurrent placement/ROI edits.
 Only synthetic rasters are committed; private study data is not a test fixture.
 
+The v2.24 3D intensity-analysis tests exercise exact full-pixel pooling, named
+ROI unions, inclusive/list section ranges, per-ROI correction coverage and shared
+normalization provenance. Cross-ROI and cross-section axes reject incompatible
+units/reference groups; display sampling never changes population statistics.
+Browser scenarios use 69 synthetic sections, keep analysis targets independent
+of 3D visibility, restore stable section IDs, preserve raw raster bytes and test
+the compact dock, source-update warnings, load failures and Worker cancellation.
+The shared 2D renderer retains its default 320px height. On hosts with limited
+browser resources, use `node --test --test-concurrency=2 tests/*.test.cjs`.
+
 The v2.21.1 action regressions cover overlapping cloud/ZIP/PNG/Otsu operations,
 authentication changes, bounded cloud requests and unknown write outcomes.
 MSI-only rotation uses one transform for images, ROI outlines, picking and
