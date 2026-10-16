@@ -31,10 +31,12 @@
     }
     return { group, faceCamera(camera) {
       for (const label of labels) { group.getWorldQuaternion(label.sprite.quaternion).invert().multiply(camera.quaternion); }
-    }, update({ visible, region, labelsVisible }) {
-      group.visible = visible;
-      records.forEach(r => { r.line.visible = !region || r.name === region; });
-      labels.forEach(r => { r.sprite.visible = labelsVisible && (!region || r.name === region); });
+    }, update(settings) {
+      const regions = Object.hasOwn(settings, 'regions') ? settings.regions : settings.region ? [settings.region] : null;
+      const selected = Array.isArray(regions) ? new Set(regions) : null;
+      group.visible = settings.visible;
+      records.forEach(r => { r.line.visible = selected === null || selected.has(r.name); });
+      labels.forEach(r => { r.sprite.visible = settings.labelsVisible && (selected === null || selected.has(r.name)); });
     }, stats() { return { contours: group.visible ? records.filter(r => r.line.visible).length : 0,
       labels: group.visible ? labels.filter(r => r.sprite.visible).map(r => r.name) : [] }; }, dispose() {
       records.forEach(r => { r.line.geometry.dispose(); r.line.material.dispose(); });

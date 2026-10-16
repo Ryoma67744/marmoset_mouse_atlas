@@ -4448,7 +4448,7 @@ function loadAllImages() {
     // ブートストラップ
     // =====================================================================
     function setupStack3DReturn(params, projectId) {
-      if (params.get('from') !== 'stack3d') return;
+      if (params.get('from') !== 'stack3d' || params.get('newtab') === '1') return;
       const link = document.getElementById('back-stack3d');
       link.href = '../stack3d/index.html?project=' + encodeURIComponent(projectId);
       link.classList.remove('hidden');

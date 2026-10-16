@@ -29,7 +29,7 @@
     let heVisible = false, heOpacity = 0.12;
     let brainVisible = false, brainOpacity = 0.12, brainContext = null;
     let disposed = false, contextLost = false, pendingFrame = null, renderCount = 0, pointerDown = null, viewSet = false;
-    let roiSettings = { visible: true, region: "", labelsVisible: true };
+    let roiSettings = { visible: true, regions: null, labelsVisible: true };
     const pointers = new Set();
     const outlineGeometry = new T.BufferGeometry();
     outlineGeometry.setAttribute('position', new T.Float32BufferAttribute([-0.5,-0.5,0, 0.5,-0.5,0, 0.5,0.5,0, -0.5,0.5,0], 3));
@@ -92,7 +92,11 @@
         visible: roiSettings.visible && entry.index >= range[0] && entry.index <= range[1] && !hiddenSectionIds.has(entry.descriptor.id),
         labelsVisible: roiSettings.labelsVisible && entry.index === selected });
     }
-    function setRoiOverlay(settings) { roiSettings = { ...roiSettings, ...settings }; updateRoi(); scheduleRender(); }
+    function setRoiOverlay(settings) {
+      roiSettings = { ...roiSettings, ...settings };
+      if (Object.hasOwn(settings, 'region') && !Object.hasOwn(settings, 'regions')) roiSettings.regions = settings.region ? [settings.region] : null;
+      updateRoi(); scheduleRender();
+    }
     function setTexture(entry, source, { smooth = false, name = entry.descriptor?.name || 'HE' } = {}) {
       if (!source || !source.width || !source.height) {
         if (entry.texture) entry.texture.dispose();

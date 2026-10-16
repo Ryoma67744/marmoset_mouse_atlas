@@ -6,6 +6,20 @@
 .he-controls{border-top:1px solid var(--line);padding-top:16px}
 .he-controls .toggle-label{align-items:center;margin-bottom:16px}
 .toggle-label input{width:16px;height:16px;accent-color:#9cbbe4;margin:0}
+.roi-selection{min-width:0;border:0;padding:0;margin:15px 0 0}
+.roi-selection legend{font-size:12px;color:#c1cddd;margin-bottom:9px}
+.roi-unrestricted{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;cursor:pointer}
+.roi-unrestricted small{display:block;font-size:10px;color:var(--muted);margin-top:2px}
+.roi-unrestricted input{flex:0 0 16px}
+.roi-selection-actions{display:flex;gap:6px;margin:10px 0 7px}
+.roi-selection-actions button{flex:1;min-width:0;padding:5px 7px;font-size:11px}
+.roi-region-list{max-height:190px;overflow-y:auto;scrollbar-width:thin;border:1px solid var(--line);border-radius:6px;background:#0d1521}
+.roi-region-row{display:flex;align-items:flex-start;gap:8px;padding:7px 8px;font-size:11px;cursor:pointer;overflow-wrap:anywhere}
+.roi-region-row+.roi-region-row{border-top:1px solid var(--line)}
+.roi-region-row input{flex:0 0 15px;width:15px;height:15px;margin:1px 0;accent-color:#9cbbe4}
+.roi-region-row span{min-width:0}
+.roi-region-row:has(input:checked){background:#1c2b40}
+.roi-region-list>.hint{margin:0;padding:8px}
 .header-actions .sync-warning{width:30px;height:30px;display:grid;place-items:center;padding:0;border:1px solid #8f6d46;color:#f3c07c;background:#2b241d;font-size:16px}
 .sync-details{position:absolute;right:24px;top:66px;z-index:20;max-width:min(540px,90vw);max-height:40dvh;overflow:auto;white-space:pre-line;background:#202735;border:1px solid #7d6a50;border-radius:8px;padding:14px;font-size:11px;color:#e6cb9d;box-shadow:0 8px 32px #0006}
 .preview-enlarge{display:block;margin-left:auto;font-size:11px}

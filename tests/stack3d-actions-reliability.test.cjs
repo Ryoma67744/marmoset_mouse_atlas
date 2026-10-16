@@ -94,7 +94,7 @@ async function warningNames(page) {
   return page.locator('#sync-details').evaluate(element => element.textContent.split('\n').filter(Boolean).map(line => line.split(':')[0]).sort());
 }
 
-test('adopted batch survives declined detail navigation, and leaving only discards after confirmation', { timeout: 120000 }, async () => {
+test('opening detail keeps an adopted batch and actual navigation still requires confirmation', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
     await seed(h); await open(h);
@@ -102,18 +102,29 @@ test('adopted batch survives declined detail navigation, and leaving only discar
     await adoptedBatch(page); const adopted = await placements(page);
     assert.notDeepEqual(adopted, original);
     const dirty = await page.locator('.dirty-dot').count(); assert.ok(dirty > 1);
+    const popup = h.context.waitForEvent('page');
+    await page.locator('#open-section').click(); const detail = await popup;
+    detail.on('pageerror', error => h.errors.push(error.message));
+    await detail.waitForURL('**/viewer/index.html?project=' + IDS[2] + '&from=stack3d&newtab=1');
+    await detail.waitForFunction(() => viewerReady);
+    assert.match(page.url(), /stack3d/);
+    assert.deepEqual(await placements(page), adopted);
+    assert.equal(await page.locator('.dirty-dot').count(), dirty);
+    assert.equal(await page.locator('#batch-save').isEnabled(), true);
+    assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);
+    await detail.close();
     const dismiss = page.waitForEvent('dialog').then(async dialog => {
       assert.equal(dialog.type(), 'beforeunload'); await dialog.dismiss();
     });
-    await page.locator('#open-section').click({ noWaitAfter: true }); await dismiss;
+    await page.locator('#master-link').click({ noWaitAfter: true }); await dismiss;
     assert.match(page.url(), /stack3d/);
     assert.deepEqual(await placements(page), adopted);
     assert.equal(await page.locator('.dirty-dot').count(), dirty);
     assert.equal(await page.locator('#batch-save').isEnabled(), true);
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);
     const accept = page.waitForEvent('dialog').then(async dialog => { assert.equal(dialog.type(), 'beforeunload'); await dialog.accept(); });
-    await page.locator('#open-section').click({ noWaitAfter: true }); await accept;
-    await page.waitForURL('**/viewer/index.html?project=' + IDS[2] + '&from=stack3d');
+    await page.locator('#master-link').click({ noWaitAfter: true }); await accept;
+    await page.waitForURL('**/index.html');
     await open(h);
     assert.deepEqual(await placements(page), original);
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);

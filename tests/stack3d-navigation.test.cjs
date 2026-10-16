@@ -105,6 +105,19 @@ function sameView(actual, expected) {
   assert.equal(actual.zoom, expected.zoom);
 }
 
+async function openDetailTab(h, projectId) {
+  const sourceURL = h.page.url(), popup = h.context.waitForEvent('page');
+  await h.page.locator('#open-section').click();
+  const detail = await popup;
+  detail.on('pageerror', error => h.errors.push(error.message));
+  await detail.waitForURL('**/viewer/index.html?project=' + projectId + '&from=stack3d&newtab=1');
+  await detail.waitForFunction(() => viewerReady);
+  assert.equal(h.page.url(), sourceURL, 'the 3D tab stays open at its original URL');
+  assert.equal(await detail.evaluate(() => window.opener), null, 'the new tab does not retain opener access');
+  assert.equal(await detail.locator('#back-stack3d').isVisible(), false);
+  return detail;
+}
+
 test('3D ROI contours labels and regional MSI filtering follow visibility without changing scientific values', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
@@ -114,7 +127,7 @@ test('3D ROI contours labels and regional MSI filtering follow visibility withou
         const p = await ProjectStorage.getProject(id);
         p.roi = { roi_names: { left: '領域A', right: '領域B' }, palette: { left: [0,255,255], right: [255,0,255] },
           roi_items: { left: [{ poly_msi: [[-.5,-.5],[1.5,-.5],[1.5,2.5],[-.5,2.5]] }],
-            right: [{ poly_msi: [[1.5,-.5],[4.5,-.5],[4.5,2.5],[1.5,2.5]] }] } };
+            right: [{ poly_msi: [[1.5,-.5],[2.5,-.5],[2.5,2.5],[1.5,2.5]] }] } };
         await ProjectStorage.putProject(p);
       }
     }, IDS);
@@ -125,7 +138,8 @@ test('3D ROI contours labels and regional MSI filtering follow visibility withou
     let roi = await page.evaluate(() => Atlas3D.renderer.getStats().roi);
     assert.deepEqual(roi[1].labels, ['領域A','領域B']); assert.equal(roi[0].labels.length, 0);
     const ranges = await page.evaluate(() => Atlas3D.rendered[1].ranges);
-    await page.locator('#roi-region').selectOption('領域A');
+    await page.locator('#roi-clear-all').click();
+    await page.locator('input[name="roi-region"][value="領域A"]').check();
     await page.waitForFunction(() => {
       const c = Atlas3D.rendered[1].canvas, d = c.getContext('2d').getImageData(0,0,4,2).data;
       return d[3] > 0 && d[2*4+3] === 0 && d[3*4+3] === 0;
@@ -142,8 +156,38 @@ test('3D ROI contours labels and regional MSI filtering follow visibility withou
     assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().roi[1].contours), 0);
     await page.locator('input.section-visible[data-section-id="stack-second"]').check();
     await page.reload(); await ready(page, 3);
-    assert.equal(await page.locator('#roi-region').inputValue(), '領域A');
-    await page.locator('#roi-region').selectOption('');
+    assert.equal(await page.locator('#roi-unrestricted').isChecked(), false);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.options().roiRegions), ['領域A']);
+    assert.equal(await page.locator('input[name="roi-region"][value="領域A"]').isChecked(), true);
+    await page.locator('input[name="roi-region"][value="領域B"]').check();
+    await page.waitForFunction(() => {
+      const d = Atlas3D.rendered[1].canvas.getContext('2d').getImageData(0,0,4,2).data;
+      return d[3] > 0 && d[2*4+3] > 0 && d[3*4+3] === 0;
+    });
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().roi[1].labels), ['領域A', '領域B']);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.rendered[1].ranges), ranges);
+    await page.reload(); await ready(page, 3);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.options().roiRegions), ['領域A', '領域B']);
+    await page.locator('#roi-clear-all').click();
+    await page.waitForFunction(() => Atlas3D.rendered.every(r => r.status.visiblePixels === 0));
+    assert.deepEqual(await page.evaluate(() => Atlas3D.options().roiRegions), []);
+    assert.equal(await page.locator('input[name="roi-region"]:checked').count(), 0);
+    assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().roi[1].contours), 0);
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector('#section-preview canvas');
+      if (!canvas || document.getElementById('section-preview').dataset.previewKind !== 'MSI') return false;
+      const pixels = canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+      return pixels.every((value, index) => index % 4 !== 3 || value === 0);
+    });
+    assert.match(await page.locator('#section-status').innerText(), /ROI輪郭 0 \/ 2/);
+    await page.reload(); await ready(page, 3);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.options().roiRegions), [], 'empty selection survives reload');
+    assert.equal(await page.evaluate(() => Atlas3D.rendered.every(r => r.status.visiblePixels === 0)), true);
+    await page.locator('#roi-select-all').click();
+    await page.waitForFunction(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(2,0,1,1).data[3] > 0);
+    assert.equal(await page.locator('input[name="roi-region"]:checked').count(), await page.locator('input[name="roi-region"]').count());
+    assert.equal(await page.evaluate(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(3,0,1,1).data[3]), 0, 'select all still excludes pixels outside every ROI');
+    await page.locator('#roi-unrestricted').check();
     await page.waitForFunction(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(3,0,1,1).data[3] > 0);
     await page.locator('[data-preview="HE_Stain"]').click();
     await page.waitForFunction(() => document.querySelector('#section-preview canvas')?.width >= 128 && document.getElementById('section-preview').dataset.previewKind === 'HE_Stain');
@@ -167,6 +211,70 @@ test('initial spacing is exactly 1.7x and only the former session default migrat
       await page.goto(h.baseURL + '/stack3d/index.html'); await ready(page, 3);
       assert.equal(Number(await page.locator('#spacing').inputValue()), expected);
     }
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('legacy single-region sessions migrate while explicit empty and unrestricted selections are preserved', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h);
+    for (const [options, expected] of [
+      [{ roiRegion: 'All pixels' }, ['All pixels']],
+      [{ roiRegion: '' }, null],
+      [{ roiRegions: [], roiRegion: 'All pixels' }, []],
+      [{ roiRegions: null, roiRegion: 'All pixels' }, null],
+    ]) {
+      // Leave the 3D page before installing the fixture: its pagehide saves the current view.
+      await page.goto(h.baseURL + '/__test_seed');
+      await page.evaluate(({ ids, options }) => sessionStorage.setItem('atlas-stack3d-view-v1', JSON.stringify({ ids, options })), { ids: IDS, options });
+      await page.goto(h.baseURL + '/stack3d/index.html'); await ready(page, 3);
+      assert.deepEqual(await page.evaluate(() => Atlas3D.options().roiRegions), expected);
+      assert.equal(await page.locator('#roi-unrestricted').isChecked(), expected === null);
+      if (expected) assert.equal(await page.locator('input[name="roi-region"]:checked').count(), expected.length);
+    }
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('saving ROI from a detail tab notifies the original 3D tab and keeps its unsaved placement until reload', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await page.goto(h.baseURL + '/stack3d/index.html?project=stack-second'); await ready(page, 3);
+    const raw = await rawBits(page), view = await page.evaluate(() => Atlas3D.renderer.getView());
+    await page.locator('#placement-details').evaluate(element => { element.open = true; });
+    await page.locator('#offset-x').fill('123'); await page.locator('#offset-x').dispatchEvent('change');
+    await page.waitForFunction(() => Atlas3D.sections[Atlas3D.selected].offsetXUm === 123);
+    const detail = await openDetailTab(h, 'stack-second');
+    await detail.evaluate(async () => {
+      atlasData.roi.roi_names.all = 'Saved from detail tab';
+      persistRoi(); await flushViewerEdits();
+    });
+    await page.waitForFunction(() => Atlas3D.sourceChanged);
+    assert.match(await page.locator('#notice').innerText(), /更新|再読込/);
+    assert.equal(await page.evaluate(() => Atlas3D.sections[Atlas3D.selected].offsetXUm), 123);
+    assert.match(await page.locator('#placement-status').innerText(), /未保存/);
+    sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
+    const saved = await page.evaluate(() => ProjectStorage.getProject('stack-second'));
+    assert.equal(saved.roi.roi_names.all, 'Saved from detail tab');
+    assert.notEqual(saved.stack3d?.offsetXUm, 123, 'opening detail does not save the 3D draft');
+    const confirmation = page.waitForEvent('dialog').then(dialog => dialog.accept());
+    await page.locator('#reload').click(); await confirmation;
+    await page.waitForFunction(() => window.__stack3dReady && !Atlas3D.sourceChanged && Atlas3D.sections[Atlas3D.selected].offsetXUm === 0);
+    assert.equal(await page.locator('input[name="roi-region"][value="Saved from detail tab"]').count(), 1);
+    assert.deepEqual(await rawBits(page), raw);
+    await detail.close(); assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('legacy same-tab detail URLs keep their return link', { timeout: 90000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await seed(h); await page.goto(h.baseURL + '/viewer/index.html?project=stack-second&from=stack3d');
+    await page.waitForFunction(() => viewerReady);
+    assert.equal(await page.locator('#back-stack3d').isVisible(), true);
+    await page.locator('#back-stack3d').click(); await ready(page, 3);
+    assert.equal(new URL(page.url()).searchParams.get('project'), 'stack-second');
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
@@ -197,8 +305,7 @@ test('sidebar drag preserves MSI HE and Atlas dimensions and restores layout wit
     }
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
     const savedWidth = (await page.locator('#section-panel').boundingBox()).width;
-    await page.locator('#open-section').click(); await page.waitForURL('**/viewer/index.html?project=stack-second&from=stack3d');
-    await page.waitForFunction(() => viewerReady); await page.locator('#back-stack3d').click(); await ready(page, 3);
+    const detail = await openDetailTab(h, 'stack-second'); await detail.close();
     assert.equal((await page.locator('#section-panel').boundingBox()).width, savedWidth);
     assert.deepEqual(await size(), initial);
     await page.reload(); await ready(page, 3); assert.deepEqual(await size(), initial);
@@ -211,7 +318,7 @@ test('sidebar drag preserves MSI HE and Atlas dimensions and restores layout wit
   } finally { await h.close(); }
 });
 
-test('Master subset opens a 3D stack and section detail returns with camera, controls and selected section preserved', { timeout: 120000 }, async () => {
+test('Master subset opens a 3D stack and a detail tab preserves its camera, controls and selected section', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
     await seed(h);
@@ -236,20 +343,17 @@ test('Master subset opens a 3D stack and section detail returns with camera, con
       Atlas3D.renderer.setView(view);
       return Atlas3D.renderer.getView();
     });
-    await page.locator('#open-section').click();
-    await page.waitForURL('**/viewer/index.html?project=stack-second&from=stack3d');
-    await page.waitForFunction(() => viewerReady);
-    assert.equal(new URL(page.url()).searchParams.get('project'), 'stack-second');
-    assert.equal(await page.locator('#atlas-title').innerText(), 'Cor_1_10');
-    await page.locator('#back-stack3d').click();
+    const detail = await openDetailTab(h, 'stack-second');
+    assert.equal(new URL(detail.url()).searchParams.get('project'), 'stack-second');
+    assert.equal(await detail.locator('#atlas-title').innerText(), 'Cor_1_10');
+    await detail.close();
     await ready(page, 2);
-    assert.equal(new URL(page.url()).searchParams.get('project'), 'stack-second');
     assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
     assert.equal(await page.locator('#opacity').inputValue(), '0.31');
     assert.equal(await page.locator('#threshold').inputValue(), '0.2');
     assert.equal(await page.locator('#spacing').inputValue(), '0.61');
     assert.equal(await page.evaluate(() => Atlas3D.options().rangeMode), 'common');
-    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 1], 'section cutoff survives the detail round trip');
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().range), [0, 1], 'section cutoff survives opening detail');
     assert.equal(await page.locator('input[name="channel"][value="NE"]').isChecked(), false);
     sameView(await page.evaluate(() => Atlas3D.renderer.getView()), view);
     await page.locator('#master-link').click();
@@ -471,11 +575,9 @@ test('a hidden section remains inspectable and its OFF state survives HE changes
     await page.waitForFunction(() => document.getElementById('section-preview').dataset.previewKind === 'HE_Stain' && document.querySelector('#section-preview canvas')?.width >= 128);
     await page.waitForFunction(() => Atlas3D.renderer.getStats().heVisibleCount === 0);
     assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getStats().heVisibleSectionIds), []);
-    await page.locator('#open-section').click();
-    await page.waitForURL('**/viewer/index.html?project=stack-second&from=stack3d');
-    await page.waitForFunction(() => viewerReady);
-    assert.equal(await page.locator('#atlas-title').innerText(), 'Cor_1_10');
-    await page.locator('#back-stack3d').click();
+    const detail = await openDetailTab(h, 'stack-second');
+    assert.equal(await detail.locator('#atlas-title').innerText(), 'Cor_1_10');
+    await detail.close();
     await ready(page, 3);
     assert.equal(await checkbox.isChecked(), false);
     assert.equal(await page.locator('#section-name').innerText(), 'Cor_1_10');
@@ -813,10 +915,7 @@ test('optional brain context preserves camera, scientific data and full-stack bo
     assert.deepEqual(await page.evaluate(() => Stack3D.computeCommonRanges(Atlas3D.sections, 'raw')), ranges);
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored, 'context controls do not save model metadata');
     const selected = await page.evaluate(() => Atlas3D.sections[Atlas3D.selected].id);
-    await page.locator('#open-section').click();
-    await page.waitForURL('**/viewer/index.html?project=' + selected + '&from=stack3d');
-    await page.waitForFunction(() => viewerReady);
-    await page.locator('#back-stack3d').click();
+    const detail = await openDetailTab(h, selected); await detail.close();
     await ready(page, 12);
     assert.equal(await page.locator('#brain-visible').isChecked(), true);
     assert.equal(await page.locator('#brain-opacity').inputValue(), '0.23');

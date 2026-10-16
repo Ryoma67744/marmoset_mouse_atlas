@@ -326,7 +326,7 @@ test('unsupported whole stacks report their limitation and cancellation cannot a
   } finally { await h.close(); }
 });
 
-test('reload and detail navigation discard an unadopted whole-stack preview without persisting it', { timeout: 120000 }, async () => {
+test('reload discards an unadopted preview while opening detail keeps the preview without persisting it', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
     await seed(h); await open(h); const before = await snapshot(page), baseline = await placements(page);
@@ -336,12 +336,19 @@ test('reload and detail navigation discard an unadopted whole-stack preview with
     assert.deepEqual(await placements(page), baseline);
     assert.equal(await page.locator('#batch-result').isVisible(), false);
     await calculate(page); await togglePreview(page);
-    await page.locator('#open-section').click();
-    await page.waitForURL('**/viewer/index.html?project=batch-alignment-2&from=stack3d');
-    await open(h);
-    assert.deepEqual(await placements(page), baseline);
+    const preview = await placements(page), view = await page.evaluate(() => Atlas3D.renderer.getView());
+    const sourceURL = page.url(), popup = h.context.waitForEvent('page');
+    await page.locator('#open-section').click(); const detail = await popup;
+    detail.on('pageerror', error => h.errors.push(error.message));
+    await detail.waitForURL('**/viewer/index.html?project=batch-alignment-2&from=stack3d&newtab=1');
+    await detail.waitForFunction(() => viewerReady);
+    assert.equal(page.url(), sourceURL);
+    assert.deepEqual(await placements(page), preview);
+    assert.deepEqual(await page.evaluate(() => Atlas3D.renderer.getView()), view);
     assert.deepEqual(await snapshot(page), before);
-    assert.equal(await page.locator('#batch-result').isVisible(), false);
+    assert.equal(await page.locator('#batch-result').isVisible(), true);
+    assert.equal(await page.locator('#batch-preview').getAttribute('aria-pressed'), 'true');
+    await detail.close();
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
