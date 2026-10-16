@@ -34,8 +34,20 @@ The v2.14 3D tests cover numeric coronal ordering and ordinal Z, saved XY pitch
 and arbitrary rotation, missing-correction exclusion, source-array preservation,
 and optional placement metadata through cloud state and real ZIP round trips.
 The browser suite exercises Master selection, WebGL rendering, controls,
-section-detail navigation and return state, and concurrent placement/ROI edits.
+section-detail navigation and legacy return state, and concurrent placement/ROI edits.
 Only synthetic rasters are committed; private study data is not a test fixture.
+
+The v2.26 region-selection regressions cover multiple checked ROI names, union
+masks, selecting all ROI regions, clearing every region and unrestricted MSI
+including pixels outside ROI. An empty selection remains distinct from the
+unrestricted default through rendering and session restoration; legacy saved
+single-region selections are retained. MSI, ROI outlines and labels, and section
+previews follow the same selection without changing common ranges, source
+rasters or the independent intensity-analysis selection. Navigation regressions
+open section details in a separate tab while retaining the original 3D camera,
+selection and unsaved placement candidates. The new detail tab has no 3D return
+link; legacy same-tab return URLs remain supported. Source-update notifications
+and save-conflict checks still protect concurrent edits.
 
 The v2.24 3D intensity-analysis tests exercise exact full-pixel pooling, named
 ROI unions, inclusive/list section ranges, per-ROI correction coverage and shared
