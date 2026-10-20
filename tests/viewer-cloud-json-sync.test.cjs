@@ -162,6 +162,13 @@ test('Manual alignment omits unused automatic metadata and can be saved cleanly 
     await jsonCloud(h.page);
     const before = await numericalSnapshot(h.page);
     await h.page.locator('#align-btn').click();
+    await h.page.locator('[data-act="orient-next"]').click();
+    await h.page.waitForFunction(() => document.querySelector('.alignment-modal')?.dataset.stage === '2');
+    await h.page.locator('[data-p="rotate_deg"]').evaluate(input => {
+      for (let ancestor = input.parentElement; ancestor; ancestor = ancestor.parentElement) {
+        if (ancestor.tagName === 'DETAILS') ancestor.open = true;
+      }
+    });
     await h.page.locator('[data-p="rotate_deg"]').fill('15');
     await h.page.locator('[data-p="rotate_deg"]').dispatchEvent('input');
     await h.page.locator('[data-act="apply"]').click();

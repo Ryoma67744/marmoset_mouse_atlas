@@ -18,7 +18,7 @@ function app(maxRows) {
   const c = { console, XLSX, JSZip, Float32Array, Float64Array, Uint8Array, Blob };
   c.window = c;
   vm.createContext(c);
-  for (const file of ['msi.js', 'normalization-scope.js', 'normalization.js', 'display-range.js', 'otsu.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
+  for (const file of ['msi.js', 'align.js', 'alignment-orientation.js', 'normalization-scope.js', 'normalization.js', 'display-range.js', 'otsu.js', 'zipio.js', 'excelio.js', 'cloud.js']) {
     let source = fs.readFileSync(path.join(__dirname, '../lib', file), 'utf8');
     if (file === 'excelio.js' && maxRows) source = source.replace('const EXCEL_MAX_ROWS = 1048576;', 'const EXCEL_MAX_ROWS = ' + maxRows + ';');
     vm.runInContext(source, c, { filename: file });
@@ -152,18 +152,28 @@ function skippedFixture(c) {
   return f;
 }
 
-test('full affine matrix, reference recipe and landmark exclusions survive actual ZIP and cloud round-trips exactly', async () => {
+for (const schemaVersion of [2, 3]) test(`alignment schema ${schemaVersion}, full affine matrix and raw landmarks survive ZIP and cloud round-trips exactly`, async () => {
   const c = app(), f = fixture(c, false);
   const T = [[-0.025123456789012345, 0.008271828182845904, 50.1234567890123],
     [0.003141592653589793, 0.041414213562373095, 10.9876543210987], [0, 0, 1]];
   f.project.world_coords.T_he_to_msi = T;
   f.project.alignment.he = {
-    schemaVersion: 2, model: 'affine',
+    schemaVersion, model: 'affine', T_he_to_msi: T,
     landmarks: { he: [[0, 0], [20, 0], [0, 30], [10, 10]], msi: [[50, 11], [49, 11], [50, 12], [80, 80]], excluded: [3] },
     reference: { kind: 'balanced', sourceKeys: ['h', 'a'], quantile: 0.99, quantileMethod: 'linear',
       sourceFingerprint: 'verified-original-grid-and-values', scales: { h: 7.9, a: 13.9 } },
     fit: { rmse_px: 0.12345678901234567, max_px: 0.23456789012345678, n: 3 },
   };
+  if (schemaVersion === 3) {
+    const frames = c.AlignmentOrientation.createFrame({ heWidth: 100, heHeight: 80, msiWidth: 4, msiHeight: 2 });
+    frames.he = c.AlignmentOrientation.orient(frames.he, 'mirror-x');
+    f.project.alignment.he.orientation = {
+      ...c.AlignmentOrientation.serialize(frames), confirmed: true, revision: 4,
+      source: { heKey: 'he', heFingerprint: 'original-image-content', heWidth: 100, heHeight: 80, msiWidth: 4, msiHeight: 2 },
+    };
+    f.project.alignment.he.fit.orientationRevision = 4;
+    f.project.alignment.he.orientationConstraint = { maxRotationDeg: 15, allowSilhouetteRotation: false };
+  }
   const before = JSON.stringify(f.project);
   const rawBefore = Object.fromEntries(Object.entries(f.data).map(([key, values]) => [key, Buffer.from(values.buffer).toString('hex')]));
   const zip = await c.ZipIO.exportProject(f.project, { storage: f.storage });
