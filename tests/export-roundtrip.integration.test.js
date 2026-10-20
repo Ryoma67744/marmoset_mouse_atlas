@@ -152,6 +152,37 @@ function skippedFixture(c) {
   return f;
 }
 
+test('full affine matrix, reference recipe and landmark exclusions survive actual ZIP and cloud round-trips exactly', async () => {
+  const c = app(), f = fixture(c, false);
+  const T = [[-0.025123456789012345, 0.008271828182845904, 50.1234567890123],
+    [0.003141592653589793, 0.041414213562373095, 10.9876543210987], [0, 0, 1]];
+  f.project.world_coords.T_he_to_msi = T;
+  f.project.alignment.he = {
+    schemaVersion: 2, model: 'affine',
+    landmarks: { he: [[0, 0], [20, 0], [0, 30], [10, 10]], msi: [[50, 11], [49, 11], [50, 12], [80, 80]], excluded: [3] },
+    reference: { kind: 'balanced', sourceKeys: ['h', 'a'], quantile: 0.99, quantileMethod: 'linear',
+      sourceFingerprint: 'verified-original-grid-and-values', scales: { h: 7.9, a: 13.9 } },
+    fit: { rmse_px: 0.12345678901234567, max_px: 0.23456789012345678, n: 3 },
+  };
+  const before = JSON.stringify(f.project);
+  const rawBefore = Object.fromEntries(Object.entries(f.data).map(([key, values]) => [key, Buffer.from(values.buffer).toString('hex')]));
+  const zip = await c.ZipIO.exportProject(f.project, { storage: f.storage });
+  const restored = (await c.ZipIO.importZip(await zip.arrayBuffer(), { storage: f.storage })).project;
+  assert.equal(JSON.stringify(restored.world_coords.T_he_to_msi), JSON.stringify(T));
+  assert.equal(JSON.stringify(restored.alignment), JSON.stringify(f.project.alignment));
+  const state = JSON.parse(JSON.stringify(c.Cloud.stateOf(restored)));
+  const fromCloud = JSON.parse(JSON.stringify(restored));
+  fromCloud.world_coords = {}; fromCloud.alignment = {};
+  c.Cloud.applyState(fromCloud, state);
+  assert.equal(JSON.stringify(fromCloud.world_coords.T_he_to_msi), JSON.stringify(T));
+  assert.equal(JSON.stringify(fromCloud.alignment), JSON.stringify(f.project.alignment));
+  const rasters = await c.Normalization.loadRasters(restored, { storage: f.storage });
+  for (const molecule of restored.molecules) {
+    assert.equal(Buffer.from(rasters[molecule.key].values.buffer).toString('hex'), rawBefore[molecule.key]);
+  }
+  assert.equal(JSON.stringify(f.project), before, 'export/open does not migrate or alter existing saved alignment');
+});
+
 test('skipped internal-standard correction exports raw values and explicit skipped reasons without derived or absolute values', async () => {
   const c = app(), f = skippedFixture(c);
   const before = JSON.stringify(f.project);

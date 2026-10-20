@@ -15,6 +15,9 @@
     <script src="../lib/storage.js"></script>
     <script src="../lib/otsu.js"></script>
     <script src="../lib/align.js"></script>
+    <script src="../lib/alignment-reference.js"></script>
+    <script src="./alignment-modal.js"></script>
+    <link rel="stylesheet" href="./alignment-modal.css">
     <script src="../lib/msi.js"></script>
     <script src="../lib/normalization-scope.js"></script>
     <script src="../lib/roi-distribution.js"></script>
@@ -3204,7 +3207,7 @@ function loadAllImages() {
             });
 
             document.addEventListener('keydown', (e) => {
-                if (!drawingMode) return;
+                if (!drawingMode || document.querySelector('.alignment-modal')) return;
                 const inputTarget = e.target;
                 if (e.isComposing || e.keyCode === 229 || inputTarget &&
                     (inputTarget.tagName === 'INPUT' || inputTarget.tagName === 'TEXTAREA' || inputTarget.isContentEditable)) return;
@@ -3875,455 +3878,52 @@ function loadAllImages() {
     function openAlignModal(heKey, msiKey0) {
       const heImg = imageSources[heKey];
       if (!heImg || !heImg.complete || !heImg.naturalWidth) { alert('HE 画像がまだ読み込まれていません。'); return; }
-
-      const msiKeys = Object.keys(valueRasters);
-      const saved = (atlasData.alignment && atlasData.alignment[heKey]) || null;
-      const state = Object.assign(
-        Align.defaultAlignState(),
-        saved ? {
-          flip_lr: !!saved.flip_lr, flip_ud: !!saved.flip_ud,
-          scale_pct: saved.scale_pct, rotate_deg: saved.rotate_deg,
-          offx: saved.offx, offy: saved.offy,
-        } : ZipIO.stateFromT(atlasData.world_coords && atlasData.world_coords.T_he_to_msi),
-        {}
-      );
-      state.landmarks = {
-        he: (saved && saved.landmarks && saved.landmarks.he ? saved.landmarks.he.map(p => p.slice()) : []),
-        msi: (saved && saved.landmarks && saved.landmarks.msi ? saved.landmarks.msi.map(p => p.slice()) : []),
-      };
-      let autoMeta = (saved && saved.autoAligned) || null;
-      let msiKey = msiKeys.indexOf(msiKey0) >= 0 ? msiKey0 : msiKeys[0];
-      let pickMode = null;   // 'he' | 'msi' | null
-
-      const backdrop = document.createElement('div');
-      backdrop.className = 'modal-backdrop';
-      backdrop.innerHTML = `
-        <div class="modal-box">
-          <div class="flex items-center justify-between mb-3">
-            <h3 class="text-base font-semibold">重ね合わせ — ${formatDisplayName(heKey)} → MSI</h3>
-            <button class="text-gray-400 hover:text-gray-700 text-xl leading-none" data-act="close">&times;</button>
-          </div>
-
-          <div class="grid grid-cols-3 gap-3">
-            <!-- HE ペイン -->
-            <div>
-              <div class="flex items-center justify-between mb-1">
-                <span class="text-xs font-medium text-gray-700">HE (生の向き)</span>
-                <button class="text-xs px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-pick="he">対応点を打つ</button>
-              </div>
-              <div class="pick-pane" data-pane="he"><img data-img="he"></div>
-            </div>
-            <!-- MSI ペイン -->
-            <div>
-              <div class="flex items-center justify-between mb-1">
-                <span class="text-xs font-medium text-gray-700">MSI
-                  <select data-sel="msi" class="text-xs border-gray-300 rounded ml-1 py-0"></select>
-                </span>
-                <button class="text-xs px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-pick="msi">対応点を打つ</button>
-              </div>
-              <div class="pick-pane" data-pane="msi"><img data-img="msi"></div>
-            </div>
-            <!-- プレビュー -->
-            <div>
-              <div class="text-xs font-medium text-gray-700 mb-1">プレビュー (緑 = HE 輪郭)</div>
-              <div class="pick-pane"><img data-img="preview"></div>
-            </div>
-          </div>
-
-          <div class="grid grid-cols-3 gap-3 mt-3">
-            <!-- パラメータ -->
-            <div class="text-xs space-y-1">
-              <div class="font-medium text-gray-700 mb-1">変換パラメータ</div>
-              <label class="flex items-center gap-1"><input type="checkbox" data-p="flip_lr" class="h-3 w-3"> 左右反転</label>
-              <label class="flex items-center gap-1"><input type="checkbox" data-p="flip_ud" class="h-3 w-3"> 上下反転</label>
-              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">スケール</span><input type="number" step="any" data-p="scale_pct" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">%</span></div>
-              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">回転</span><input type="number" step="any" data-p="rotate_deg" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">°</span></div>
-              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">X 移動</span><input type="number" step="any" data-p="offx" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">px</span></div>
-              <div class="flex items-center gap-1"><span class="w-14 text-gray-500">Y 移動</span><input type="number" step="any" data-p="offy" class="w-24 border border-gray-300 rounded px-1 py-0.5"><span class="text-gray-400">px</span></div>
-              <div class="pt-2">
-                <button class="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 w-full" data-act="auto">自動整合 (シルエット)</button>
-              </div>
-            </div>
-
-            <!-- 対応点 -->
-            <div class="text-xs">
-              <div class="flex items-center justify-between mb-1">
-                <span class="font-medium text-gray-700">対応点 (半自動)</span>
-                <span>
-                  <button class="px-1.5 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-act="undo">1 点戻す</button>
-                  <button class="px-1.5 py-0.5 rounded border border-gray-300 hover:bg-gray-50" data-act="clear">全消去</button>
-                </span>
-              </div>
-              <div data-el="qc" class="mb-1"></div>
-              <div data-el="table" class="max-h-32 overflow-y-auto border border-gray-200 rounded"></div>
-              <button class="mt-1 w-full px-2 py-1 rounded border border-gray-300 hover:bg-gray-50" data-act="solve">対応点から解く (Solve)</button>
-            </div>
-
-            <!-- 結果 -->
-            <div class="text-xs">
-              <div class="font-medium text-gray-700 mb-1">評価</div>
-              <div data-el="report" class="text-gray-600 leading-relaxed"></div>
-            </div>
-          </div>
-
-          <div class="flex justify-end gap-2 mt-4 pt-3 border-t">
-            <button class="px-3 py-1 text-xs rounded border border-gray-300 hover:bg-gray-50" data-act="close">キャンセル</button>
-            <button class="px-3 py-1 text-xs rounded bg-blue-600 text-white hover:bg-blue-700" data-act="apply">適用して保存</button>
-          </div>
-        </div>`;
-      document.body.appendChild(backdrop);
-
-      const q = (sel) => backdrop.querySelector(sel);
-      const heImgEl = q('[data-img="he"]');
-      const msiImgEl = q('[data-img="msi"]');
-      const prevImgEl = q('[data-img="preview"]');
-      const msiSel = q('[data-sel="msi"]');
-
-      msiKeys.forEach(k => msiSel.add(new Option(formatDisplayName(k), k)));
-      msiSel.value = msiKey;
-
-      // ---- 描画 ----------------------------------------------------------
-      heImgEl.src = atlasData.images[heKey];
-
-      function msiCanvas() {
-        const vr = valueRasters[msiKey];
-        const st = imageSettings[msiKey] || {};
-        return MSIRaster.paintRasterToCanvas(vr.values, vr.W, vr.H, {
-          color: null, win: { min: st.vmin, max: st.vmax }, gamma: 0.5,
-        });
-      }
-      function refreshMsiPane() { msiImgEl.src = msiCanvas().toDataURL(); }
-
-      function umPerPxNow() {
-        const wc = atlasData.world_coords || {};
-        return wc.msi_um_per_px || null;
-      }
-
-      // HE の緑マスクは T に依存しないので 1 度だけ作って使い回す。
-      // ★ 毎回作り直すと、スライダーを 1 つ動かすたびに HE 全画素を読み直すことになり、
-      //   大きな TIFF (数千 px 角) では操作が固まる。
-      // 作業解像度も HE_MASK_MAX_EDGE 相当に落とす (プレビューの見た目には十分)。
-      let heTintCanvas = null;
-      function heTint() {
-        if (heTintCanvas) return heTintCanvas;
-        const rawW = heImg.naturalWidth, rawH = heImg.naturalHeight;
-        const k = Math.max(1, Math.max(rawW, rawH) / 1024);
-        const w = Math.max(8, Math.round(rawW / k)), h = Math.max(8, Math.round(rawH / k));
-        const tint = document.createElement('canvas');
-        tint.width = w; tint.height = h;
-        const tctx = tint.getContext('2d', { willReadFrequently: true });
-        tctx.imageSmoothingEnabled = true;
-        tctx.imageSmoothingQuality = 'high';
-        tctx.drawImage(heImg, 0, 0, w, h);
-        const d = tctx.getImageData(0, 0, w, h);
-        const px = d.data;
-        for (let i = 0; i < px.length; i += 4) {
-          const mx = Math.max(px[i], px[i + 1], px[i + 2]);
-          const mn = Math.min(px[i], px[i + 1], px[i + 2]);
-          const sat = mx ? (mx - mn) / mx : 0;
-          const on = sat > Align.HE_MASK_SAT_MIN && mx / 255 < Align.HE_MASK_VAL_MAX;
-          px[i] = 0; px[i + 1] = on ? 220 : 0; px[i + 2] = 0; px[i + 3] = 255;
-        }
-        tctx.putImageData(d, 0, 0);
-        // 生 HE ピクセル座標系に戻すための倍率を持たせておく
-        tint._sx = rawW / w; tint._sy = rawH / h;
-        heTintCanvas = tint;
-        return tint;
-      }
-
-      function refreshPreview() {
-        const vr = valueRasters[msiKey];
-        const T = Align.buildHeToMsiAffine(state);
-        const c = document.createElement('canvas');
-        c.width = vr.W; c.height = vr.H;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(msiCanvas(), 0, 0);
-        // HE を T で MSI 座標系に写して緑で重ねる
-        const tint = heTint();
-        ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
-        ctx.globalAlpha = 0.55;
-        ctx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]);
-        // tint は縮小してあるので、生 HE 座標に戻してから T に載せる
-        ctx.scale(tint._sx, tint._sy);
-        ctx.drawImage(tint, 0, 0);
-        ctx.restore();
-        prevImgEl.src = c.toDataURL();
-      }
-
-      function syncInputsFromState() {
-        backdrop.querySelectorAll('[data-p]').forEach(el => {
-          const k = el.dataset.p;
-          if (el.type === 'checkbox') el.checked = !!state[k];
-          else el.value = Number(Number(state[k]).toPrecision(8));
-        });
-      }
-
-      function renderLandmarks() {
-        for (const which of ['he', 'msi']) {
-          const pane = q(`[data-pane="${which}"]`);
-          pane.querySelectorAll('.pick-dot').forEach(n => n.remove());
-          const img = which === 'he' ? heImgEl : msiImgEl;
-          const nW = img.naturalWidth || 1, nH = img.naturalHeight || 1;
-          state.landmarks[which].forEach((p, i) => {
-            const dot = document.createElement('div');
-            dot.className = 'pick-dot';
-            dot.style.left = (p[0] / nW * 100) + '%';
-            dot.style.top = (p[1] / nH * 100) + '%';
-            dot.style.background = which === 'he' ? '#22c55e' : '#f97316';
-            dot.textContent = String(i + 1);
-            pane.appendChild(dot);
-          });
-        }
-        renderResiduals();
-      }
-
-      function renderResiduals() {
-        const T = Align.buildHeToMsiAffine(state);
-        const resid = Align.computeLandmarkResiduals(state.landmarks, T, umPerPxNow());
-        const nHe = state.landmarks.he.length, nMsi = state.landmarks.msi.length;
-        const vr = valueRasters[msiKey];
-
-        // 点の分布の良し悪し
-        const geo = Align.assessLandmarkGeometry(state.landmarks.msi, vr.W, vr.H);
-        let qc = '';
-        if (nHe !== nMsi) qc = `<span class="text-amber-700">HE ${nHe} 点 / MSI ${nMsi} 点 — 数を揃えてください</span>`;
-        else if (nHe < 3) qc = `<span class="text-red-700">${nHe} 点 — 3 点以上を推奨 (2 点では残差が必ず 0 になり誤差が測れません)</span>`;
-        else if (geo.spread < 0.33) qc = `<span class="text-amber-700">点が狭い範囲に固まっています (spread ${geo.spread.toFixed(2)}) — 外周に散らしてください</span>`;
-        else qc = `<span class="text-green-700">${nHe} 点 / 分布 ${geo.spread.toFixed(2)}</span>`;
-        q('[data-el="qc"]').innerHTML = qc;
-
-        const outlierCut = (resid && resid.n >= 3) ? resid.rmse_px * 2.5 : Infinity;
-        let html = '<table class="w-full text-[11px]"><thead class="bg-gray-50 text-gray-500"><tr>' +
-          '<th class="px-1 text-left">#</th><th class="px-1 text-right">Δ px</th><th class="px-1 text-right">Δ µm</th></tr></thead><tbody>';
-        if (resid) {
-          for (const p of resid.perPoint) {
-            const cls = p.d > outlierCut ? ' class="resid-out"' : '';
-            html += `<tr${cls}><td class="px-1">${p.i + 1}</td><td class="px-1 text-right">${p.d.toFixed(2)}</td>` +
-              `<td class="px-1 text-right">${Number.isFinite(p.dUm) ? p.dUm.toFixed(1) : '—'}</td></tr>`;
+      const projectId = currentProject?.id;
+      const contextRevision = viewerContextRevision;
+      const worldPitch = atlasData.world_coords?.msi_um_per_px;
+      const gridPitch = currentProject?.grid;
+      const msiPitch = worldPitch?.x > 0 && worldPitch?.y > 0 ? worldPitch
+        : gridPitch?.umPerPxX > 0 && gridPitch?.umPerPxY > 0 ? { x: gridPitch.umPerPxX, y: gridPitch.umPerPxY } : null;
+      try { return AlignmentModal.open({
+        heKey, msiKey0, heImg, heSrc: atlasData.images[heKey], rasters: valueRasters,
+        project: currentProject || atlasData,
+        saved: atlasData.alignment?.[heKey], worldCoords: atlasData.world_coords, msiPitch,
+        formatName: formatDisplayName,
+        save: async (T, alignment) => {
+          if (viewerContextRevision !== contextRevision || currentProject?.id !== projectId) {
+            throw new Error('保存対象が切り替わりました。再読み込みしてください。');
           }
-        }
-        html += '</tbody></table>';
-        q('[data-el="table"]').innerHTML = html;
-
-        let rep = '';
-        if (resid) {
-          rep += `<div>対応点 RMSE: <b>${resid.rmse_px.toFixed(2)} px</b>` +
-            (Number.isFinite(resid.rmse_um) ? ` (${resid.rmse_um.toFixed(1)} µm)` : '') + '</div>';
-          rep += `<div>最大: ${resid.max_px.toFixed(2)} px` +
-            (Number.isFinite(resid.max_um) ? ` (${resid.max_um.toFixed(1)} µm)` : '') + '</div>';
-        }
-        if (autoMeta) {
-          rep += `<div class="mt-1 text-gray-500">自動整合: Dice ${Number(autoMeta.dice).toFixed(4)} / ` +
-            `異方性 ${Number(autoMeta.aniso).toFixed(3)}${autoMeta.blended ? ' / 手動と合成' : ''}</div>`;
-          if (autoMeta.reliableRotation === false) {
-            rep += '<div class="text-red-700">⚠ 組織がほぼ回転対称です。この形では回転角を決められません — 対応点で確認してください。</div>';
+          const beforeAtlasWorld = atlasData.world_coords;
+          const beforeAtlasAlignment = atlasData.alignment;
+          const beforeProjectWorld = currentProject?.world_coords;
+          const beforeProjectAlignment = currentProject?.alignment;
+          const nextWorld = { ...(atlasData.world_coords || {}), T_he_to_msi: structuredClone(T) };
+          const nextAlignment = { ...(atlasData.alignment || {}), [heKey]: structuredClone(alignment) };
+          atlasData.world_coords = nextWorld;
+          atlasData.alignment = nextAlignment;
+          if (currentProject) {
+            currentProject.world_coords = nextWorld;
+            currentProject.alignment = nextAlignment;
           }
-        }
-        q('[data-el="report"]').innerHTML = rep || '<span class="text-gray-400">対応点を打つか自動整合を実行してください。</span>';
-      }
-
-      function refreshAll() { syncInputsFromState(); renderLandmarks(); refreshPreview(); }
-
-      // ---- 操作 ----------------------------------------------------------
-      backdrop.querySelectorAll('[data-p]').forEach(el => {
-        el.addEventListener('change', () => {
-          const k = el.dataset.p;
-          state[k] = el.type === 'checkbox' ? el.checked : Number(el.value);
-          autoMeta = null;
-          refreshAll();
-        });
-      });
-
-      msiSel.addEventListener('change', () => {
-        msiKey = msiSel.value;
-        refreshMsiPane();
-        // ★ setTimeout(...,0) では新しい <img> のデコードが終わっておらず、
-        //   renderLandmarks が前のラスタの naturalWidth で点を配置してしまう。
-        //   (分子ごとにグリッドが違う場合に位置がずれる)
-        if (msiImgEl.complete && msiImgEl.naturalWidth) refreshAll();
-        else msiImgEl.addEventListener('load', refreshAll, { once: true });
-      });
-
-      backdrop.querySelectorAll('[data-pick]').forEach(b => {
-        b.addEventListener('click', () => {
-          const which = b.dataset.pick;
-          pickMode = pickMode === which ? null : which;
-          backdrop.querySelectorAll('[data-pane]').forEach(p => {
-            p.classList.toggle('active', p.dataset.pane === pickMode);
-          });
-        });
-      });
-
-      for (const which of ['he', 'msi']) {
-        q(`[data-pane="${which}"]`).addEventListener('click', (ev) => {
-          if (pickMode !== which) return;
-          const img = which === 'he' ? heImgEl : msiImgEl;
-          if (!img.naturalWidth) return;
-          const r = img.getBoundingClientRect();
-          // ペインは生の向きで出しているので、表示比で割り戻すだけで生 px になる
-          const x = (ev.clientX - r.left) / Math.max(1, r.width) * img.naturalWidth;
-          const y = (ev.clientY - r.top) / Math.max(1, r.height) * img.naturalHeight;
-          state.landmarks[which].push([x, y]);
-          renderLandmarks();
-        });
-      }
-
-      q('[data-act="undo"]').addEventListener('click', () => {
-        // 数が多いほうを 1 点戻す (打ち間違いは必ず片側だけ多い状態で気づく)
-        const he = state.landmarks.he, msi = state.landmarks.msi;
-        if (he.length > msi.length) he.pop();
-        else if (msi.length > he.length) msi.pop();
-        else { he.pop(); msi.pop(); }
-        renderLandmarks();
-      });
-      q('[data-act="clear"]').addEventListener('click', () => {
-        state.landmarks.he = []; state.landmarks.msi = [];
-        renderLandmarks();
-      });
-
-      q('[data-act="solve"]').addEventListener('click', () => {
-        try {
-          const fit = Align.solveAlignFromLandmarks(state.landmarks, state.flip_lr, state.flip_ud);
-          if (!fit) throw new Error('対応点が 2 組以上必要です');
-          Object.assign(state, fit);
-          autoMeta = null;
-          refreshAll();
-        } catch (e) {
-          alert('Solve に失敗しました: ' + e.message);
-        }
-      });
-
-      q('[data-act="auto"]').addEventListener('click', async () => {
-        const btn = q('[data-act="auto"]');
-        btn.disabled = true;
-        const prev = btn.textContent;
-        btn.textContent = '組織シルエットを抽出中…';
-        await new Promise(r => requestAnimationFrame(() => r()));
-        try {
-          const heM = Align.heTissueMask(heImg);
-          if (!heM) throw new Error('HE から組織領域を抽出できませんでした (背景との彩度差が小さい可能性があります)');
-          const vr = valueRasters[msiKey];
-          const msiM = Align.msiTissueMaskFromValues(vr.values, vr.W, vr.H);
-          if (!msiM) throw new Error('MSI から組織領域を抽出できませんでした');
-
-          // 両側の µm/px が判っていればスケールは自由変数ではない
-          const wc = atlasData.world_coords || {};
-          const heUm = wc.he_um_per_px;
-          const msiUm = wc.msi_um_per_px;
-          const heMean = heUm && heUm.x > 0 && heUm.y > 0 ? (Number(heUm.x) + Number(heUm.y)) / 2 : 0;
-          const msiMean = msiUm && msiUm.x > 0 && msiUm.y > 0 ? (Number(msiUm.x) + Number(msiUm.y)) / 2 : 0;
-          const lockScale = (heMean > 0 && msiMean > 0) ? (heMean / msiMean) : 0;
-
-          const auto = Align.autoAlignSilhouette(heM, msiM, lockScale ? { lockScale: lockScale } : null);
-          if (!auto) throw new Error('シルエットからの推定に失敗しました');
-
-          const Tcur = Align.buildHeToMsiAffine(state);
-          const Tauto = Align.buildHeToMsiAffine(auto.state);
-          const dCur = Align.transformDisagreementPx(heM, Tcur, Tauto);
-
-          // 手動解があれば逆分散でブレンドする
-          let hybrid = null, sigMan = null;
-          const manual = Align.solveAlignFromLandmarks(state.landmarks, state.flip_lr, state.flip_ud);
-          if (manual) {
-            const manResid = Align.computeLandmarkResiduals(state.landmarks, Align.buildHeToMsiAffine(manual), umPerPxNow());
-            sigMan = Align.estimateLandmarkFitSigmaPx(manResid);
-            const dManAuto = Align.transformDisagreementPx(heM, Align.buildHeToMsiAffine(manual), Tauto);
-            if (sigMan) {
-              const wMan = 1 / (sigMan * sigMan);
-              const wAuto = 1 / (auto.sigmaPx * auto.sigmaPx);
-              // ★ 一貫性チェック: 手動解と自動解が合成不確かさの 3 倍より離れていたら
-              //   どちらかが壊れている。平均せず両方見せる。
-              const tol = 3 * Math.sqrt(sigMan * sigMan + auto.sigmaPx * auto.sigmaPx);
-              if (Number.isFinite(dManAuto) && dManAuto <= tol) {
-                hybrid = Align.blendAlignStates(manual, wMan, auto.state, wAuto);
-              }
-            }
-          }
-
-          let html = `<div class="border border-gray-200 rounded p-2 bg-gray-50">` +
-            `<div>Dice <b>${auto.dice.toFixed(4)}</b> / 評価 ${auto.evals} 回</div>` +
-            `<div>回転 ${auto.state.rotate_deg.toFixed(2)}° / スケール ${auto.state.scale_pct.toFixed(2)}%` +
-            (auto.scaleLocked ? ' <span class="text-gray-500">(µm/px から固定)</span>' : '') + '</div>' +
-            `<div>現在値との差 ${Number.isFinite(dCur) ? dCur.toFixed(2) + ' px' : '—'}</div>` +
-            `<div>期待誤差 ±${auto.sigmaPx.toFixed(1)} px</div>`;
-          if (!auto.reliableRotation) {
-            html += `<div class="text-red-700 mt-1">⚠ 異方性 ${auto.aniso.toFixed(3)} — 組織がほぼ回転対称で、` +
-              `Dice はどの角度でもほぼ同じ値になります。回転角は信用できません。</div>`;
-          }
-          if (auto.scaleLocked && Math.abs(auto.areaScaleRatio - 1) > 0.05) {
-            html += `<div class="text-amber-700 mt-1">⚠ 面積比から出るスケールが固定値と ` +
-              `${((auto.areaScaleRatio - 1) * 100).toFixed(1)}% ずれています。µm/px の設定を確認してください。</div>`;
-          }
-          html += '<div class="mt-2 flex gap-1">' +
-            '<button class="px-2 py-0.5 rounded border border-blue-300 bg-white hover:bg-blue-50" data-auto-apply="auto">自動解を適用</button>';
-          if (hybrid) html += '<button class="px-2 py-0.5 rounded border border-blue-300 bg-white hover:bg-blue-50" data-auto-apply="hybrid">手動と合成して適用</button>';
-          html += '</div></div>';
-          q('[data-el="report"]').innerHTML = html;
-
-          q('[data-el="report"]').querySelectorAll('[data-auto-apply]').forEach(b => {
-            b.addEventListener('click', () => {
-              const which = b.getAttribute('data-auto-apply');
-              const chosen = which === 'hybrid' && hybrid ? hybrid : auto.state;
-              Object.assign(state, chosen);
-              autoMeta = {
-                method: 'silhouette-v1', dice: auto.dice, aniso: auto.aniso,
-                reliableRotation: auto.reliableRotation, scaleLocked: auto.scaleLocked,
-                sigmaPx: auto.sigmaPx, ts: Date.now(),
-              };
-              if (which === 'hybrid') autoMeta.blended = true;
-              refreshAll();
-            });
-          });
-        } catch (e) {
-          q('[data-el="report"]').innerHTML = '<div class="text-red-700">' + e.message + '</div>';
-        } finally {
-          btn.disabled = false;
-          btn.textContent = prev;
-        }
-      });
-
-      backdrop.querySelectorAll('[data-act="close"]').forEach(b => {
-        b.addEventListener('click', () => backdrop.remove());
-      });
-      backdrop.addEventListener('click', (e) => { if (e.target === backdrop) backdrop.remove(); });
-
-      q('[data-act="apply"]').addEventListener('click', async () => {
-        const T = Align.buildHeToMsiAffine(state);
-        atlasData.world_coords = atlasData.world_coords || {};
-        atlasData.world_coords.T_he_to_msi = T;
-        atlasData.alignment = atlasData.alignment || {};
-        atlasData.alignment[heKey] = {
-          flip_lr: state.flip_lr, flip_ud: state.flip_ud,
-          scale_pct: state.scale_pct, rotate_deg: state.rotate_deg,
-          offx: state.offx, offy: state.offy,
-          landmarks: { he: state.landmarks.he.map(p => p.slice()), msi: state.landmarks.msi.map(p => p.slice()) },
-          ...(autoMeta ? { autoAligned: autoMeta } : {}),
-        };
-        if (currentProject) {
-          currentProject.world_coords = atlasData.world_coords;
-          currentProject.alignment = atlasData.alignment;
           try {
-            await saveViewerProject();
-          } catch (err) {
-            // ★ ここで握りつぶすとモーダルが閉じないまま固まり、
-            //   ユーザーは保存できたと思い込んでしまう。
-            console.error('[align] 保存に失敗:', err);
-            alert('位置合わせの保存に失敗しました: ' + err.message +
-                  '\n(表示には反映しますが、保存されていません)');
+            if (currentProject) await saveViewerProject();
+          } catch (error) {
+            // Failed persistence leaves the draft in the dialog and the displayed
+            // project unchanged. Preserve the existing save/conflict guards.
+            if (viewerContextRevision === contextRevision && currentProject?.id === projectId) {
+              if (atlasData.world_coords === nextWorld) atlasData.world_coords = beforeAtlasWorld;
+              if (atlasData.alignment === nextAlignment) atlasData.alignment = beforeAtlasAlignment;
+              if (currentProject?.world_coords === nextWorld) currentProject.world_coords = beforeProjectWorld;
+              if (currentProject?.alignment === nextAlignment) currentProject.alignment = beforeProjectAlignment;
+            }
+            throw error;
           }
-        }
-        backdrop.remove();
-        renderCompositeImage();
-      });
-
-      refreshMsiPane();
-      // 画像の読み込みが終わってから点とプレビューを描く
-      const ready = [];
-      for (const im of [heImgEl, msiImgEl]) {
-        if (!im.complete || !im.naturalWidth) ready.push(new Promise(r => im.addEventListener('load', r, { once: true })));
+          renderCompositeImage();
+        },
+      }); } catch (error) {
+        alert('位置合わせを開けません: ' + error.message);
+        return null;
       }
-      Promise.all(ready).then(refreshAll);
     }
 
     // =====================================================================
