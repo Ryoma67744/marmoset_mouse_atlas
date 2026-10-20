@@ -27,6 +27,13 @@
       <div class="control-block"><label for="value-mode">表示値</label><select id="value-mode"><option value="raw">原値</option><option value="normalized">補正値</option></select><p id="value-mode-help" class="hint" hidden></p></div>
       <div class="control-block"><span class="control-label">色の範囲</span><p class="fixed-value">全切片共通 · 分子ごと</p><p id="range-note" class="hint">ONの切片で色範囲を揃えます。OFFにすると残りの切片で再計算します。</p></div>
       <div class="control-block"><label for="opacity">不透明度 <output id="opacity-value">55%</output></label><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.55"></div>
+      <div class="control-block section-outline-controls">
+        <label class="toggle-label" for="section-outline-visible"><span>切片の外周</span><input id="section-outline-visible" type="checkbox" checked aria-describedby="section-outline-help section-outline-status"></label>
+        <label for="section-outline-color" class="outline-color-label"><span>外周の色</span><input id="section-outline-color" type="color" value="#ff3b30"></label>
+        <label for="section-outline-opacity">外周の不透明度 <output id="section-outline-opacity-value">80%</output></label><input id="section-outline-opacity" type="range" min="0.1" max="1" step="0.01" value="0.8">
+        <p id="section-outline-help" class="hint">測定画素の範囲から外周を表示。分子・閾値・ROI選択には依存しません。</p>
+        <p id="section-outline-status" class="hint" role="status" aria-live="polite"></p>
+      </div>
       <div class="control-block roi-controls">
         <label class="toggle-label" for="roi-visible"><span>ROIを3Dに表示</span><input id="roi-visible" type="checkbox" checked></label>
         <label class="toggle-label" for="roi-labels"><span>領域名（選択切片）</span><input id="roi-labels" type="checkbox" checked></label>
@@ -131,6 +138,7 @@
   <script src="../lib/project-sync.js"></script>
   <script src="../lib/section-display.js"></script>
   <script src="../lib/stack3d.js"></script>
+  <script src="../lib/section-outline.js"></script>
   <script src="../lib/roi-distribution.js"></script>
   <script src="../lib/intensity-axis.js"></script>
   <script src="../lib/intensity-boxplot.js"></script>
@@ -140,6 +148,7 @@
   <script src="vendor/three-orbit.min.js"></script>
   <script src="brain-context.js"></script>
   <script src="roi.js"></script>
+  <script src="section-outline.js"></script>
   <script src="renderer.js"></script>
   <script src="panel-resize.js"></script>
   <script src="panel-collapse.js"></script>
