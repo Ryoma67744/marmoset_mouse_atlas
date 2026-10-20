@@ -114,6 +114,7 @@ test('landmark solve compares models, preserves current transform until adoption
     assert.equal(await h.page.locator('[data-p="offx"]').inputValue(), '10');
     // The selected affine candidate is the one with effectively zero residual.
     await candidates.locator('.align-candidate').filter({ hasText: /アフィン/ }).locator('[data-candidate-apply]').click();
+    await h.page.waitForFunction(() => /RMSE 0\.00 px/.test(document.querySelector('[data-el="report"]').textContent));
     assert.match(await h.page.locator('[data-el="report"]').textContent(), /0\.00\s*px/);
     assert.ok(await h.page.locator('[data-pane="preview"] svg line').count() >= 6);
     await h.page.locator('[data-act="apply"]').click();
