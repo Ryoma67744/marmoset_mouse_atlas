@@ -1566,19 +1566,26 @@
             const he = p.images && p.images.HE_Stain ? 'あり' : 'なし';
             const hasAtlas = !!(p.images && p.images[ATLAS_KEY]);
             const hasImmuno = !!(p.images && p.images[IMMUNO_KEY]);
-            const aligned = p.world_coords && p.world_coords.T_he_to_msi
-                ? '<span class="text-green-700">整合済み</span>' : '<span class="text-gray-400">未整合</span>';
+            const alignmentLabel = p.atlas?.species === 'mouse' ? 'HE位置合わせ: ' : '';
+            const aligned = alignmentLabel && he === 'なし'
+                ? '<span class="text-gray-400">HE位置合わせ: 対象画像なし</span>'
+                : p.world_coords && p.world_coords.T_he_to_msi
+                    ? '<span class="text-green-700">' + alignmentLabel + '整合済み</span>'
+                    : '<span class="text-gray-400">' + alignmentLabel + '未整合</span>';
             const norm = p.normalization || p.__row && p.__row.state && p.__row.state.normalization;
+            const pixelRatioNormalization = Normalization.isPixelRatioProfile(norm);
             const skippedNormalization = Normalization.isSkippedProfile(norm);
             const cloudNorm = p.__row && p.__row.state && p.__row.state.normalization;
             const group = NormalizationScope.buildGroups(cache.projects, cache.folders).groups.find(g => g.projectIds.includes(p.id));
             const scopeState = NormalizationScope.assess(Object.assign({}, p, {normalization:norm}), group || null);
-            const scopeNote = norm && norm.scope ? ' / ' + (Array.isArray(norm.scope.folderPath) ? norm.scope.folderPath.join(' / ') : '所属記録なし') + ' / ' + scopeState.reason : group ? ' / このグループでは未設定' : ' / 第2階層の対象外';
-            const profileLabel = norm && norm.schemaVersion === 3
+            const scopeNote = pixelRatioNormalization ? ' / 同一画素の内部標準を使用（フォルダー参照なし）'
+                : norm && norm.scope ? ' / ' + (Array.isArray(norm.scope.folderPath) ? norm.scope.folderPath.join(' / ') : '所属記録なし') + ' / ' + scopeState.reason : group ? ' / このグループでは未設定' : ' / 第2階層の対象外';
+            const profileLabel = pixelRatioNormalization ? '5-HT-d4画素比 / ' + (norm.targets || []).length + '分子'
+                : norm && norm.schemaVersion === 3
                 ? (norm.mode === 'simple' ? '簡単設定' : '詳細設定') + ' / ' + (norm.targets || []).length + '分子' + (norm.batchId ? ' / ' + norm.batchId : '')
                 : norm ? norm.id + ' rev.' + norm.revision + ' / ' + norm.batchId : '';
             const profileNote = (norm ? ((skippedNormalization ? '未補正: 内部標準なし（補正をスキップ）' : '補正: ' + profileLabel) +
-                (norm.invalidated ? ' — 再設定が必要' : skippedNormalization ? ' — 生値表示' : norm.quality === 'validated' ? ' — 検証設定' : norm.schemaVersion === 3 ? ' — 相対補正' : ' — 暫定') +
+                (norm.invalidated ? ' — 再設定が必要' : skippedNormalization ? ' — 生値表示' : pixelRatioNormalization ? ' — 相対信号比（濃度換算なし）' : norm.quality === 'validated' ? ' — 検証設定' : norm.schemaVersion === 3 ? ' — 相対補正' : ' — 暫定') +
                 (cloudOn() && (!cloudNorm || norm.id !== cloudNorm.id || norm.revision !== cloudNorm.revision) ? ' / この設定はクラウド未同期' : '')) : '補正: 未設定') + scopeNote +
                 (pendingFolderChanges[p.id] ? ' / フォルダー同期未完了' : '');
             row.innerHTML =
