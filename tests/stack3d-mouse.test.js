@@ -61,6 +61,53 @@ test('pixel geometry preserves missing physical calibration and applies the save
   assert.throws(() => c.Stack3D.geometry({ grid: p.grid }), /画素サイズ/, 'legacy missing-pitch validation remains strict');
 });
 
+test('registered pixel poses are independent of saved Viewer rotations without rewriting previews or metadata', () => {
+  const c = app(), p = project(15, 'C025');
+  p.grid.W = 34; p.grid.H = 55;
+  p.stack3d = { coordinateMode: 'pixel', offsetXPx: -0.020565, offsetYPx: 0.678034, rotationDeg: -91.393457 };
+  p.world_coords.T_he_to_msi = [[0.04, 0.01, 1], [-0.01, 0.04, 2], [0, 0, 1]];
+  const expected = { x: -0.020565, y: 0.678034, angleDeg: -91.393457 };
+  for (const rotation of [
+    { all: 0, msi: 0, he: 0 },
+    { all: 90, msi: 0, he: 0 },
+    { all: 0, msi: -90, he: 180 },
+    { all: -90, msi: 180, he: -90 },
+    { all: 17.5, msi: -42.25, he: 81.75 }
+  ]) {
+    p.rotation = rotation;
+    const before = plain(p), d = c.Stack3D.geometry(p);
+    assert.deepEqual(plain(c.Stack3D.scenePlacement(d)), expected);
+    assert.deepEqual(plain(c.Stack3D.scenePlacement(d, true)), expected,
+      'HE has already been registered in raw MSI coordinates');
+    assert.equal(d.angleDeg, rotation.all + rotation.msi, '2D MSI preview retains saved orientation');
+    assert.equal(d.heAngleDeg, rotation.all + rotation.he, '2D HE preview retains saved orientation');
+    // Reloading existing saved data must fix the pose without a data migration.
+    assert.deepEqual(plain(c.Stack3D.scenePlacement(c.Stack3D.geometry(plain(p)))), expected);
+    assert.deepEqual(plain(p), before);
+  }
+  const d = c.Stack3D.geometry(p);
+  assert.deepEqual(plain(c.Stack3D.scenePlacement({ ...d, offsetXPx: 4, offsetYPx: -5, rotationDeg: 12 })),
+    { x: 4, y: -5, angleDeg: 12 }, 'explicit 3D placement remains effective');
+  delete p.stack3d;
+  assert.deepEqual(plain(c.Stack3D.scenePlacement(c.Stack3D.geometry(p))), { x: 0, y: 0, angleDeg: 0 },
+    'a missing pixel placement starts in raw coordinates, not the Viewer orientation');
+});
+
+test('physical series retain legacy Viewer orientation and physical placement conventions', () => {
+  const c = app();
+  const p = { grid: { W: 4, H: 3, umPerPxX: 130, umPerPxY: 75 },
+    rotation: { all: 90, msi: 20, he: -35 },
+    stack3d: { offsetXUm: 1250, offsetYUm: -2500, rotationDeg: 17 } };
+  const before = plain(p);
+  for (const atlas of [undefined, { seriesId: 'physical-series', species: 'marmoset', coordinateMode: 'physical' }]) {
+    const d = c.Stack3D.geometry({ ...p, atlas });
+    assert.deepEqual(plain(c.Stack3D.scenePlacement(d)), { x: 1.25, y: 2.5, angleDeg: 53 });
+    assert.deepEqual(plain(c.Stack3D.scenePlacement(d, true)), { x: 1.25, y: 2.5, angleDeg: 108 });
+    close(d.sceneWidth, 0.52); close(d.sceneHeight, 0.225);
+  }
+  assert.deepEqual(plain(p), before);
+});
+
 test('six explicitly mapped DPP channels remain independent, including the labelled serotonin', async () => {
   const c = app(), p = project(), rasters = {}, values = [0, 1, 2, NaN, 4, -1, 6, NaN, 8, 9, 10, NaN];
   for (const [index, analyteId] of Array.from(c.Stack3D.MOUSE_ANALYTES).entries()) {

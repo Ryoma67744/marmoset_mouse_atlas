@@ -214,7 +214,8 @@
       updateVisibility();
     }
     // Sources must already contain the saved HE→MSI affine transform, in the
-    // unrotated MSI bounds. The renderer applies the saved HE rotation itself.
+    // unrotated MSI bounds. scenePlacement supplies the registered pixel pose
+    // or the legacy physical-series HE rotation.
     // Keep each source canvas alive while its texture is installed.
     function updateHeTextures(textures) {
       if (disposed) return;
