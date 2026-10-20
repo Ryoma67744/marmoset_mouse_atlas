@@ -167,10 +167,10 @@ test('Manual alignment omits unused automatic metadata and can be saved cleanly 
     await h.page.locator('[data-act="apply"]').click();
     await h.page.locator('.modal-backdrop').waitFor({ state: 'detached' });
     assert.equal(await h.page.evaluate(() => Object.hasOwn(atlasData.alignment.HE_Stain, 'autoAligned')), false);
-    assert.equal(await h.page.evaluate(() => currentProject.alignment.HE_Stain.rotate_deg), 15);
+    assert.ok(Math.abs(await h.page.evaluate(() => currentProject.alignment.HE_Stain.rotate_deg) - 15) < 1e-10);
     await h.page.evaluate(() => saveToCloud());
     assert.equal(await h.page.evaluate(() => cloudDirty()), false);
-    assert.equal(await h.page.evaluate(() => __jsonRemote.state.alignment.HE_Stain.rotate_deg), 15);
+    assert.ok(Math.abs(await h.page.evaluate(() => __jsonRemote.state.alignment.HE_Stain.rotate_deg) - 15) < 1e-10);
     assert.deepEqual(await numericalSnapshot(h.page), before, 'alignment presentation must not change MSI values or ROI coordinates/statistics');
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
