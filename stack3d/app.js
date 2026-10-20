@@ -283,7 +283,8 @@
   }
   function syncSeriesRestrictions() {
     const pixel = pixelSeries();
-    $('analysis-panel').hidden = pixel; $('analysis-unavailable').hidden = !pixel;
+    // Signal distributions use measured pixels and do not require physical pitch.
+    $('analysis-panel').hidden = false;
     $('batch-alignment-details').hidden = pixel; $('placement-details').hidden = pixel; $('pixel-placement-note').hidden = !pixel;
     $('brain-visible').disabled = busy || !sections.length || pixel;
     if (pixel) $('brain-visible').checked = false;
@@ -369,7 +370,7 @@
       configureSeriesView();
       loadedFolderFingerprint = JSON.stringify(source.folders);
       if (!sections.length) {
-        if (!pixelSeries()) analysisUI?.setSections();
+        analysisUI?.setSections();
         renderer?.setSections([]); $('section-list').replaceChildren(); replacePreview($('section-preview'), null, '切片を選択してください');
         $('section-name').textContent = '—'; $('section-metadata').textContent = ''; $('section-status').textContent = '';
         emptyState(source.blocked || (source.projects.length ? '切片を読み込めませんでした' : 'この系列に表示する切片がありません'));
@@ -391,7 +392,7 @@
       updateLabels(); setRange(); buildList(); await repaint();
       if (generation !== loadGeneration) return;
       $('scene-message').hidden = true; setBusy(false); if (!renderer) $('save-image').disabled = true; selectSection(selected);
-      if (!pixelSeries()) analysisUI?.setSections();
+      analysisUI?.setSections();
       const issues = [...source.notices, ...loaded.errors.map(error => `${error.name}: ${error.message}`)];
       if (issues.length) notice(issues.join(' / '), true);
       if (!unsubscribe && ProjectStorage.subscribeChanges) unsubscribe = ProjectStorage.subscribeChanges(onSourceChange);
@@ -540,7 +541,7 @@
     $('previous-section').disabled = selected === 0; $('next-section').disabled = selected === sections.length - 1;
     $('save-cloud').hidden = !(global.Cloud?.configured?.() && global.Cloud?.signedIn?.());
     syncAlignmentControls(); updateList(); refreshPreview().catch(error => notice(error.message)); saveView();
-    if (!pixelSeries()) analysisUI?.selectionChanged();
+    analysisUI?.selectionChanged();
   }
   function setRange() {
     if (!sections.length) return;
@@ -875,9 +876,9 @@
   }
   $('channel-group').addEventListener('change', event => {
     if (!event.target.matches('input[name=channel]')) return;
-    requestRepaint(); if (!pixelSeries()) analysisUI?.valueModeChanged();
+    requestRepaint(); analysisUI?.valueModeChanged();
   });
-  $('value-mode').addEventListener('change', () => { requestRepaint(); if (!pixelSeries()) analysisUI?.valueModeChanged(); });
+  $('value-mode').addEventListener('change', () => { requestRepaint(); analysisUI?.valueModeChanged(); });
   $('series-select').addEventListener('change', () => {
     if (busy || saving || $('series-select').value === activeSeries) return;
     if (dirtyPlacements.size && !global.confirm('未保存の3D配置を破棄して系列を切り替えますか？')) { $('series-select').value = activeSeries; return; }
@@ -943,7 +944,7 @@
   }
   global.AppVersion?.paint?.();
   analysisUI = Stack3DAnalysisUI.create({
-    root: $('analysis-panel'), getSections: () => pixelSeries() ? [] : sections, getSelected: () => selected, getOptions: options,
+    root: $('analysis-panel'), getSections: () => sections, getSeries: activeSeriesInfo, getSelected: () => selected, getOptions: options,
     getDisplayedSectionIds: () => sections.filter((section, index) => index >= Number($('range-start').value) - 1 &&
       index <= Number($('range-end').value) - 1 && !hiddenSectionIds.has(section.id)).map(section => section.id),
     onSelect: id => { const index = sections.findIndex(section => section.id === id); if (index >= 0) selectSection(index); }, session

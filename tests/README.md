@@ -76,6 +76,28 @@ pixel counts remain in the statistics table. The shared 2D renderer keeps its
 existing labels and count display by default. Regression coverage checks
 scientific-result immutability and correct stable-ID selection after sorting.
 
+The v2.29 mouse analysis compares every loaded section using all measured image
+positions, without requiring an anatomical ROI or physical pixel pitch. Each
+molecule contributes its own finite values (including measured zeros); grid
+padding and missing values are never zero-filled. Raw mode offers all six DPP
+channels. Corrected mode offers the five biological targets divided by their
+same-pixel Serotonin-d4-DPP signal, accepting only finite positive denominators.
+The internal standard itself remains raw QC only.
+
+Mouse comparisons retain every loaded section independently of 3D visibility,
+thresholds, molecular checkboxes and slice selection. Graphs and tables use
+median-descending presentation order with confirmed-number ties and stable-ID
+selection. Analysis settings are stored per series; legacy settings migrate
+only to the legacy marmoset series. Schema-4 pixel ratios have a dedicated
+compatibility check for dataset identity and calculation protocol, without a
+fabricated shared reference group or equal per-section fingerprints. Existing
+ROI-based reference-group checks remain in force.
+
+Synthetic tests cover 48 sections, sparse rasters, molecule-specific missing
+values, invalid standards, incompatible profiles, cancellation, source
+immutability and cross-series UI restoration. Private research ZIPs are used
+only for local validation and are never committed as fixtures.
+
 The v2.21.1 action regressions cover overlapping cloud/ZIP/PNG/Otsu operations,
 authentication changes, bounded cloud requests and unknown write outcomes.
 MSI-only rotation uses one transform for images, ROI outlines, picking and

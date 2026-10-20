@@ -84,8 +84,8 @@ test('mouse series keeps all 48 rigid poses and six channels separate from legac
     assert.ok(Math.abs(stats.placements[14].rotationDeg + 91.393457) < 1e-8);
     assert.deepEqual(stats.placements[14].position.slice(0, 2), [-.020565, .678034]);
     assert.equal(await page.locator('#brain-visible').isDisabled(), true);
-    assert.equal(await page.locator('#analysis-panel').isVisible(), false);
-    assert.equal(await page.locator('#analysis-unavailable').isVisible(), true);
+    assert.equal(await page.locator('#analysis-panel').isVisible(), true);
+    assert.equal(await page.locator('#analysis-unavailable').count(), 0);
     assert.equal(await page.locator('#placement-details').isVisible(), false);
     assert.equal(await page.locator('#batch-calculate').isDisabled(), true);
     assert.match(await page.locator('#direction-label').innerText(), /切片番号 1 → 48/);
