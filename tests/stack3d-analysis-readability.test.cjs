@@ -57,6 +57,9 @@ test('molecule tabs, automatic axes and minimized toolbar change presentation on
     await seedAnalysisStack(h, { width: 125, height: 106 });
     const source = await scientificDigest(page);
     await page.goto(h.baseURL + '/stack3d/index.html'); await readyAnalysisStack(page);
+    // Keep the height-growth regression on the stacked dock. In a full-height
+    // side panel the chart can already be at its maximum height before minimizing.
+    await page.locator('#analysis-layout-toggle').click(); await paint(page);
     await pooledSubset(page);
     // Leave an unapplied edit: compact summary must describe the actual result.
     await page.locator('#analysis-range').fill('25-30');
