@@ -154,7 +154,7 @@
     if (busy || !sections.length || sections.some(section => Stack3D.seriesOf(section).id !== activeSeries)) return;
     session.set(viewKey(), { ids: sections.map(section => section.id), selectedId: sections[selected]?.id, options: options(),
       opacity: finite($('opacity').value, 0.55), spacing: finite($('spacing').value, DEFAULT_SPACING), spacingDefaultsVersion: SPACING_DEFAULTS_VERSION,
-      roi: roiOptions(), brain: brainOptions(),
+      roi: roiOptions(), brain: brainOptions(), sectionOutlines: sectionOutlineOptions(),
       range: [finite($('range-start').value, 1), finite($('range-end').value, sections.length)],
       hiddenSectionIds: [...hiddenSectionIds], camera: renderer?.getView(), previewKind,
       ...(mouseRatioSeries() ? { mouseRatioDisplayVersion: MOUSE_RATIO_DISPLAY_VERSION } : {}) });
@@ -187,6 +187,9 @@
     setRoiSelection(Array.isArray(savedRegions) ? savedRegions : savedRegions === null ? null : legacyRegion ? [legacyRegion] : null);
     $('brain-visible').checked = view.brain?.visible === true;
     $('brain-opacity').value = Math.max(0.02, Math.min(0.35, finite(view.brain?.opacity, 0.12)));
+    $('section-outline-visible').checked = view.sectionOutlines?.visible !== false;
+    $('section-outline-color').value = /^#[0-9a-f]{6}$/i.test(view.sectionOutlines?.color || '') ? view.sectionOutlines.color : '#ff3b30';
+    $('section-outline-opacity').value = Math.max(0.1, Math.min(1, finite(view.sectionOutlines?.opacity, 0.8)));
     if (Array.isArray(view.range)) { $('range-start').value = view.range[0]; $('range-end').value = view.range[1]; }
     selected = Math.max(0, sections.findIndex(section => section.id === view.selectedId));
     previewKind = ['MSI', 'HE_Stain', 'ATLAS'].includes(view.previewKind) ? view.previewKind : 'MSI';
@@ -259,6 +262,7 @@
     $('value-mode').querySelector('[value="normalized"]').textContent = mouseRatioSeries() ? '5-HT-d4補正 (相対比)' : '補正値';
     $('roi-visible').checked = true; $('roi-labels').checked = true; $('brain-visible').checked = false;
     $('brain-opacity').value = '0.12'; previewKind = 'MSI'; restoredCamera = null;
+    $('section-outline-visible').checked = true; $('section-outline-color').value = '#ff3b30'; $('section-outline-opacity').value = '0.8';
     $('section-search').value = ''; $('section-search').placeholder = pixel ? '切片番号・C025…' : 'Cor_…';
     $('direction-label').textContent = pixel ? `切片番号 1 → ${sections.length}（解剖学的方向は未指定）` : '小脳側 → 嗅球側（初期視点）';
     $('scrubber-hint').textContent = pixel ? '表示：1番 ～ 選択した切片番号' : '表示：小脳側 ～ 選択断面';
@@ -289,6 +293,7 @@
     $('brain-visible').disabled = busy || !sections.length || pixel;
     if (pixel) $('brain-visible').checked = false;
     $('brain-opacity').disabled = busy || !sections.length || pixel || !$('brain-visible').checked;
+    syncSectionOutlineControls();
     syncRatioControls();
   }
   async function sourceProjects(progress) {
@@ -387,6 +392,7 @@
       renderer?.setSections(sections); renderer?.setHiddenSections(hiddenSectionIds);
       renderer?.setSpacing(finite($('spacing').value, defaultSpacing())); renderer?.setOpacity(finite($('opacity').value, 0.55));
       renderer?.setHeOverlay({ visible: false }); renderer?.setRoiOverlay(roiOptions()); renderer?.setBrainContext(brainOptions());
+      renderer?.setSectionOutlines(sectionOutlineOptions());
       if (restoredCamera) { renderer?.setView(restoredCamera); restoredCamera = null; }
       else renderer?.resetView();
       updateLabels(); setRange(); buildList(); await repaint();
@@ -410,9 +416,25 @@
     $('brain-opacity-value').textContent = Math.round(finite($('brain-opacity').value, 0.12) * 100) + '%';
     $('brain-opacity').disabled = busy || !sections.length || pixelSeries() || !$('brain-visible').checked;
     $('brain-context-note').hidden = !$('brain-visible').checked || !sections.length || !renderer;
+    syncSectionOutlineControls();
     for (const button of document.querySelectorAll('[data-preview]')) button.setAttribute('aria-pressed', String(button.dataset.preview === previewKind));
   }
   function brainOptions() { return { visible: !pixelSeries() && $('brain-visible').checked, opacity: finite($('brain-opacity').value, 0.12) }; }
+  function sectionOutlineOptions() {
+    return { visible: $('section-outline-visible').checked, color: $('section-outline-color').value,
+      opacity: finite($('section-outline-opacity').value, 0.8) };
+  }
+  function syncSectionOutlineControls() {
+    const inactive = busy || !sections.length || !$('section-outline-visible').checked;
+    $('section-outline-color').disabled = inactive; $('section-outline-opacity').disabled = inactive;
+    $('section-outline-opacity-value').textContent = Math.round(finite($('section-outline-opacity').value, 0.8) * 100) + '%';
+    const stats = renderer?.getStats().sectionOutlines, available = stats?.availableCount || 0;
+    $('section-outline-status').textContent = !sections.length ? '表示する切片がありません。'
+      : !stats ? '外周を準備しています。'
+      : !available ? '外周を取得できません。測定範囲の境界が不明な切片には外周を表示しません。'
+      : `外周を取得 ${available} / ${sections.length}切片 · 表示 ${stats.visibleCount}切片` +
+        (available < sections.length ? '。境界が不明な切片には外周を表示しません。' : '');
+  }
   function roiOptions() { return { visible: $('roi-visible').checked, labelsVisible: $('roi-labels').checked, regions: roiRegions === null ? null : [...roiRegions] }; }
   function roiInputs() { return Array.from($('roi-region-list').querySelectorAll('input[name=roi-region]')); }
   function setRoiSelection(regions) {
@@ -503,6 +525,7 @@
     const count = sections.length - hiddenSectionIds.size;
     $('visibility-status').textContent = count ? `ON ${count} / ${sections.length}切片 · OFF ${hiddenSectionIds.size}` : 'ON 0切片 · 全切片がOFFです。チェックを入れると再表示できます。';
     $('enable-all-sections').disabled = busy || !hiddenSectionIds.size;
+    syncSectionOutlineControls();
   }
   function visibilityChanged() {
     // Invalidate BOTH raw and corrected display windows. Stored normalization
@@ -547,7 +570,7 @@
     if (!sections.length) return;
     const start = Math.max(1, Math.min(sections.length, Math.round(finite($('range-start').value, 1))));
     const end = Math.max(start, Math.min(sections.length, Math.round(finite($('range-end').value, sections.length))));
-    $('range-start').value = start; $('range-end').value = end; renderer?.setRange(start - 1, end - 1); saveView();
+    $('range-start').value = start; $('range-end').value = end; renderer?.setRange(start - 1, end - 1); syncSectionOutlineControls(); saveView();
   }
   function previewScale(section, maxSize) {
     const pitchX = section.previewPitchX ?? section.umPerPxX, pitchY = section.previewPitchY ?? section.umPerPxY;
@@ -900,6 +923,9 @@
   $('roi-select-all').addEventListener('click', () => roiSelectionChanged(roiInputs().map(input => input.value)));
   $('roi-clear-all').addEventListener('click', () => roiSelectionChanged([]));
   for (const [id, event] of [['brain-visible', 'change'], ['brain-opacity', 'input']]) $(id).addEventListener(event, () => { renderer?.setBrainContext(brainOptions()); updateLabels(); saveView(); });
+  for (const [id, event] of [['section-outline-visible', 'change'], ['section-outline-color', 'input'], ['section-outline-opacity', 'input']]) {
+    $(id).addEventListener(event, () => { renderer?.setSectionOutlines(sectionOutlineOptions()); syncSectionOutlineControls(); saveView(); });
+  }
   $('spacing').addEventListener('input', () => { renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
   for (const id of ['range-start', 'range-end']) $(id).addEventListener('change', setRange);
   $('show-all').addEventListener('click', () => { $('range-start').value = 1; $('range-end').value = sections.length; setRange(); });
