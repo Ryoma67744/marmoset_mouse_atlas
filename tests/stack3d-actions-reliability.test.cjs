@@ -124,7 +124,7 @@ test('opening detail keeps an adopted batch and actual navigation still requires
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);
     const accept = page.waitForEvent('dialog').then(async dialog => { assert.equal(dialog.type(), 'beforeunload'); await dialog.accept(); });
     await page.locator('#master-link').click({ noWaitAfter: true }); await accept;
-    await page.waitForURL('**/index.html');
+    await page.waitForURL('**/index.html?series=legacy_marmoset');
     await open(h);
     assert.deepEqual(await placements(page), original);
     assert.deepEqual(await page.evaluate(() => ProjectStorage.listProjects()), stored);

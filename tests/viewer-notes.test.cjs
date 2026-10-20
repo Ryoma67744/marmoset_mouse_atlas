@@ -312,7 +312,7 @@ notesTest('An in-flight local save plus revert stays protected and Master naviga
   assert.match(h.page.url(), /\/viewer\/index\.html/);
   assert.equal(await h.page.evaluate(() => notesNavigationPending), true);
   await h.page.evaluate(() => __finishNotesLocal());
-  await h.page.waitForURL(h.baseURL + '/index.html');
+  await h.page.waitForURL(h.baseURL + '/index.html?series=legacy_marmoset');
   assert.deepEqual(await h.page.evaluate(async id => (await ProjectStorage.getProject(id)).notes, id), initial);
 });
 

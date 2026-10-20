@@ -1,6 +1,16 @@
-# Marmoset Brain Atlas Viewer 利用者ガイド
+# Marmoset / Mouse Brain Atlas Viewer 利用者ガイド
 
-本書は **Marmoset Brain Atlas Viewer** を研究利用者として使うための手引きです。インストール作業は不要で、ブラウザから URL を開くだけで使い始められます。
+本書は **Marmoset / Mouse Brain Atlas Viewer** を研究利用者として使うための手引きです。インストール作業は不要で、ブラウザから URL を開くだけで使い始められます。
+
+## Marmoset / Mouseを切り替える
+
+Masterの「表示するAtlas」で系列を選び、「3Dモデル」を開きます。3D画面左上の「表示する系列」でも切り替えられます。分子・視点・切片のON/OFFは系列ごとに保持します。切片を選んで「断面の詳細を別タブで開く」を押すと個別画像を確認できます。Masterへ戻ると同じ系列の一覧を表示します。
+
+Mouse / tissue_1setは、確定した番号順の48冠状断を輪郭による回転・XY移動で配置した系列です。初期表示は5種類の分子信号を同じ画素のSerotonin-d4-DPPで割った相対比です。内部標準自体は「原値」で確認できます。d4が0の2測定点は比を欠測とします。分子名はGABA-DPP、Histamine-DPP、Dopamine-DPP、Norepinephrine-DPP、Serotonin-DPP、Serotonin-d4-DPPです。
+
+Mouseの座標は画像pixel、切片間隔は表示用の等間隔です。実寸・絶対濃度・標準脳との対応は未校正です。保存済みの位置合わせを表示し、Mouseの3D配置編集・自動位置合わせ・3D統計は無効です。
+
+初回追加時は、ログインしたMasterの「ZIPを読み込む」で配布された48切片の系列ZIPを選びます。Mouse / tissue_1setフォルダーへ追加されます。既存系列の重複読み込みは停止します。一部のクラウド送信だけが失敗した場合は、同じPCの一覧にある「アップロード」から未送信分を再送してください。
 
 > デプロイ設定・コード構成など開発者向けの情報は GitHub リポジトリを直接ご参照ください。
 

@@ -3,8 +3,10 @@
   'use strict';
   global.Stack3DRoi = { create(T, doc, section) {
     const group = new T.Scene(), records = [];
-    const point = ([x, y]) => new T.Vector3((x - section.W / 2) * section.umPerPxX / 1000,
-      -(y - section.H / 2) * section.umPerPxY / 1000, 0);
+    const pitchX = section.coordinateMode === 'pixel' ? 1 : section.umPerPxX / 1000;
+    const pitchY = section.coordinateMode === 'pixel' ? 1 : section.umPerPxY / 1000;
+    const point = ([x, y]) => new T.Vector3((x - section.W / 2) * pitchX,
+      -(y - section.H / 2) * pitchY, 0);
     for (const polygon of global.Stack3D.roiPolygons(section).filter(p => p.visible)) {
       const points = polygon.vertices.map(point);
       const geometry = new T.BufferGeometry().setFromPoints(points);
@@ -26,7 +28,7 @@
       const texture = new T.CanvasTexture(canvas); texture.colorSpace = T.SRGBColorSpace;
       const sprite = new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, depthTest: false, side: T.DoubleSide }));
       sprite.position.copy(anchor); sprite.renderOrder = 950000;
-      const height = Math.max(0.08, section.heightMm * 0.035); sprite.scale.set(height * canvas.width / canvas.height, height, 1);
+      const height = Math.max(0.08, (section.sceneHeight ?? section.heightMm) * 0.035); sprite.scale.set(height * canvas.width / canvas.height, height, 1);
       group.add(sprite); labels.push({ name, sprite, texture });
     }
     return { group, faceCamera(camera) {

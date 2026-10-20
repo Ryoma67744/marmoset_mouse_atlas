@@ -6,7 +6,7 @@
     <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
-    <title>Marmoset Brain Atlas — Master</title>
+    <title>Marmoset / Mouse Brain Atlas — Master</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
@@ -53,14 +53,14 @@
             <div class="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
                 <div>
                     <div class="flex items-baseline gap-2">
-                        <h1 class="text-xl font-bold text-gray-900">Marmoset Brain Atlas — Master</h1>
+                        <h1 class="text-xl font-bold text-gray-900">Marmoset / Mouse Brain Atlas — Master</h1>
                         <!-- 数字は lib/version.js が入れる (直書きすると更新漏れが起きる) -->
                         <span class="app-version text-xs font-normal text-gray-400" title="アプリのバージョン"></span>
                     </div>
                     <p class="text-xs text-gray-500 mt-0.5">データ登録と一括管理</p>
                 </div>
                 <div class="flex items-center gap-3">
-                    <a id="open-stack3d" href="stack3d/index.html" class="btn" title="選択したCor切片を3D表示します。未選択なら登録済みのCor切片全体を表示します。">3Dモデル</a>
+                    <a id="open-stack3d" href="stack3d/index.html" class="btn" title="選択中の系列の切片を3D表示します。">3Dモデル</a>
                     <!-- クラウドの状態。接続先が未設定なら出さない (ローカルのみモード) -->
                     <span id="cloud-chip" class="hidden text-xs px-2 py-0.5 rounded-full border"></span>
                     <button id="cloud-signout" class="btn hidden">ログアウト</button>
@@ -72,7 +72,7 @@
         <!-- クラウドを使う設定のときだけ出る。パスワードを入れるまで中身は見せない -->
         <div id="cloud-gate" class="hidden fixed inset-0 z-50 bg-gray-100 flex items-center justify-center p-6">
             <div class="bg-white border border-gray-200 rounded-lg p-6 w-full max-w-sm space-y-3">
-                <h2 class="text-base font-bold text-gray-900">Marmoset Brain Atlas</h2>
+                <h2 class="text-base font-bold text-gray-900">Marmoset / Mouse Brain Atlas</h2>
                 <p class="text-xs text-gray-500">
                     登録データはクラウド (Supabase) に保存されています。
                     パスワードを入れると、どの PC からでも同じ一覧が開きます。
@@ -172,6 +172,9 @@
                 <div class="flex items-center justify-between mb-4 gap-3 flex-wrap">
                     <h2 class="text-sm font-semibold text-gray-500 uppercase tracking-wide">登録済みデータ</h2>
                     <div class="flex items-center gap-2 flex-wrap">
+                        <label class="text-xs">表示するAtlas
+                            <select id="atlas-series-filter" class="btn" aria-label="Atlas series"><option value="">All series</option></select>
+                        </label>
                         <input type="file" id="zip-input" accept=".zip,application/zip" class="hidden">
                         <button class="btn" onclick="document.getElementById('zip-input').click()">ZIP を読み込む</button>
                         <button id="new-folder" class="btn">+ フォルダ</button>
@@ -223,6 +226,7 @@
 
     <script src="lib/version.js"></script>
     <script src="lib/storage.js"></script>
+    <script src="lib/series-import.js"></script>
     <script src="lib/otsu.js"></script>
     <script src="lib/align.js"></script>
     <script src="lib/msi.js"></script>
@@ -976,6 +980,43 @@
         });
 
         const FOLDER_KEY = 'marmoset:currentFolder';
+        const SERIES_KEY = 'atlas-master-series';
+        const masterParams = new URLSearchParams(location.search);
+        let currentSeriesId = masterParams.get('series') || '';
+        let pendingSeriesNavigation = masterParams.has('series');
+        try {
+            if (!pendingSeriesNavigation) currentSeriesId = sessionStorage.getItem(SERIES_KEY) || '';
+        } catch (_) {}
+        function rememberSeries() {
+            try { sessionStorage.setItem(SERIES_KEY, currentSeriesId); } catch (_) {}
+            const url = new URL(location.href);
+            if (currentSeriesId) url.searchParams.set('series', currentSeriesId);
+            else url.searchParams.delete('series');
+            history.replaceState(null, '', url);
+        }
+        function atlasSeriesId(project) {
+            return project.atlas?.seriesId || 'legacy_marmoset';
+        }
+        function renderSeriesFilter() {
+            const select = document.getElementById('atlas-series-filter');
+            const series = new Map();
+            for (const project of cache.projects) {
+                const a = project.atlas;
+                series.set(atlasSeriesId(project), a
+                    ? (a.species === 'mouse' ? 'Mouse' : a.species || 'Atlas') + ' / ' + (a.seriesName || a.seriesId)
+                    : 'Marmoset');
+            }
+            if (currentSeriesId && !series.has(currentSeriesId)) currentSeriesId = '';
+            select.replaceChildren(new Option('All series', ''));
+            for (const [id, label] of series) select.add(new Option(label, id));
+            select.value = currentSeriesId;
+            rememberSeries();
+        }
+        document.getElementById('atlas-series-filter').addEventListener('change', event => {
+            currentSeriesId = event.target.value;
+            const first = cache.projects.find(p => atlasSeriesId(p) === currentSeriesId);
+            setCurrentFolder(first?.folderId || null);
+        });
         try {
             const saved = sessionStorage.getItem(FOLDER_KEY);
             if (saved) currentFolderId = saved === '' ? null : saved;
@@ -999,8 +1040,27 @@
         document.getElementById('open-stack3d').addEventListener('click', event => {
             try {
                 const ids = selectedIds();
+                const selected = cache.projects.filter(p => ids.includes(p.id));
+                const seriesIds = new Set(selected.map(atlasSeriesId));
+                if (seriesIds.size > 1) {
+                    event.preventDefault();
+                    showError('3Dで表示する系列を1つ選んでください。');
+                    return;
+                }
+                const seriesId = currentSeriesId || (seriesIds.size ? [...seriesIds][0] : '');
                 if (ids.length) sessionStorage.setItem('atlas-stack3d-selection', JSON.stringify(ids));
                 else sessionStorage.removeItem('atlas-stack3d-selection');
+                if (!ids.length && !seriesId) {
+                    for (const key of Object.keys(sessionStorage)) {
+                        if (key.startsWith('atlas-stack3d-selection:')) sessionStorage.removeItem(key);
+                    }
+                }
+                if (seriesId) {
+                    const key = 'atlas-stack3d-selection:' + seriesId;
+                    if (ids.length) sessionStorage.setItem(key, JSON.stringify(ids));
+                    else sessionStorage.removeItem(key);
+                }
+                event.currentTarget.href = 'stack3d/index.html' + (seriesId ? '?series=' + encodeURIComponent(seriesId) : '');
             } catch (_) {
                 event.preventDefault();
                 showError('3Dで開く切片を引き継げませんでした。ブラウザーの保存設定を確認してください。');
@@ -1113,7 +1173,11 @@
                     '<p class="text-sm text-red-600">保存領域を開けませんでした: ' + esc(e.message) + '</p>';
                 return;
             }
-            render();
+            if (pendingSeriesNavigation) {
+                pendingSeriesNavigation = false;
+                const first = cache.projects.find(p => atlasSeriesId(p) === currentSeriesId);
+                setCurrentFolder(first?.folderId || null);
+            } else render();
             paintCloudChip();
             updateStorageNote();
             // フォルダを動かしたぶんをクラウドへ反映する (ずれが無ければ何も送らない)
@@ -1121,6 +1185,7 @@
         }
 
         function render() {
+            renderSeriesFilter();
             renderTree();
             renderBreadcrumb();
             renderContents();
@@ -1182,6 +1247,7 @@
 
         // ---- 数え上げ -------------------------------------------------------
         function directProjects(folderId) {
+            // Folder operations affect every series, including hidden records.
             return cache.projects.filter(p => (p.folderId || null) === (folderId || null));
         }
         function directFolders(folderId) {
@@ -1409,10 +1475,13 @@
             list.innerHTML = '';
 
             const subs = directFolders(currentFolderId);
-            const projects = directProjects(currentFolderId);
+            const allProjects = directProjects(currentFolderId);
+            const projects = allProjects.filter(p => !currentSeriesId || atlasSeriesId(p) === currentSeriesId);
 
             if (!subs.length && !projects.length) {
-                list.innerHTML = cache.projects.length
+                list.innerHTML = allProjects.length
+                    ? '<p class="text-gray-500 text-sm">このフォルダには、選択したAtlasのデータがありません。表示するAtlasを切り替えると他の登録データを確認できます。</p>'
+                    : cache.projects.length
                     ? '<p class="text-gray-500 text-sm">このフォルダは空です。データをここへドラッグするか、「+ フォルダ」でさらに整理できます。</p>'
                     : '<p class="text-gray-500 text-sm">まだ登録されたデータはありません。上のパネルから登録するか、ZIP を読み込んでください。</p>';
             }
@@ -2633,24 +2702,37 @@
             setStatus('ZIP を読み込み中…');
             setProgress(0.5);
             try {
-                const { project, warnings } = await ZipIO.importZip(file);
+                const { projects, warnings, series } = await AtlasSeriesImport.importFile(file, {
+                    onProgress: ({ completed, total }) => {
+                        setProgress(completed / total * 0.5);
+                        setStatus('切片を読み込み中… ' + completed + ' / ' + total);
+                    },
+                });
                 // 読み込んだものもクラウドへ送る。送らないと一覧から消えてしまう
                 // (一覧はクラウドの行から作るため)。
-                const r = await pushNew(project, (f) => {
-                    setProgress(0.5 + f * 0.5);
-                    setStatus('クラウドへ送信中… ' + Math.round(f * 100) + '%');
-                });
+                const uploadErrors = [];
+                for (let i = 0; i < projects.length; i++) {
+                    const r = await pushNew(projects[i], (f) => {
+                        setProgress(0.5 + (i + f) / projects.length * 0.5);
+                        setStatus('クラウドへ送信中… ' + (i + 1) + ' / ' + projects.length);
+                    });
+                    if (r && r.__error) uploadErrors.push(projects[i].displayName + ': ' + r.__error);
+                }
                 setProgress(null);
-                setStatus(`「${project.displayName}」を読み込みました。`);
-                if (r && r.__error) {
+                setStatus(projects.length === 1 ? `「${projects[0].displayName}」を読み込みました。` : projects.length + '切片を読み込みました。');
+                if (uploadErrors.length) {
                     showError('この PC には読み込めましたが、クラウドへ送れませんでした ' +
-                        '(一覧の「アップロード」から送り直せます): ' + r.__error);
+                        '(一覧の「アップロード」から送り直せます): ' + uploadErrors.join('\n'));
                 }
                 if (warnings.length) {
                     console.warn('[import] 警告:', warnings);
                     showError('読み込みは完了しましたが、次の警告があります:\n' + warnings.join('\n'));
                 }
                 await refreshProjectList();
+                if (series) {
+                    currentSeriesId = series.seriesId;
+                    setCurrentFolder(projects[0].folderId || null);
+                }
             } catch (err) {
                 console.error(err);
                 setProgress(null);
@@ -2750,6 +2832,7 @@
                 normalization: state.normalization || null,
                 normalizationBinding: pending && pending.binding || state.normalizationBinding || null,
                 grid: meta.grid || {},
+                atlas: meta.atlas || state.atlas,
                 molecules: (meta.molecules || []).map(n => ({ name: n })),
                 images: Object.assign({}, meta.hasHe ? { HE_Stain: {} } : {},
                                           meta.hasAtlas ? { [ATLAS_KEY]: {} } : {},

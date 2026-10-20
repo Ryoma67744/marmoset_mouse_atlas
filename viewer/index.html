@@ -552,6 +552,7 @@
         function normalizationScopeLines() {
             const profile = currentProject?.normalization, scope = profile?.scope;
             if (!profile) return [];
+            if (isMousePixelRatio()) return ['同じ画素の各分子信号 / Serotonin-d4-DPP。切片係数や濃度換算は適用していません。'];
             if (!scope) return ['補正グループ：従来設定（第2階層フォルダー未指定）'];
             const path = Array.isArray(scope.folderPath) ? scope.folderPath.join(' / ') : '記録なし';
             const binding = currentProject.normalizationBinding;
@@ -573,6 +574,26 @@
             return lines;
         }
         function channelResult(key) { return normalizationEvaluation?.channels?.[key] || null; }
+        function isMousePixelRatio() { return currentProject?.atlas?.species === 'mouse' && currentProject?.normalization?.mode === 'pixel_ratio'; }
+        function isMouseStandard(key) {
+            return isMousePixelRatio() && ((currentProject?.molecules || []).some(molecule => molecule.key === key && molecule.analyteId === 'Serotonin-d4-DPP') || channelResult(key)?.role === 'd4');
+        }
+        function mouseRatioStandardBlocked(key) { return valueDisplay.mode === 'normalized' && isMouseStandard(key); }
+        function valueModeDescription() {
+            return valueDisplay.mode === 'raw' ? '生値表示' : isMousePixelRatio()
+                ? '5-HT-d4補正：5分子 / 内部標準の相対比（濃度ではありません）'
+                : '補正・正規化表示（絶対定量画像ではありません）';
+        }
+        function syncMouseRatioLayers() {
+            if (!isMousePixelRatio()) return;
+            for (const input of document.querySelectorAll('#image-selector-options input.layer-check')) {
+                if (!isMouseStandard(input.value)) continue;
+                const blocked = mouseRatioStandardBlocked(input.value);
+                if (blocked) input.checked = false;
+                input.disabled = blocked || otsuPending || !!otsuDraft;
+                input.title = blocked ? '内部標準のQCは「原値」で表示します。サムネイルを押すと原値表示へ切り替わります。' : '内部標準の原値QCを表示';
+            }
+        }
         function isNormalizationSkipped() { return !!window.Normalization?.isSkippedProfile(currentProject?.normalization); }
         function skippedNormalizationNotice() { return '内部標準なし・未補正（生値表示）'; }
         function isCorrectedChannel(channel) { return !!window.Normalization?.isCorrectedChannel(channel); }
@@ -583,6 +604,7 @@
         function channelUnit(key) {
             if (!valueRasters[key]) return '画像輝度（定量不可）';
             if (isNormalizationSkipped()) return '生信号 (a.u.; 内部標準なし・未補正)';
+            if (isMouseStandard(key)) return '生信号 (a.u.; 5-HT-d4 raw QC)';
             if (valueDisplay.mode === 'raw') return '生信号 (a.u.)';
             const channel = channelResult(key);
             if (channel?.role === 'd4') return '生信号 (a.u.; D4 QC)';
@@ -692,11 +714,13 @@
         function refreshValueDisplayUi() {
             const skipped = isNormalizationSkipped();
             if (skipped) valueDisplay.mode = 'raw';
+            syncMouseRatioLayers();
             const skippedNotice = document.getElementById('normalization-skipped-notice');
             if (skippedNotice) skippedNotice.hidden = !skipped;
             for (const mode of ['raw', 'normalized']) {
                 const button = document.getElementById('value-' + mode);
                 if (!button) continue;
+                if (mode === 'normalized') button.textContent = isMousePixelRatio() ? '5-HT-d4補正 (相対比)' : '補正・正規化';
                 button.setAttribute('aria-pressed', String(valueDisplay.mode === mode));
                 button.classList.toggle('bg-blue-100', valueDisplay.mode === mode);
                 if (mode === 'normalized' && !otsuPending && !otsuDraft) {
@@ -707,13 +731,18 @@
             syncRangeControls();
             const status = document.getElementById('value-display-status');
             if (!status) return;
-            const lines = [valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではありません）' : '生値表示'];
+            const lines = [valueModeDescription()];
             if (viewerRefreshNotice) lines.unshift(viewerRefreshNotice);
             if (viewerSaveConflict) lines.unshift('⚠ 保存を停止しました：別タブの更新または保存エラーを検出しました。編集中の内容はこの画面に保持しています。再読み込みすると未保存の編集が失われるため、内容を確認してください。');
             const profile = currentProject?.normalization;
             if (skipped) {
                 lines.push(skippedNormalizationNotice() + '：d4-5-HTがないため、このデータの補正をスキップしました。');
                 if (normalizationEvaluation?.reasonCodes?.length) lines.push(normalizationReasons(normalizationEvaluation.reasonCodes));
+            } else if (isMousePixelRatio()) {
+                lines.push(`均一噴霧した5-HT-d4を内部標準に使用 / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
+                lines.push('d4 > 0で計算し、0・欠損は算出不可。P10による低値除外はしていません。');
+                lines.push('Serotonin-d4-DPP自体は原値QCです。補正表示には重ねず、サムネイルを押すと原値表示へ切り替えます。');
+                lines.push(`Profile ${profile.id} rev.${profile.revision}`);
             } else if (profile?.schemaVersion >= 3) {
                 lines.push(`d4-5-HTを基準にした相対補正 / ${profile.mode === 'advanced' ? '詳細設定' : '簡単設定'} / ${normalizationEvaluation?.status || 'UNAVAILABLE'}`);
                 lines.push(`Profile ${profile.id} rev.${profile.revision}` + (profile.batchId ? ' / Batch ' + profile.batchId : ''));
@@ -763,6 +792,7 @@
             status.textContent = lines.join('\n'); status.style.whiteSpace = 'pre-line';
         }
         function redrawValueViews() {
+            syncMouseRatioLayers();
             renderCompositeImage();
             for (const [key, image] of msiThumbRefs) renderMsiThumbnail(key, image);
             refreshValueDisplayUi();
@@ -843,12 +873,24 @@
             'GABA': [0,   200, 255],  // シアン
             'Glu':  [255, 0,   255],  // マゼンタ
             'ACh':  [255, 128, 0  ],  // オレンジ
+            'GABA-DPP': [0, 200, 255],
+            'Histamine-DPP': [255, 128, 0],
+            'Dopamine-DPP': [255, 0, 0],
+            'Norepinephrine-DPP': [255, 255, 0],
+            'Serotonin-DPP': [0, 255, 0],
+            'Serotonin-d4-DPP': [190, 120, 255],
         };
         // MSIキー名から化合物名を抽出して色を取得
         function getMsiColor(key) {
             if (!key || !key.toUpperCase().startsWith('MSI_')) return null;
-            const compound = key.replace(/^MSI_/i, '');
+            const molecule = currentProject?.molecules?.find(m => m.key === key);
+            const compound = molecule?.analyteId || key.replace(/^MSI_/i, '');
             return MSI_COMPOUND_COLORS[compound] || null;
+        }
+        // New pixel-coordinate series use their native raster orientation.
+        // Legacy projects keep the historical two CCW90 display rotations.
+        function nativeOrientationOffset() {
+            return currentProject?.atlas?.coordinateMode === 'pixel' ? 180 : 0;
         }
 
         // MSI サムネイルを imageSources から着色+CCW90°回転で再描画する。
@@ -959,7 +1001,7 @@
         function buildExportCanvas() {
             const src = displayCanvas;
             if (!src || !(src.width > 0)) throw new Error('表示中の画像がありません');
-            const deg = (Number(rotationState.all) || 0) - 90;
+            const deg = (Number(rotationState.all) || 0) - 90 + nativeOrientationOffset();
             const rad = deg * Math.PI / 180;
             const ca = Math.abs(Math.cos(rad)), sa = Math.abs(Math.sin(rad));
             const W = Math.max(1, Math.round(src.width * ca + src.height * sa));
@@ -985,7 +1027,7 @@
             annotated.width = Math.max(W, 640);
             const info = [
                 ...(isNormalizationSkipped() ? [skippedNormalizationNotice()] : []),
-                (valueDisplay.mode === 'normalized' ? '補正・正規化表示（絶対定量画像ではない）' : '生値表示'),
+                valueModeDescription(),
                 ...checkedLayerKeys().filter(key => valueRasters[key]).map(key => {
                     const settings = imageSettings[key];
                     return formatDisplayName(key) + ': ' + channelUnit(key) + ' / ' + rangeStrategyLabel(settings?.displayWindow?.strategy) + ' / range [' + settings?.vmin + ', ' + settings?.vmax + ']' + ' / 表示範囲外 ' + (100 * (settings?.displayWindow?.clippedFraction || 0)).toFixed(2) + '%' + (settings?.displayWindow?.groupId ? ' / Group ' + settings.displayWindow.groupId : '');
@@ -1085,7 +1127,7 @@
         function setMsiThumbnailImage(thumbEl, source) {
             // 中央はラスタ→canvas の −90°、外側 CSS の all−90°、MSI 追加角。
             // 初期向きの −180° を含め、同じ合成角で回転後の全体を収める。
-            const angle = ((Number(rotationState.all) || 0) + (Number(rotationState.msi) || 0) - 180) * Math.PI / 180;
+            const angle = ((Number(rotationState.all) || 0) + (Number(rotationState.msi) || 0) - 180 + nativeOrientationOffset()) * Math.PI / 180;
             const c = Math.abs(Math.cos(angle)), s = Math.abs(Math.sin(angle));
             const width = source.width * c + source.height * s;
             const height = source.width * s + source.height * c;
@@ -1669,6 +1711,7 @@ function loadAllImages() {
                 name.addEventListener('click', () => setActiveSettingsKey(key));
             });
 
+            syncMouseRatioLayers();
             buildSettingsStrip();
             const firstChecked = checkedLayerKeys()[0];
             setActiveSettingsKey(firstChecked || imageKeys.find(k => atlasData.images[k] && imageSettings[k]) || null);
@@ -1769,7 +1812,7 @@ function loadAllImages() {
         // 現在チェックされているレイヤ一覧
         function checkedLayerKeys() {
             return Array.from(document.querySelectorAll('#image-selector-options input.layer-check:checked'))
-                .map(cb => cb.value);
+                .map(cb => cb.value).filter(key => !mouseRatioStandardBlocked(key));
         }
 
         // 表示状態をプロジェクトに書き戻す (静的データセットのときは何もしない)
@@ -2293,7 +2336,7 @@ function loadAllImages() {
             const rawSlots = [
                 atlasKeys[0] || null, immunoKeys[0] || null,
                 heKeys[0] || null, ifKeys[0] || null, ifKeys[1] || null, ifKeys[2] || null,
-                msiKeys[0] || null, msiKeys[1] || null, msiKeys[2] || null, msiKeys[3] || null
+                ...msiKeys
             ];
             const slots = rawSlots.filter(key => key && atlasData.images[key]);
 
@@ -2369,7 +2412,7 @@ function loadAllImages() {
                     titleOverlay.appendChild(dot);
                 }
                 const titleText = document.createElement('span');
-                titleText.textContent = formatDisplayName(key);
+                titleText.textContent = formatDisplayName(key) + (isMouseStandard(key) ? ' · raw QC' : '');
                 titleOverlay.appendChild(titleText);
                 slotWrapper.appendChild(titleOverlay);
 
@@ -2377,15 +2420,20 @@ function loadAllImages() {
             });
         }
 
-        function setActiveImage(imageKey) {
+        async function setActiveImage(imageKey) {
             // ★ 参照画像 (Atlas / 免疫染色) は重ね合わせの対象ではないので、
             //   チェックボックスが無い。押されたら左半分の表示を切り替える。
             if (isRefKey(imageKey)) { setRefPane(imageKey); return; }
+            if (mouseRatioStandardBlocked(imageKey)) {
+                await changeValueMode('raw');
+                if (valueDisplay.mode !== 'raw') return;
+            }
             const checkbox = document.querySelector(
                 `#image-selector-options input.layer-check[value="${CSS.escape(imageKey)}"]`);
             if (checkbox) {
                 checkbox.checked = !checkbox.checked;
                 renderCompositeImage();
+                refreshValueDisplayUi();
                 persistVisibleLayers();
                 if (checkbox.checked) {
                     setActiveSettingsKey(imageKey);
@@ -3465,7 +3513,7 @@ function loadAllImages() {
             if (rot) {
                 rot.style.setProperty('--vt-tx', viewTransform.tx + 'px');
                 rot.style.setProperty('--vt-ty', viewTransform.ty + 'px');
-                rot.style.setProperty('--vt-rot', (rotationState.all || 0) + 'deg');
+                rot.style.setProperty('--vt-rot', ((rotationState.all || 0) + nativeOrientationOffset()) + 'deg');
                 rot.style.setProperty('--vt-scale', String(viewTransform.scale));
             }
             const out = document.getElementById('zoom-readout');
@@ -4442,6 +4490,25 @@ function loadAllImages() {
       }
       const title = document.getElementById('atlas-title');
       if (title) title.textContent = p.displayName;
+      if (p.atlas) {
+        const metadata = {
+          'meta-specimen': p.atlas.specimenId || 'Unknown',
+          'meta-organism': p.atlas.species === 'mouse' ? 'Mouse' : p.atlas.species || 'Unknown',
+          'meta-strain': p.atlas.strain || 'Unknown',
+          'meta-age': p.atlas.age || 'Unknown',
+          'meta-sex': p.atlas.sex || 'Unknown',
+        };
+        for (const [id, value] of Object.entries(metadata)) {
+          const element = document.getElementById(id);
+          if (element) element.textContent = String(value);
+        }
+        if (p.atlas.species === 'mouse') {
+          const atlasLabel = document.querySelector('label[for="notes-atlas-url"]');
+          const geneLabel = document.querySelector('label[for="notes-gene-atlas-url"]');
+          if (atlasLabel) atlasLabel.textContent = 'Mouse Atlas URL';
+          if (geneLabel) geneLabel.textContent = 'Mouse Gene Atlas URL';
+        }
+      }
     }
 
     // =====================================================================
@@ -4485,6 +4552,8 @@ function loadAllImages() {
         await loadProject(projectId);
         await domReady;
         await initializeViewer();
+        document.getElementById('back-master').href = '../index.html?series=' +
+          encodeURIComponent(currentProject.atlas?.seriesId || 'legacy_marmoset');
         setupViewerRefresh();
         setupStack3DReturn(params, projectId);
         // 「クラウドに保存」の表示は、開いたデータが決まってからでないと出せない

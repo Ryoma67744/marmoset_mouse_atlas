@@ -1,4 +1,5 @@
-/* Serial-section renderer. XY is measured in mm; Z is an ordinal display axis.
+/* Serial-section renderer. XY is mm or explicit uncalibrated pixels;
+ * Z is an ordinal display axis in the same scene coordinate system.
  * Three.js / OrbitControls are vendored separately under their MIT license.
  * Rendering and camera changes never modify measured raster values. */
 (function (global) {
@@ -25,7 +26,7 @@
     controls.enableDamping = false; controls.screenSpacePanning = true;
     controls.minDistance = 0.2; controls.maxDistance = 5000;
     const raycaster = new T.Raycaster(), pointer = new T.Vector2(), scratch = new T.Vector3();
-    let entries = [], byId = new Map(), hiddenSectionIds = new Set(), selected = -1, spacing = 0.595, opacity = 1, range = [0, -1];
+    let entries = [], byId = new Map(), hiddenSectionIds = new Set(), selected = -1, spacing = 0.595, opacity = 1, range = [0, -1], zCenter = 0;
     let heVisible = false, heOpacity = 0.12;
     let brainVisible = false, brainOpacity = 0.12, brainContext = null;
     let disposed = false, contextLost = false, pendingFrame = null, renderCount = 0, pointerDown = null, viewSet = false;
@@ -64,12 +65,12 @@
       camera.updateProjectionMatrix(); scheduleRender();
     }
     function position(entry) {
-      const d = entry.descriptor;
-      entry.mesh.rotation.z = -(d.angleDeg + d.rotationDeg) * RAD;
-      entry.mesh.position.set(d.offsetXUm / 1000, -d.offsetYUm / 1000, (entry.index - (entries.length - 1) / 2) * spacing);
+      const d = entry.descriptor, placement = global.Stack3D.scenePlacement(d);
+      entry.mesh.rotation.z = placement.angleDeg * RAD;
+      entry.mesh.position.set(placement.x, placement.y, (entry.zIndex - zCenter) * spacing);
       entry.mesh.updateMatrixWorld();
       if (entry.roi) { entry.roi.group.position.copy(entry.mesh.position); entry.roi.group.rotation.copy(entry.mesh.rotation); }
-      entry.he.mesh.rotation.z = -(d.heAngleDeg + d.rotationDeg) * RAD;
+      entry.he.mesh.rotation.z = global.Stack3D.scenePlacement(d, true).angleDeg * RAD;
       entry.he.mesh.position.copy(entry.mesh.position); entry.he.mesh.updateMatrixWorld();
     }
     function updateOutline() {
@@ -77,7 +78,7 @@
       if (!entry) return;
       const plane = entry.mesh.visible ? entry.mesh : entry.he.mesh;
       outline.position.copy(plane.position); outline.quaternion.copy(plane.quaternion);
-      outline.scale.set(entry.descriptor.widthMm, entry.descriptor.heightMm, 1); outline.updateMatrixWorld();
+      outline.scale.set(entry.descriptor.sceneWidth, entry.descriptor.sceneHeight, 1); outline.updateMatrixWorld();
     }
     function updateVisibility() {
       for (const entry of entries) {
@@ -132,20 +133,27 @@
       if (!Array.isArray(descriptors)) throw new TypeError('切片一覧は配列で指定してください。');
       const ids = new Set();
       const checked = descriptors.map(d => {
-        if (!d || d.id == null || !Number.isFinite(Number(d.widthMm)) || Number(d.widthMm) <= 0 ||
-            !Number.isFinite(Number(d.heightMm)) || Number(d.heightMm) <= 0) throw new TypeError('切片のIDまたはXYサイズが不正です。');
+        const width = d?.sceneWidth ?? d?.widthMm, height = d?.sceneHeight ?? d?.heightMm;
+        if (!d || d.id == null || !Number.isFinite(Number(width)) || Number(width) <= 0 ||
+            !Number.isFinite(Number(height)) || Number(height) <= 0) throw new TypeError('切片のIDまたはXYサイズが不正です。');
         const id = String(d.id); if (ids.has(id)) throw new Error(`切片IDが重複しています: ${id}`); ids.add(id);
-        return { ...d, id, name: String(d.name || id), widthMm: Number(d.widthMm), heightMm: Number(d.heightMm),
+        return { ...d, id, name: String(d.name || id), sceneWidth: Number(width), sceneHeight: Number(height),
           angleDeg: finite(d.angleDeg), heAngleDeg: finite(d.heAngleDeg, finite(d.angleDeg)),
-          rotationDeg: finite(d.rotationDeg), offsetXUm: finite(d.offsetXUm), offsetYUm: finite(d.offsetYUm) };
+          rotationDeg: finite(d.rotationDeg), ...(d.coordinateMode === 'pixel'
+            ? { offsetXPx: finite(d.offsetXPx), offsetYPx: finite(d.offsetYPx) }
+            : { offsetXUm: finite(d.offsetXUm), offsetYUm: finite(d.offsetYUm) }) };
       });
+      if (new Set(checked.map(d => d.coordinateMode === 'pixel' ? 'pixel' : 'physical')).size > 1) {
+        throw new Error('画素単位と実寸単位の切片を同じ3Dには表示できません。');
+      }
+      if (entries.length && checked.length && global.Stack3D.seriesOf(entries[0].descriptor).id !== global.Stack3D.seriesOf(checked[0]).id) viewSet = false;
       const selectedId = entries[selected]?.descriptor.id, previous = byId; byId = new Map();
       entries = checked.map((d, index) => {
         let entry = previous.get(d.id);
         if (entry) {
           previous.delete(d.id);
-          if (entry.descriptor.widthMm !== d.widthMm || entry.descriptor.heightMm !== d.heightMm) {
-            entry.mesh.geometry.dispose(); entry.mesh.geometry = new T.PlaneGeometry(d.widthMm, d.heightMm);
+          if (entry.descriptor.sceneWidth !== d.sceneWidth || entry.descriptor.sceneHeight !== d.sceneHeight) {
+            entry.mesh.geometry.dispose(); entry.mesh.geometry = new T.PlaneGeometry(d.sceneWidth, d.sceneHeight);
             entry.he.mesh.geometry = entry.mesh.geometry;
           }
           entry.descriptor = d; entry.index = index;
@@ -153,7 +161,7 @@
           const material = new T.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity, side: T.DoubleSide,
             depthWrite: false, depthTest: true, alphaTest: 0.001, toneMapped: false });
           material.forceSinglePass = true;
-          const mesh = new T.Mesh(new T.PlaneGeometry(d.widthMm, d.heightMm), material);
+          const mesh = new T.Mesh(new T.PlaneGeometry(d.sceneWidth, d.sceneHeight), material);
           const heMaterial = material.clone(); heMaterial.opacity = heOpacity;
           heMaterial.forceSinglePass = true;
           const heMesh = new T.Mesh(mesh.geometry, heMaterial);
@@ -161,6 +169,7 @@
             he: { mesh: heMesh, texture: null, alphaPixels: null } };
           scene.add(heMesh, mesh);
         }
+        entry.zIndex = (d.project?.atlas || d.atlas) && Number.isFinite(d.zIndex) ? d.zIndex : index;
         if (entry.roi) { scene.remove(entry.roi.group); entry.roi.dispose(); }
         entry.roi = global.Stack3DRoi.create(T, doc, d); scene.add(entry.roi.group);
         entry.mesh.userData.sectionId = d.id; entry.mesh.userData.layer = 'msi';
@@ -168,6 +177,7 @@
         if (Object.hasOwn(d, 'textureCanvas')) setTexture(entry, d.textureCanvas);
         return entry;
       });
+      zCenter = entries.length ? (Math.min(...entries.map(e => e.zIndex)) + Math.max(...entries.map(e => e.zIndex))) / 2 : 0;
       for (const entry of previous.values()) release(entry);
       hiddenSectionIds = new Set([...hiddenSectionIds].filter(id => byId.has(id)));
       range = [0, entries.length - 1]; selected = entries.findIndex(e => e.descriptor.id === selectedId);
@@ -206,6 +216,9 @@
     }
     function syncBrainContext() {
       if (!entries.length) { releaseBrainContext(); return; }
+      if (entries.some(entry => entry.descriptor.coordinateMode === 'pixel' || global.Stack3D.seriesOf(entry.descriptor).species !== 'marmoset')) {
+        brainVisible = false; releaseBrainContext(); return;
+      }
       if (!brainContext && brainVisible) {
         if (!global.Stack3DBrainContext?.createContext) throw new Error('脳模式図を読み込めませんでした。ページを再読み込みしてください。');
         brainContext = global.Stack3DBrainContext.createContext(T);
@@ -241,7 +254,8 @@
     function select(index) { selected = Number.isInteger(index) && index >= 0 && index < entries.length ? index : -1; updateRoi(); updateOutline(); scheduleRender(); }
     function setPlacement(id, values = {}) {
       const entry = byId.get(String(id)); if (!entry) return;
-      for (const key of ['offsetXUm', 'offsetYUm', 'rotationDeg']) if (Object.hasOwn(values, key)) entry.descriptor[key] = finite(values[key], entry.descriptor[key]);
+      const keys = entry.descriptor.coordinateMode === 'pixel' ? ['offsetXPx', 'offsetYPx', 'rotationDeg'] : ['offsetXUm', 'offsetYUm', 'rotationDeg'];
+      for (const key of keys) if (Object.hasOwn(values, key)) entry.descriptor[key] = finite(values[key], entry.descriptor[key]);
       position(entry); syncBrainContext(); updateOutline(); scheduleRender();
     }
     function bounds() {
@@ -249,7 +263,7 @@
       for (const entry of entries) {
         const d = entry.descriptor;
         for (const plane of [entry.mesh, entry.he.mesh]) {
-          for (const x of [-d.widthMm / 2, d.widthMm / 2]) for (const y of [-d.heightMm / 2, d.heightMm / 2]) {
+          for (const x of [-d.sceneWidth / 2, d.sceneWidth / 2]) for (const y of [-d.sceneHeight / 2, d.sceneHeight / 2]) {
             box.expandByPoint(scratch.set(x, y, 0).applyMatrix4(plane.matrixWorld));
           }
         }
@@ -325,7 +339,8 @@
     function capturePNG() {
       if (disposed || contextLost) throw new Error('3D描画を利用できないため画像を保存できません。');
       render();
-      if (!brainVisible || brainOpacity <= 0 || !brainContext) return canvas.toDataURL('image/png');
+      const pixelMode = entries.some(entry => entry.descriptor.coordinateMode === 'pixel');
+      if (!pixelMode && (!brainVisible || brainOpacity <= 0 || !brainContext)) return canvas.toDataURL('image/png');
       // The DOM badge is not part of the WebGL canvas. Bake the schematic
       // qualification into exported images so it survives sharing/cropping
       // of the surrounding application controls.
@@ -334,7 +349,8 @@
       if (!context) throw new Error('画像保存用の描画を開始できません。');
       context.drawImage(canvas, 0, 0);
       const fontSize = Math.max(12, Math.round(Math.min(output.width, output.height) / 48));
-      const padding = Math.round(fontSize * 0.7), label = 'SCHEMATIC / NOT REGISTERED';
+      const padding = Math.round(fontSize * 0.7), label = pixelMode
+        ? 'PIXEL COORDINATES / PHYSICAL SPACING UNKNOWN' : 'SCHEMATIC / NOT REGISTERED';
       context.font = `600 ${fontSize}px sans-serif`;
       const width = Math.ceil(context.measureText(label).width) + padding * 2, height = fontSize + padding * 2;
       context.fillStyle = 'rgba(11, 20, 32, 0.88)'; context.fillRect(padding, output.height - height - padding, width, height);
@@ -346,6 +362,9 @@
     function getStats() {
       return { roi: entries.map(e => ({ id: e.descriptor.id, ...e.roi.stats() })), threeVersion: '186', sectionCount: entries.length, visibleCount: entries.filter(e => e.mesh.visible).length,
         textureCount: entries.filter(e => e.texture).length, selectedIndex: selected, spacing, range: [...range], opacity,
+        coordinateMode: entries[0]?.descriptor.coordinateMode || 'physical',
+        placements: entries.map(e => ({ id: e.descriptor.id, position: e.mesh.position.toArray(),
+          rotationDeg: e.mesh.rotation.z / RAD, width: e.descriptor.sceneWidth, height: e.descriptor.sceneHeight })),
         heVisible, heOpacity, heTextureCount: entries.filter(e => e.he.texture).length,
         brainVisible, brainOpacity, brainObjectCount: brainContext?.getStats().objectCount || 0,
         brainModelBounds: brainContext?.getStats().bounds || null,
