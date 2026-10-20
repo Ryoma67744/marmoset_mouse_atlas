@@ -94,3 +94,31 @@
 #analysis-unavailable{flex:0 0 auto;margin:0;border-radius:0;border-width:1px 0 0;padding:10px 22px}
 .scene-top .pill{max-width:75%;white-space:normal;line-height:1.5}
 #series-note,#coordinate-note{line-height:1.7}
+
+/* Independent sidebars give the freed width to both the scene and analysis. */
+.controls,.sidebar-body{min-width:0}
+.sidebar-heading{display:flex;align-items:flex-start;gap:8px}
+.sidebar-heading>.panel-heading{min-width:0;flex:1}
+.sidebar-toggle{flex:0 0 auto;padding:5px 7px;font-size:10px;display:flex;align-items:center;gap:4px}
+.sidebar-toggle-icon{font-size:18px;line-height:1}
+.sidebar-rail-label{display:none}
+@media(min-width:761px){
+  .workspace{--controls-default-width:245px;--section-default-width:302px;grid-template-columns:var(--controls-current-width,var(--controls-default-width)) minmax(var(--scene-min-width),1fr) var(--section-current-width,var(--section-panel-width,var(--section-default-width)))}
+  .workspace.controls-collapsed{--controls-current-width:44px}
+  .workspace.section-collapsed{--section-current-width:44px}
+  .sidebar-collapsed{padding:12px 4px;overflow:hidden}
+  .sidebar-collapsed .sidebar-heading{flex-direction:column;align-items:center;gap:18px}
+  .sidebar-collapsed .panel-heading{display:none}
+  .sidebar-collapsed .sidebar-toggle{padding:5px 3px;gap:2px;flex-direction:column;width:34px}
+  .sidebar-collapsed .sidebar-rail-label{display:block;writing-mode:vertical-rl;font-size:11px;letter-spacing:1.5px;color:var(--muted)}
+  .workspace.section-collapsed>#section-resizer{display:none}
+}
+@media(min-width:1750px){.workspace{--controls-default-width:270px;--section-default-width:340px}}
+@media(min-width:761px) and (max-width:1100px){.workspace{--controls-default-width:210px;--section-default-width:250px}}
+@media(max-width:760px){
+  .sidebar-heading{flex-wrap:wrap;gap:5px}
+  .sidebar-heading>.panel-heading{flex-basis:100%;margin-bottom:4px}
+  .sidebar-toggle{margin:0 0 14px}
+  .sidebar-collapsed .sidebar-toggle{margin-bottom:0}
+  .section-panel.sidebar-collapsed h2,.section-panel.sidebar-collapsed #section-metadata{display:none}
+}

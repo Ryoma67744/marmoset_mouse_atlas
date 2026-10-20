@@ -44,7 +44,7 @@ async function visibleMolecule(page) {
 async function assertNoOverflow(page) {
   const overflow = await page.evaluate(() => {
     const doc = document.documentElement;
-    return { width: doc.clientWidth, scroll: doc.scrollWidth, elements: [...document.querySelectorAll('#analysis-panel, #analysis-body, #analysis-charts, .analysis-minibar, .analysis-molecule:not([hidden]), .analysis-plot')]
+    return { width: doc.clientWidth, scroll: doc.scrollWidth, elements: [...document.querySelectorAll('#analysis-panel, #analysis-body, #analysis-charts, .analysis-minibar, .analysis-molecule:not([hidden])')]
       .filter(node => node.getBoundingClientRect().width > 0 && node.scrollWidth > node.clientWidth + 1).map(node => node.id || node.className) };
   });
   assert.equal(overflow.width, overflow.scroll); assert.deepEqual(overflow.elements, []);
@@ -107,20 +107,46 @@ test('molecule tabs, automatic axes and minimized toolbar change presentation on
   } finally { await h.close(); }
 });
 
-test('many sections wrap on one molecule with a shared axis, no horizontal scroll and usable narrow-screen errors', { timeout: 120000 }, async () => {
+test('69 sections remain in a ranked single row with plot-only scrolling and stable section selection', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
     await seedAnalysisStack(h); await page.goto(h.baseURL + '/stack3d/index.html'); await readyAnalysisStack(page);
     await page.locator('[data-analysis-mode="by-section"]').click(); await settled(page, 'by-section', 69);
+    const originalResult = await page.evaluate(() => JSON.stringify(Atlas3D.analysis.getState().result));
+    const plot = page.locator('.analysis-molecule:visible .analysis-plot');
+    await plot.scrollIntoViewIfNeeded();
+    const click = await plot.evaluate(node => {
+      node.scrollLeft = node.scrollWidth;
+      const canvas = node.querySelector('canvas'), rect = canvas.getBoundingClientRect();
+      const keys = JSON.parse(canvas.dataset.groupKeys), result = Atlas3D.analysis.getState().result.channels[0];
+      const lastKey = keys.at(-1), lastGroup = result.groups.find(group => group.key === lastKey);
+      return { x: rect.left + 84 + (rect.width - 104) * (keys.length - .5) / keys.length,
+        y: rect.top + 100, sectionId: lastGroup.sectionId, scrollLeft: node.scrollLeft };
+    });
+    await page.mouse.click(click.x, click.y);
+    await page.waitForFunction(id => Atlas3D.sections[Atlas3D.selected].id === id, click.sectionId);
+    await paint(page);
+    assert.ok(click.scrollLeft > 0);
+    assert.equal(await plot.evaluate(node => node.scrollLeft), click.scrollLeft, 'selection does not jump back to the first group');
+    assert.equal(await page.evaluate(() => JSON.stringify(Atlas3D.analysis.getState().result)), originalResult);
     for (const viewport of [{ width: 1920, height: 1080 }, { width: 1366, height: 768 }, { width: 761, height: 768 }, { width: 390, height: 844 }]) {
       await page.setViewportSize(viewport); await paint(page);
       const plots = await page.locator('.analysis-molecule:visible canvas').evaluateAll(nodes => nodes.map(node => ({
         domain: node.dataset.axisDomain, keys: JSON.parse(node.dataset.groupKeys),
         width: node.getBoundingClientRect().width, available: node.parentElement.clientWidth, height: node.getBoundingClientRect().height
       })));
-      assert.ok(plots.length > 1); assert.equal(new Set(plots.map(p => p.domain)).size, 1);
+      assert.equal(plots.length, 1);
       assert.equal(new Set(plots.flatMap(p => p.keys)).size, 69);
-      for (const plot of plots) { assert.ok(Math.abs(plot.width - plot.available) <= 1); assert.ok(plot.height >= 280); }
+      for (const plot of plots) { assert.ok(plot.width > plot.available); assert.ok(plot.height >= 280); }
+      const ranking = await page.evaluate(() => {
+        const card = document.querySelector('.analysis-molecule:not([hidden])');
+        const keys = JSON.parse(card.querySelector('canvas').dataset.groupKeys);
+        const groups = Atlas3D.analysis.getState().result.channels.find(channel => channel.key === card.dataset.channel).groups;
+        return { medians: keys.map(key => groups.find(group => group.key === key).distribution.median),
+          keys, tableKeys: [...card.querySelectorAll('tbody tr')].map(row => row.dataset.groupKey) };
+      });
+      assert.deepEqual(ranking.keys, ranking.tableKeys);
+      assert.ok(ranking.medians.every((median, index) => !index || ranking.medians[index - 1] >= median));
       await assertNoOverflow(page);
       if (viewport.width === 761) {
         await page.locator('#analysis-toolbar-toggle').click(); await paint(page);
@@ -148,5 +174,72 @@ test('many sections wrap on one molecule with a shared axis, no horizontal scrol
     assert.match(await page.locator('#analysis-status').innerText(), /Synthetic load failure/);
     assert.equal(await page.locator('#analysis-charts canvas').count(), 0);
     assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('17 complete ROI names render in one row without n labels; all modes and value modes rank without changing source data', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), page = h.page;
+  try {
+    await page.setViewportSize({ width: 1366, height: 900 });
+    await seedAnalysisStack(h, { count: 3, width: 34, height: 8, missingCorrection: false });
+    const names = ['Blood vessel', 'Caudate', 'Cingulate', 'Geniculate nucleus', 'Habenula', 'Hippocampus',
+      'Interpeduncular nucleus', 'Midbrain', 'Occipital lobe', 'Parietal lobe', 'Periaqueductal gray',
+      'Pons', 'Red nucleus', 'Substantia nigra', 'Temporal lobe', 'Thalamus', 'White matter'];
+    await page.evaluate(async names => {
+      for (const project of await ProjectStorage.listProjects()) {
+        const roi = { roi_names: {}, roi_items: {}, palette: {}, roi_show_flags: {} };
+        names.forEach((name, index) => {
+          const key = 'region-' + index, x = index * 2 - .5;
+          roi.roi_names[key] = name; roi.roi_items[key] = [{ poly_msi: [[x, -.5], [x + 2, -.5], [x + 2, 7.5], [x, 7.5]] }];
+          roi.palette[key] = [125, 255, 125]; roi.roi_show_flags[key] = true;
+        });
+        project.roi = roi; await ProjectStorage.putProject(project);
+      }
+    }, names);
+    const source = await scientificDigest(page);
+    await page.addInitScript(() => {
+      const proto = CanvasRenderingContext2D.prototype, fillText = proto.fillText, setTransform = proto.setTransform;
+      proto.setTransform = function (...args) { this.canvas.__labelCalls = []; return setTransform.apply(this, args); };
+      proto.fillText = function (text, x, y, ...rest) {
+        (this.canvas.__labelCalls ||= []).push({ text: String(text), x, y, width: this.measureText(text).width });
+        return fillText.call(this, text, x, y, ...rest);
+      };
+    });
+    await page.goto(h.baseURL + '/stack3d/index.html'); await readyAnalysisStack(page, 3); await paint(page);
+    for (const mode of ['selected', 'pooled']) {
+      await page.locator('button[data-analysis-mode="' + mode + '"]').click(); await settled(page, mode, mode === 'selected' ? 1 : 3);
+      for (const valueMode of ['raw', 'normalized']) {
+        await page.locator('#value-mode').selectOption(valueMode);
+        await page.waitForFunction(value => Atlas3D.analysis.getState().result?.valueMode === value &&
+          document.querySelector('#analysis-panel').getAttribute('aria-busy') === 'false', valueMode);
+        for (const channel of ['DA', 'NE', '5-HT']) {
+          await page.locator('[data-analysis-molecule="' + channel + '"]').click(); await paint(page);
+          const state = await page.locator('.analysis-molecule:visible').evaluate(card => {
+            const canvas = card.querySelector('canvas'), result = Atlas3D.analysis.getState().result;
+            const groups = result.channels.find(item => item.key === card.dataset.channel).groups;
+            const keys = JSON.parse(canvas.dataset.groupKeys), width = parseFloat(canvas.style.width), height = parseFloat(canvas.style.height);
+            const slot = (width - 104) / keys.length;
+            return { canvasCount: card.querySelectorAll('canvas').length, keys,
+              sourceKeys: groups.map(group => group.key), tableKeys: [...card.querySelectorAll('tbody tr')].map(row => row.dataset.groupKey),
+              labels: keys.map((key, index) => {
+                const x = 84 + slot * (index + .5), group = groups.find(group => group.key === key);
+                const calls = canvas.__labelCalls.filter(call => Math.abs(call.x - x) < .1 && call.y > height - 90);
+                return { name: group.name, median: group.distribution.median, text: calls.map(call => call.text).join(' '),
+                  fit: calls.every(call => call.width <= slot - 8 && call.y < height - 5) };
+              }) };
+          });
+          assert.equal(state.canvasCount, 1); assert.equal(state.keys.length, 17);
+          assert.deepEqual(state.keys, state.tableKeys);
+          assert.ok(state.labels.every((label, index) => !index || state.labels[index - 1].median >= label.median));
+          assert.notDeepEqual(state.keys, state.sourceKeys, 'presentation leaves the alphabetical scientific result in its original order');
+          for (const label of state.labels) {
+            assert.equal(label.text.replace(/\s/g, ''), label.name.replace(/\s/g, ''));
+            assert.ok(label.fit); assert.doesNotMatch(label.text, /…|n = /);
+          }
+          await assertNoOverflow(page);
+        }
+      }
+    }
+    assert.deepEqual(await scientificDigest(page), source); assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });

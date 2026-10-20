@@ -79,8 +79,9 @@ body.resizing-analysis-panel,body.resizing-analysis-panel *{cursor:row-resize!im
 #analysis-panel .analysis-plot-pages{display:grid;grid-template-columns:minmax(0,1fr);gap:10px;min-width:0}
 #analysis-panel .analysis-plot-row{min-width:0}
 #analysis-panel .analysis-row-label{font-size:12px;color:#b8c7da;margin:0 0 6px;overflow-wrap:anywhere}
-#analysis-panel .analysis-plot{width:100%;min-width:0;overflow:hidden;background:#fff;border-radius:3px}
-#analysis-panel .analysis-plot canvas{display:block;max-width:100%}
+#analysis-panel .analysis-plot{width:100%;min-width:0;overflow-x:auto;overflow-y:hidden;background:#fff;border-radius:3px;scrollbar-color:#72839a #e7edf5;overscroll-behavior-x:contain}
+#analysis-panel .analysis-plot:focus-visible{outline:2px solid #85b7ff;outline-offset:2px}
+#analysis-panel .analysis-plot canvas{display:block;max-width:none}
 #analysis-panel .analysis-table-details{margin-top:6px;min-width:0}
 #analysis-panel .analysis-table-details>summary{padding:7px 0;cursor:pointer;color:#b2cfff;font-size:12px}
 #analysis-panel .analysis-table-wrap{min-width:0;margin-top:3px}

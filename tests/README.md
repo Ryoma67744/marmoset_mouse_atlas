@@ -62,11 +62,19 @@ browser resources, use `node --test --test-concurrency=2 tests/*.test.cjs`.
 The v2.25 readability tests cover one-molecule full-width plots, compact toolbar
 switching, applied-range summaries, per-tab display restoration and focus return.
 Display actions reuse the same scientific result and do not change the camera or
-source raster bytes. Large section sets wrap vertically with a shared molecular
-axis. Automatic axes use the maximum included P99 with readable bounds; counts
+source raster bytes. Automatic axes use the maximum included P99 with readable bounds; counts
 above the final axis are exact, independent of display sampling. Temporary upper
 tail buffers are discarded after counting, including incompatible groups. Worker
 and fallback paths agree. The 2D renderer retains its previous default scale.
+
+The v2.28 layout uses independent, per-tab sidebar minimization, preserving
+expanded widths, the camera and analysis-focus restoration. Each 3D molecular
+plot and its statistics table use a presentation-only median-descending order,
+with stable ties and unavailable groups last. Categories occupy one horizontal
+row with scrolling confined to the chart. Full ROI labels wrap without truncation;
+pixel counts remain in the statistics table. The shared 2D renderer keeps its
+existing labels and count display by default. Regression coverage checks
+scientific-result immutability and correct stable-ID selection after sorting.
 
 The v2.21.1 action regressions cover overlapping cloud/ZIP/PNG/Otsu operations,
 authentication changes, bounded cloud requests and unknown write outcomes.

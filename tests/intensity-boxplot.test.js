@@ -260,3 +260,44 @@ test('explicit domains keep clipped box geometry finite even with extreme finite
   assert.equal(calls.filter(call => call.method === 'arc').length, 1);
   for (const call of calls) for (const arg of call.args) if (typeof arg === 'number') assert.ok(Number.isFinite(arg), call.method);
 });
+
+test('full ROI labels wrap without truncation or count labels and reserve enough bottom space', () => {
+  const { draw, canvas, calls } = setup();
+  const names = ['Geniculate nucleus', 'Interpeduncular nucleus', 'Periaqueductal gray',
+    'Averylongunbrokenanatomicalname', '日本語の長い領域名でも省略しない'];
+  const rois = names.map((name, index) => ({ key: String(index), name, distribution: distribution() }));
+  const before = JSON.stringify(rois);
+  const result = draw(canvas, { width: 604, height: 280, fitWidth: true, fullLabels: true, showCounts: false, rois });
+  assert.ok(result.height > 280, 'wrapped labels get extra vertical space');
+  for (const [index, group] of result.groups.entries()) {
+    assert.equal(group.labelLines.join('').replace(/\s/g, ''), names[index].replace(/\s/g, ''));
+    for (const line of group.labelLines) {
+      assert.ok(line.length * 6 <= group.right - group.left - 10);
+      const rendered = calls.find(call => call.method === 'fillText' && call.args[0] === line);
+      assert.ok(rendered && rendered.args[2] < result.height - 5, 'each complete label line remains in the canvas');
+    }
+  }
+  assert.ok(!calls.some(call => call.method === 'fillText' && /^n = /.test(call.args[0])));
+  assert.ok(!result.groups.some(group => group.labelLines.some(line => line.includes('…'))));
+  assert.equal(JSON.stringify(rois), before);
+  calls.length = 0;
+  const legacy = draw(canvas, { width: 604, rois });
+  assert.equal(legacy.height, 320);
+  assert.ok(calls.some(call => call.method === 'fillText' && /^n = /.test(call.args[0])), '2D defaults still show counts');
+  assert.ok(calls.some(call => call.method === 'fillText' && call.args[0].includes('…')), '2D defaults keep established labels');
+});
+
+test('large high-DPI single-row plots bound the bitmap and preserve CSS-coordinate selection', () => {
+  const { draw, canvas } = setup(4);
+  const selected = [];
+  const result = draw(canvas, { width: 7004, height: 640, fitWidth: true, fullLabels: true, showCounts: false,
+    maxBitmapDimension: 16384, maxBitmapPixels: 16777216,
+    rois: Array.from({ length: 69 }, (_, index) => ({ key: 'section-' + index, distribution: distribution() })),
+    onSelect: key => selected.push(key) });
+  assert.ok(canvas.width <= 16384 && canvas.height <= 16384);
+  assert.ok(canvas.width * canvas.height <= 16777216 + canvas.width + canvas.height);
+  assert.equal(result.width, 7004);
+  const last = result.groups.at(-1);
+  canvas.onclick({ clientX: -110 + last.center / 2, clientY: 80 + 100 / 2 });
+  assert.deepEqual(selected, ['section-68']);
+});

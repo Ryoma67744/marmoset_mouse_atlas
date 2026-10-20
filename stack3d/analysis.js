@@ -20,6 +20,17 @@
     }
     return result.join(', ');
   }
+  // Presentation order only: keep scientific results, stable keys and ties intact.
+  function sortGroupsByMedian(groups) {
+    return groups.map((group, index) => ({ group, index })).sort((a, b) => {
+      const am = a.group.distribution?.median, bm = b.group.distribution?.median;
+      const av = a.group.distribution?.n > 0 && Number.isFinite(am);
+      const bv = b.group.distribution?.n > 0 && Number.isFinite(bm);
+      if (av !== bv) return av ? -1 : 1;
+      if (av && am !== bm) return am > bm ? -1 : 1;
+      return a.index - b.index;
+    }).map(item => item.group);
+  }
   function create(options) {
     const root = options.root, core = global.Stack3DAnalysis;
     if (!root || !core || !global.IntensityBoxPlot) throw new Error('3D分析の描画機能を読み込めませんでした。');
@@ -226,20 +237,22 @@
     function requestRedraw() {
       cancelAnimationFrame(resizeFrame); resizeFrame = requestAnimationFrame(redraw);
     }
-    function plotHeight(pages, multipleRows) {
+    function plotHeight(pages) {
       if (global.matchMedia('(max-width: 760px)').matches) return 280;
       const body = $('analysis-body');
       // Header/toolbar height can wrap with language, width, and open conditions.
       // Measure its actual space instead of subtracting a fixed toolbar height.
       const preceding = pages.getBoundingClientRect().top - body.getBoundingClientRect().top + body.scrollTop;
-      return Math.max(340, Math.min(640, Math.floor(body.clientHeight - preceding - 46 - (multipleRows ? 24 : 0))));
+      return Math.max(340, Math.min(640, Math.floor(body.clientHeight - preceding - 70)));
     }
     function renderResults() {
       const result = state.result; if (!result) return;
       const charts = $('analysis-charts'), scrollBody = $('analysis-body'), scrollTop = scrollBody.scrollTop;
       const openTables = new Map([...charts.querySelectorAll('.analysis-molecule')].map(card => [card.dataset.channel, card.querySelector('.analysis-table-details')?.open || false]));
+      const plotScroll = new Map([...charts.querySelectorAll('.analysis-molecule')].map(card => [card.dataset.channel, card.querySelector('.analysis-plot')?.scrollLeft || 0]));
       charts.replaceChildren(); drawCallbacks = []; updateDisplay();
       for (const channel of result.channels) {
+        const groups = sortGroupsByMedian(channel.groups);
         const card = element('section', 'analysis-molecule'); card.dataset.channel = channel.key; card.hidden = channel.key !== state.activeMolecule;
         const heading = element('div', 'analysis-molecule-heading'); heading.append(element('strong', '', channel.name || channel.key), element('span', '', channel.unit || ''));
         card.append(heading);
@@ -250,29 +263,37 @@
         const draw = () => {
           if (!pages.isConnected || card.hidden || root.classList.contains('analysis-collapsed')) return;
           const selectedId = selectedSection()?.id;
-          const highlight = state.mode === 'by-section' ? channel.groups.find(group => group.sectionId === selectedId)?.key : null;
-          const width = Math.max(220, Math.floor(pages.clientWidth)), perRow = Math.max(1, Math.floor((width - 104) / 90));
-          const rois = channel.groups.map(group => ({ key: group.key, name: group.name, distribution: group.distribution,
+          const highlight = state.mode === 'by-section' ? groups.find(group => group.sectionId === selectedId)?.key : null;
+          const availableWidth = Math.max(220, Math.floor(pages.clientWidth));
+          const width = Math.max(availableWidth, groups.length * 100 + 104);
+          const rois = groups.map(group => ({ key: group.key, name: group.name, distribution: group.distribution,
             aboveCount: state.axisMode === 'auto' ? group.distribution?.aboveAutoCount || 0 : 0 }));
-          const height = plotHeight(pages, rois.length > perRow);
-          pages.replaceChildren();
-          for (let start = 0; start < rois.length; start += perRow) {
-            const rowRois = rois.slice(start, start + perRow), row = element('div', 'analysis-plot-row');
-            if (rois.length > perRow) row.append(element('p', 'analysis-row-label', `${state.mode === 'by-section' ? '切片' : '領域'} ${start + 1}–${start + rowRois.length} / ${rois.length} · 縦軸は全行で共通`));
-            const plot = element('div', 'analysis-plot'), canvas = document.createElement('canvas'); plot.append(canvas); row.append(plot); pages.append(row);
-            const geometry = global.IntensityBoxPlot.draw(canvas, { width, height, fitWidth: true, axisRois: rois, compactTitle: true,
-              domain: state.axisMode === 'auto' ? channel.plot?.autoDomain : undefined,
-              title: channel.name || channel.key, unit: channel.unit, highlightRoiKey: highlight, rois: rowRois,
-              onSelect: state.mode === 'by-section' && typeof options.onSelect === 'function' ? key => {
-                const group = channel.groups.find(item => item.key === key); if (group?.sectionId) options.onSelect(group.sectionId);
-              } : undefined });
-            canvas.dataset.groupKeys = JSON.stringify(rowRois.map(group => group.key));
-            if (geometry) canvas.dataset.axisDomain = JSON.stringify(geometry.domain);
+          let plot = pages.querySelector('.analysis-plot');
+          if (!plot) {
+            const row = element('div', 'analysis-plot-row');
+            row.append(element('p', 'analysis-row-label'));
+            plot = element('div', 'analysis-plot'); plot.tabIndex = 0;
+            plot.setAttribute('role', 'region'); plot.setAttribute('aria-label', (channel.name || channel.key) + ' 箱ひげ図。中央値の高い順。左右にスクロールできます。');
+            plot.append(document.createElement('canvas')); row.append(plot); pages.append(row);
           }
+          pages.querySelector('.analysis-row-label').textContent = `中央値の高い順 · ${rois.length}${state.mode === 'by-section' ? '切片' : '領域'}${width > availableWidth ? ' · 横にスクロールして全体を表示' : ''}`;
+          const scrollLeft = plotScroll.has(channel.key) ? plotScroll.get(channel.key) : plot.scrollLeft;
+          plotScroll.delete(channel.key);
+          const canvas = plot.querySelector('canvas');
+          const geometry = global.IntensityBoxPlot.draw(canvas, { width, height: plotHeight(pages), fitWidth: true, compactTitle: true,
+            fullLabels: true, showCounts: false, maxBitmapDimension: 16384, maxBitmapPixels: 16777216,
+            domain: state.axisMode === 'auto' ? channel.plot?.autoDomain : undefined,
+            title: channel.name || channel.key, unit: channel.unit, highlightRoiKey: highlight, rois,
+            onSelect: state.mode === 'by-section' && typeof options.onSelect === 'function' ? key => {
+              const group = groups.find(item => item.key === key); if (group?.sectionId) options.onSelect(group.sectionId);
+            } : undefined });
+          canvas.dataset.groupKeys = JSON.stringify(rois.map(group => group.key));
+          if (geometry) canvas.dataset.axisDomain = JSON.stringify(geometry.domain);
+          plot.scrollLeft = scrollLeft;
         };
         drawCallbacks.push(draw); draw();
         const tableDetails = element('details', 'analysis-table-details'); tableDetails.open = openTables.get(channel.key) || false;
-        tableDetails.append(element('summary', '', `統計表を表示（${channel.groups.length}${state.mode === 'by-section' ? '切片' : '領域'}）`), tableFor(channel.groups)); card.append(tableDetails);
+        tableDetails.append(element('summary', '', `統計表を表示（${groups.length}${state.mode === 'by-section' ? '切片' : '領域'}）`), tableFor(groups)); card.append(tableDetails);
         const acceptedWarnings = [...new Set(channel.groups.flatMap(group => group.reasonCodes || []))];
         if (acceptedWarnings.length) card.append(element('p', 'analysis-warning', reasons(acceptedWarnings)));
         const exclusions = channel.groups.flatMap(group => (group.exclusions || []).map(item => ({ ...item, roiName: group.roiName })));
@@ -386,5 +407,5 @@
       dispose() { cancel(); disposed = true; save(); observer?.disconnect(); layout?.dispose(); worker?.dispose(); core.clearCache(); sections = []; cancelAnimationFrame(resizeFrame); for (const [target, event, handler] of listeners) target.removeEventListener(event, handler); drawCallbacks = []; state.result = null; }
     };
   }
-  global.Stack3DAnalysisUI = { create };
+  global.Stack3DAnalysisUI = { create, sortGroupsByMedian };
 })(window);

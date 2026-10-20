@@ -15,8 +15,9 @@
   </header>
   <div id="sync-details" class="sync-details" hidden></div>
   <main class="workspace">
-    <aside class="controls" aria-label="3D表示設定">
-      <div class="panel-heading"><span class="eyebrow">DISPLAY</span><h1>分子分布</h1></div>
+    <aside id="controls-panel" class="controls" aria-label="3D表示設定">
+      <div class="sidebar-heading"><div class="panel-heading"><span class="eyebrow">DISPLAY</span><h1>分子分布</h1></div><button id="controls-toggle" class="sidebar-toggle" type="button" aria-expanded="true" aria-controls="controls-body" aria-label="分子分布を最小化"><span class="sidebar-toggle-icon" aria-hidden="true">‹</span><span class="sidebar-toggle-text">最小化</span></button><span class="sidebar-rail-label" aria-hidden="true">分子分布</span></div>
+      <div id="controls-body" class="sidebar-body">
       <div class="control-block series-control"><label for="series-select">表示する系列</label><select id="series-select" aria-describedby="series-note"><option value="legacy_marmoset">Marmoset</option></select><p id="series-note" class="hint"></p></div>
       <fieldset id="channel-group" class="channel-group"><legend>表示する分子</legend>
         <label class="channel da"><input type="checkbox" name="channel" value="DA" checked><span class="swatch"></span><strong>DA</strong><small>Dopamine</small></label>
@@ -45,6 +46,7 @@
       <button id="reset-view" class="wide">視点を戻す</button>
       <details class="legend-details"><summary>色範囲・表示状態</summary><div id="range-legend"></div><p id="mask-note" class="hint">大津法の表示マスクは3Dでは適用しません。</p></details>
       <p class="sidebar-foot"><span id="coordinate-note">XY：保存された画素サイズ<br>前後：欠番を詰めた切片順</span><br><a href="../STACK3D_GUIDE.md">3D表示の使い方</a></p>
+      </div>
     </aside>
     <section class="scene-panel" aria-label="インタラクティブ3Dモデル">
       <div class="scene-viewport">
@@ -61,7 +63,8 @@
     </section>
     <div id="section-resizer" role="separator" tabindex="0" aria-label="右側パネルの幅" aria-orientation="vertical" aria-controls="section-panel" title="ドラッグまたは左右矢印キーで幅を変更（ダブルクリックで元に戻す）"></div>
     <aside id="section-panel" class="section-panel" aria-label="選択切片">
-      <div class="panel-heading"><span class="eyebrow">SELECTED SECTION</span><h2 id="section-name">—</h2><p id="section-metadata" class="hint"></p></div>
+      <div class="sidebar-heading"><div class="panel-heading"><span class="eyebrow">SELECTED SECTION</span><h2 id="section-name">—</h2><p id="section-metadata" class="hint"></p></div><button id="section-toggle" class="sidebar-toggle" type="button" aria-expanded="true" aria-controls="section-body" aria-label="選択切片を最小化"><span class="sidebar-toggle-icon" aria-hidden="true">›</span><span class="sidebar-toggle-text">最小化</span></button><span class="sidebar-rail-label" aria-hidden="true">SELECTED SECTION</span></div>
+      <div id="section-body" class="sidebar-body">
       <div class="preview-tabs" role="group" aria-label="断面プレビュー"><button data-preview="MSI" aria-pressed="true">MSI＋ROI</button><button data-preview="HE_Stain" aria-pressed="false">HE＋ROI</button><button data-preview="ATLAS" aria-pressed="false">Atlas</button></div>
       <div id="preview-viewport"><div id="section-preview" class="section-preview"><p>切片を選択してください</p></div></div>
       <button id="enlarge-preview" class="text-button preview-enlarge" disabled>画像を拡大 ↗</button>
@@ -106,6 +109,7 @@
         <button id="save-cloud" class="wide" hidden>クラウドに保存</button><p id="placement-status" class="hint" role="status"></p>
       </details>
       <div class="list-heading"><label for="section-search">切片一覧 · 3D表示 ON/OFF</label><input id="section-search" type="search" placeholder="Cor_…" autocomplete="off"><p id="visibility-help" class="hint">チェックを外すと3D表示と共通色範囲の計算から除外します。</p><div class="visibility-actions"><span id="visibility-status" role="status" aria-live="polite"></span><button id="enable-all-sections" class="text-button" disabled>すべてON</button></div></div><div id="section-list" class="section-list" role="list" aria-label="切片一覧"></div>
+      </div>
     </aside>
   </main>
   <dialog id="preview-dialog" aria-labelledby="detail-title"><div class="detail-toolbar"><strong id="detail-title">断面プレビュー</strong><button id="close-preview" autofocus>閉じる</button></div><div id="detail-preview"></div><p id="detail-status" class="hint"></p></dialog>
@@ -139,6 +143,7 @@
   <script src="roi.js"></script>
   <script src="renderer.js"></script>
   <script src="panel-resize.js"></script>
+  <script src="panel-collapse.js"></script>
   <script src="batch-alignment.js"></script>
   <script src="analysis-worker-client.js"></script>
   <script src="analysis-resize.js"></script>
