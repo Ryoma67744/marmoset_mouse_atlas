@@ -160,11 +160,12 @@ test('corrected 3D analysis excludes missing corrections instead of presenting r
   } finally { await h.close(); }
 });
 
-test('analysis dock sits below the slice scrubber, resizes and collapses without changing the camera, and clears failed loads', { timeout: 120000 }, async () => {
+test('stacked analysis dock sits below the slice scrubber, resizes and collapses without changing the camera, and clears failed loads', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), page = h.page;
   try {
     await seedAnalysisStack(h); await page.setViewportSize({ width: 1920, height: 1080 });
     await page.goto(h.baseURL + '/stack3d/index.html?project=' + sectionId(46)); await readyAnalysisStack(page);
+    await page.locator('#analysis-layout-toggle').click();
     const camera = await page.evaluate(() => Atlas3D.renderer.getView());
     const geometry = () => page.evaluate(() => {
       const rect = selector => { const { x, y, width, height, bottom } = document.querySelector(selector).getBoundingClientRect(); return { x, y, width, height, bottom }; };
