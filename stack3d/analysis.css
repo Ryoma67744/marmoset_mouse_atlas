@@ -1,4 +1,4 @@
-/* The analysis dock shares the center column, beneath the existing slice bar. */
+/* The analysis dock shares the center area beside the 3D view when space allows. */
 .workspace{min-height:0}
 .scene-panel{overflow:hidden}
 .scene-viewport{position:relative;display:flex;flex:1 1 auto;min-width:0;min-height:260px;overflow:hidden}
@@ -9,6 +9,7 @@
 #analysis-resizer{height:7px;flex:0 0 7px;display:grid;place-items:center;border-top:1px solid #344b68;border-bottom:1px solid #344b68;background:#172436;cursor:row-resize;touch-action:none}
 #analysis-resizer::after{content:'';width:52px;height:2px;background:#8ba4c6;border-radius:2px}
 body.resizing-analysis-panel,body.resizing-analysis-panel *{cursor:row-resize!important;user-select:none}
+body.resizing-analysis-side,body.resizing-analysis-side *{cursor:col-resize!important}
 #analysis-panel .analysis-header{display:flex;align-items:center;gap:7px;min-height:44px;flex:0 0 auto;padding:6px 14px}
 #analysis-title{margin:0;font-size:14px;font-weight:600;letter-spacing:1px;line-height:1.4}
 #analysis-value-badge{margin-left:auto;color:#b2cfff;font-size:12px;white-space:nowrap}
@@ -44,8 +45,8 @@ body.resizing-analysis-panel,body.resizing-analysis-panel *{cursor:row-resize!im
 #analysis-panel .analysis-minibar{display:none}
 #analysis-panel.analysis-toolbar-minimized:not(.analysis-collapsed)>.analysis-header,
 #analysis-panel.analysis-toolbar-minimized #analysis-toolbar{display:none}
-#analysis-panel.analysis-collapsed #analysis-focus,#analysis-panel.analysis-collapsed #analysis-expand,#analysis-panel.analysis-collapsed #analysis-toolbar-toggle{display:none}
-#analysis-panel.analysis-toolbar-minimized:not(.analysis-collapsed)>.analysis-minibar{display:flex;align-items:center;gap:10px;height:43px;flex:0 0 43px;box-sizing:border-box;padding:5px 14px;border-bottom:1px solid #344357;background:#142032;min-width:0}
+#analysis-panel.analysis-collapsed #analysis-focus,#analysis-panel.analysis-collapsed #analysis-expand,#analysis-panel.analysis-collapsed #analysis-toolbar-toggle,#analysis-panel.analysis-collapsed #analysis-layout-toggle{display:none}
+#analysis-panel.analysis-toolbar-minimized:not(.analysis-collapsed)>.analysis-minibar{display:flex;flex-wrap:wrap;align-items:center;gap:7px 10px;min-height:43px;flex:0 0 auto;box-sizing:border-box;padding:5px 14px;border-bottom:1px solid #344357;background:#142032;min-width:0}
 #analysis-panel .analysis-mini-molecule{display:flex;align-items:center;gap:8px;flex:0 0 auto;color:#a8bbd5;font-size:12px}
 #analysis-panel #analysis-molecule-select{min-width:77px;width:77px;height:29px;padding:3px 7px;background:#b2cfff;border-color:#b2cfff;color:#102139;font-weight:700}
 #analysis-panel.analysis-all-measured .analysis-mini-molecule{min-width:0}
@@ -144,6 +145,17 @@ body.resizing-analysis-panel,body.resizing-analysis-panel *{cursor:row-resize!im
   #analysis-panel .analysis-minibar>button{padding-left:6px;padding-right:6px}
 }
 @media(min-width:761px){
+  .scene-panel.analysis-side-layout{display:grid;grid-template-columns:minmax(320px,1fr) var(--analysis-side-width,60%);grid-template-rows:minmax(0,1fr) auto 64px}
+  .scene-panel.analysis-side-layout>.scene-viewport{grid-column:1;grid-row:1}
+  .scene-panel.analysis-side-layout>.scene-bottom{grid-column:1;grid-row:2;flex-direction:column;gap:3px;padding:9px 16px}
+  .scene-panel.analysis-side-layout>.slice-scrubber{grid-column:1;grid-row:3;padding-left:16px;padding-right:16px;min-width:0;gap:8px}
+  .scene-panel.analysis-side-layout .scrubber-hint{left:16px}
+  .scene-panel.analysis-side-layout .slice-scrubber input{min-width:0}
+  .scene-panel.analysis-side-layout>.scene-viewport .scene-top{left:14px;right:14px;gap:10px;align-items:flex-start}
+  .scene-panel.analysis-side-layout #render-state{text-align:right}
+  .scene-panel.analysis-side-layout>#analysis-panel{position:relative;grid-column:2;grid-row:1/4;height:auto;flex:none;padding-left:7px}
+  .scene-panel.analysis-side-layout #analysis-resizer{position:absolute;left:0;top:0;bottom:0;width:7px;height:auto;border-top:0;border-bottom:0;border-left:1px solid #344b68;border-right:1px solid #344b68;cursor:col-resize;z-index:1}
+  .scene-panel.analysis-side-layout #analysis-resizer::after{width:2px;height:52px}
   .workspace.analysis-focused{grid-template-columns:minmax(0,1fr)}
   .workspace.analysis-focused>.controls,.workspace.analysis-focused>#section-panel,.workspace.analysis-focused>#section-resizer{display:none}
   .workspace.analysis-focused>.scene-panel{grid-column:1;grid-row:1}
