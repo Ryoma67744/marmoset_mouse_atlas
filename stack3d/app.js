@@ -387,6 +387,7 @@
       renderer?.setSpacing(finite($('spacing').value, defaultSpacing())); renderer?.setOpacity(finite($('opacity').value, 0.55));
       renderer?.setHeOverlay({ visible: false }); renderer?.setRoiOverlay(roiOptions()); renderer?.setBrainContext(brainOptions());
       if (restoredCamera) { renderer?.setView(restoredCamera); restoredCamera = null; }
+      else renderer?.resetView();
       updateLabels(); setRange(); buildList(); await repaint();
       if (generation !== loadGeneration) return;
       $('scene-message').hidden = true; setBusy(false); if (!renderer) $('save-image').disabled = true; selectSection(selected);

@@ -13,6 +13,9 @@ async function seedSeries(h) {
     const legacy = await ProjectStorage.getProject('marmoset-one');
     legacy.displayName = 'Cor_1_1'; legacy.grid.umPerPxX = 150; legacy.grid.umPerPxY = 150;
     await ProjectStorage.putProject(legacy);
+    // Multiple legacy sections expose the camera error caused by fitting
+    // against the previous mouse series' pixel-unit spacing.
+    await ProjectStorage.putProject({ ...legacy, id: 'marmoset-two', displayName: 'Cor_1_2' });
     for (let number = 48; number >= 1; number--) {
       const project = {
         id: `mouse-${number}`, displayName: `Mouse_${String(number).padStart(3, '0')}`, plane: 'coronal',
@@ -37,6 +40,12 @@ async function ready(page, count, series) {
   await page.waitForFunction(({ count, series }) => window.__stack3dReady &&
     Atlas3D.seriesId === series && Atlas3D.sections.length === count && Atlas3D.renderer?.getStats().renderCount > 0 &&
     !document.querySelector('#series-select').disabled, { count, series });
+}
+function assertCameraClose(actual, expected, message) {
+  for (const key of ['position', 'target', 'up']) {
+    actual[key].forEach((value, index) => assert.ok(Math.abs(value - expected[key][index]) < 1e-8, `${message}: ${key}[${index}]`));
+  }
+  assert.ok(Math.abs(actual.zoom - expected.zoom) < 1e-8, `${message}: zoom`);
 }
 async function uncheckAndSwitchBeforeRepaint(page, analyte, series) {
   // Put a repaint and a series change in the same event-loop turn. The old
@@ -84,8 +93,22 @@ test('mouse series keeps all 48 rigid poses and six channels separate from legac
     await page.locator('input[name="channel"][value="GABA-DPP"]').uncheck();
     await page.waitForFunction(() => Atlas3D.options().channels.length === 5);
     await page.locator('input.section-visible[data-section-id="mouse-2"]').uncheck();
+    const mouseCamera = await page.evaluate(() => Atlas3D.renderer.getView());
     await page.locator('#series-select').selectOption('legacy_marmoset');
-    await ready(page, 1, 'legacy_marmoset');
+    await ready(page, 2, 'legacy_marmoset');
+    const firstMarmosetFit = await page.evaluate(() => {
+      const actual = Atlas3D.renderer.getView();
+      Atlas3D.renderer.resetView();
+      return { actual, fitted: Atlas3D.renderer.getView() };
+    });
+    assertCameraClose(firstMarmosetFit.actual, firstMarmosetFit.fitted, 'first visit fits the incoming series at its final spacing');
+    const marmosetCamera = await page.evaluate(() => {
+      const view = Atlas3D.renderer.getView();
+      view.position = view.position.map((value, index) => value + [2.4, -1.2, .7][index]);
+      view.target = [.2, -.1, 0]; view.zoom = 1.4;
+      Atlas3D.renderer.setView(view);
+      return Atlas3D.renderer.getView();
+    });
     assert.deepEqual(await page.locator('input[name="channel"]').evaluateAll(inputs => inputs.map(input => input.value)), ['DA', 'NE', '5-HT']);
     assert.equal(await page.locator('#brain-visible').isDisabled(), false);
     assert.equal(await page.locator('#analysis-panel').isVisible(), true);
@@ -94,9 +117,11 @@ test('mouse series keeps all 48 rigid poses and six channels separate from legac
     assert.equal(await page.locator('input[name="channel"][value="GABA-DPP"]').isChecked(), false);
     assert.equal(await page.locator('input.section-visible[data-section-id="mouse-2"]').isChecked(), false);
     assert.equal(await page.locator('input[name="channel"]:checked').count(), 5);
+    assertCameraClose(await page.evaluate(() => Atlas3D.renderer.getView()), mouseCamera, 'saved mouse camera survives the first roundtrip');
     for (let attempt = 0; attempt < 3; attempt++) {
       await uncheckAndSwitchBeforeRepaint(page, 'GABA-DPP', 'legacy_marmoset');
-      await ready(page, 1, 'legacy_marmoset');
+      await ready(page, 2, 'legacy_marmoset');
+      assertCameraClose(await page.evaluate(() => Atlas3D.renderer.getView()), marmosetCamera, 'custom marmoset camera survives a series roundtrip');
       assert.equal(await page.locator('input[name="channel"][value="DA"]').isChecked(), false);
       await uncheckAndSwitchBeforeRepaint(page, 'DA', 'mouse_tissue_1set');
       await ready(page, 48, 'mouse_tissue_1set');
@@ -115,7 +140,7 @@ test('mouse series keeps all 48 rigid poses and six channels separate from legac
     await page.waitForFunction(() => document.querySelector('#scene-message strong')?.textContent === '切片番号が重複しています');
     assert.equal(await page.locator('#series-select').isEnabled(), true, 'an invalid series must not trap the user');
     await page.locator('#series-select').selectOption('legacy_marmoset');
-    await ready(page, 1, 'legacy_marmoset');
+    await ready(page, 2, 'legacy_marmoset');
     assert.equal(await page.locator('input[name="channel"][value="DA"]').isChecked(), false);
     assert.equal(await page.evaluate(() => Atlas3D.sections[0].id), 'marmoset-one', 'duplicate mouse numbers must not block a different series');
     assert.deepEqual(h.errors, []);
