@@ -11,7 +11,9 @@
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
 }
 .alignment-modal .align-header { margin-bottom: 12px; }
-.alignment-modal .align-footer { justify-content: flex-end; padding-top: 12px; border-top: 1px solid #e2e8f0; margin-top: 12px; }
+.alignment-modal .align-footer { position: sticky; bottom: 0; z-index: 5; justify-content: flex-end; padding: 12px 0 16px; border-top: 1px solid #e2e8f0; margin-top: 12px; background: white; box-shadow: 0 -5px 10px rgb(255 255 255 / .9); }
+.alignment-modal .align-footer [data-el=save-hint] { flex: 1; margin: 0; }
+.alignment-modal .align-footer button { white-space: nowrap; }
 .alignment-modal .align-reference { padding: 8px; border: 1px solid #cbd5e1; border-radius: 5px; margin-bottom: 12px; background: #f8fafc; }
 .alignment-modal .align-reference-line, .alignment-modal .align-sources { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; }
 .alignment-modal .align-reference details { margin-top: 6px; }
@@ -23,7 +25,8 @@
   margin: 0 auto;
 }
 .alignment-modal .pick-pane img { width: 100%; height: auto; }
-.alignment-modal .align-controls { display: grid; grid-template-columns: minmax(210px, .8fr) minmax(280px, 1.2fr) minmax(250px, 1fr); gap: 12px; margin-top: 12px; }
+.alignment-modal .align-controls { display: grid; grid-template-columns: minmax(350px, 1.1fr) minmax(250px, 1fr); gap: 10px; margin-top: 12px; }
+.alignment-modal .align-point-controls { grid-column: 1 / -1; }
 .alignment-modal .align-pane-title { min-height: 28px; margin-bottom: 4px; }
 .alignment-modal .align-parameters label { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
 .alignment-modal .align-parameters label > span:first-child { min-width: 76px; color: #475569; }
@@ -47,18 +50,37 @@
 .alignment-modal .align-residual-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
 .alignment-modal .align-residual-svg .align-selected { filter: drop-shadow(0 0 2px white); }
 .alignment-modal .align-residual-svg .align-excluded { opacity: .35; }
-.alignment-modal .align-candidate { padding: 7px; border: 1px solid #cbd5e1; border-radius: 4px; margin: 6px 0; }
-.alignment-modal .align-candidate strong { display: block; }
-.alignment-modal .align-candidate button { margin-top: 5px; }
-.alignment-modal [data-el=candidates] { max-height: 245px; overflow: auto; }
 .alignment-modal .align-legend { display: flex; flex-wrap: wrap; gap: 5px 12px; margin-top: 4px; font-size: 11px; }
 .alignment-modal .align-tolerance { display: flex; align-items: center; gap: 5px; margin-top: 7px; }
 .alignment-modal .align-tolerance input { width: 75px; }
+.alignment-modal .align-stepper { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; color: #64748b; }
+.alignment-modal .align-stepper [data-step] { padding: 6px 10px; border-radius: 5px; }
+.alignment-modal .align-stepper .active { background: #dbeafe; color: #1d4ed8; font-weight: 600; }
+.alignment-modal[data-stage="1"] .align-panels { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.alignment-modal .align-orient-toolbar, .alignment-modal .align-pick-guide, .alignment-modal .align-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+.alignment-modal .align-orient-toolbar .align-note { flex-basis: 100%; }
+.alignment-modal .align-orient-toolbar input { width: 70px; }
+.alignment-modal .align-pick-guide { padding: 8px; background: #eff6ff; border-radius: 5px; }
+.alignment-modal .align-pick-guide strong { color: #1e40af; }
+.alignment-modal .align-next { display: flex; justify-content: flex-end; margin-top: 10px; }
+.alignment-modal button[data-act=orient-next] { background: #2563eb; color: white; padding: 7px 14px; font-weight: 600; }
+.alignment-modal .align-zoom { display: inline-flex; gap: 4px; white-space: nowrap; }
+.alignment-modal .align-details { border: 1px solid #cbd5e1; border-radius: 5px; padding: 8px; align-self: start; }
+.alignment-modal summary { cursor: pointer; font-weight: 500; }
+.alignment-modal .align-actions { margin: 8px 0 0; }
+.alignment-modal .align-viewport { overflow: hidden; background: #111827; touch-action: none; user-select: none; position: relative; }
+.alignment-modal .align-viewport.active { outline: 2px solid #3b82f6; outline-offset: 2px; cursor: crosshair; }
+.alignment-modal .align-image-layer { position: absolute; inset: 0; transform-origin: 0 0; }
+.alignment-modal .align-image-layer img { width: 100%; height: 100%; display: block; user-select: none; }
+.alignment-modal .pick-pane { position: relative; border: 1px solid #cbd5e1; border-radius: 4px; }
+.alignment-modal .pick-pane[data-pane=preview] { overflow: hidden; }
+.alignment-modal .pick-pane[data-pane=preview] > img { display: block; width: 100%; height: 100%; }
+.alignment-modal .pick-dot { position: absolute; width: 16px; height: 16px; padding: 0; margin: 0; pointer-events: auto; border: 1.5px solid white; color: white; border-radius: 50%; transform: translate(-50%, -50%); font-size: 10px; line-height: 13px; text-align: center; cursor: pointer; }
+.alignment-modal .align-gesture-note { margin-top: 8px; }
 @media (max-width: 850px) {
-  .alignment-modal .align-controls { grid-template-columns: 1fr 1fr; }
-  .alignment-modal .align-evaluation { grid-column: 1 / -1; }
+  .alignment-modal .align-controls { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
-  .alignment-modal .align-panels, .alignment-modal .align-controls { grid-template-columns: 1fr; }
+  .alignment-modal .align-panels, .alignment-modal[data-stage="1"] .align-panels, .alignment-modal .align-controls { grid-template-columns: 1fr; }
   .alignment-modal .pick-pane { max-width: 420px; margin: auto; }
 }

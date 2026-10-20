@@ -15,6 +15,7 @@
     <script src="../lib/storage.js"></script>
     <script src="../lib/otsu.js"></script>
     <script src="../lib/align.js"></script>
+    <script src="../lib/alignment-orientation.js"></script>
     <script src="../lib/alignment-reference.js"></script>
     <script src="./alignment-modal.js"></script>
     <link rel="stylesheet" href="./alignment-modal.css">
@@ -3851,9 +3852,8 @@ function loadAllImages() {
     // =====================================================================
     // 重ね合わせ (HE ↔ MSI) モーダル
     //
-    // 数学はすべて ../lib/align.js (Share_Test からの移植)。ここは UI だけ。
-    // 座標系は「生 HE px → 生 MSI px」。表示の -90° 回転は一切絡めないので、
-    // 両ペインとも生の向きのまま見せる。
+    // 数学は align.js と alignment-orientation.js。保存行列は生 HE px → 生 MSI px。
+    // モーダル内で人が確定した向きと、Viewer 全体の表示回転は別に管理する。
     // =====================================================================
     function heLayerKeys() {
       return Object.keys(atlasData.images || {}).filter(k => /HE_STAIN|IF_STAIN/i.test(k));
