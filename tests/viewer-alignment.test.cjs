@@ -574,3 +574,30 @@ test('a queued preview cannot re-enable landmark edits while an alignment save i
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
+
+test('large workspace comparison modes and same-grid molecule changes preserve the draft and scientific data', { timeout: 90000 }, async () => {
+  const h = await startBrowserHarness();
+  try {
+    await h.page.setViewportSize({width:1440,height:950});
+    await openFixture(h,'alignment-workspace-preserve',{matrix:S});
+    const before=await sourceSnapshot(h.page);
+    await nextStage(h.page);
+    const positions=await h.page.locator('[data-pane=he] [data-point]').evaluateAll(nodes=>nodes.map(n=>[n.style.left,n.style.top]));
+    await h.page.locator('[data-sel=msi]').selectOption('MSI_Dopamine-DPP');
+    await frames(h.page);
+    assert.deepEqual(await h.page.locator('[data-pane=he] [data-point]').evaluateAll(nodes=>nodes.map(n=>[n.style.left,n.style.top])),positions);
+    const size=await h.page.locator('.msi-align-viewport').evaluateAll(nodes=>nodes.map(n=>({w:n.clientWidth,h:n.clientHeight})));
+    assert.ok(size.every(s=>s.w>550&&s.h>350),JSON.stringify(size));
+    await h.page.locator('[data-view-mode=overlay]').click();
+    await h.page.waitForFunction(()=>document.querySelector('.msi-align-composite > canvas').width>200);
+    await h.page.locator('.msi-align-opacity input').fill('0.2');
+    await frames(h.page);
+    assert.deepEqual(await sourceSnapshot(h.page),before);
+    await h.page.locator('[data-view-mode=final]').click();
+    await frames(h.page);
+    assert.deepEqual(await sourceSnapshot(h.page),before);
+    await h.page.locator('[data-view-mode=split]').click();
+    await h.page.locator('[data-act=close]').first().click();
+    assert.deepEqual(await sourceSnapshot(h.page),before);assert.deepEqual(h.errors,[]);
+  } finally {await h.close();}
+});

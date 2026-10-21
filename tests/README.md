@@ -37,13 +37,15 @@ The browser suite exercises Master selection, WebGL rendering, controls,
 section-detail navigation and legacy return state, and concurrent placement/ROI edits.
 Only synthetic rasters are committed; private study data is not a test fixture.
 
-The v2.26 region-selection regressions cover multiple checked ROI names, union
-masks, selecting all ROI regions, clearing every region and unrestricted MSI
-including pixels outside ROI. An empty selection remains distinct from the
-unrestricted default through rendering and session restoration; legacy saved
-single-region selections are retained. MSI, ROI outlines and labels, and section
-previews follow the same selection without changing common ranges, source
-rasters or the independent intensity-analysis selection. Navigation regressions
+The region-selection regressions cover independent registered-region and
+unassigned-pixel selection, all-select restoring the full measured plane, and
+all-clear hiding every MSI pixel. Legacy named selections retain their original
+visible-contour-only masks, including mixed visible/hidden polygons with the same
+name. Hidden contours still count as registered ROI when finding unassigned
+pixels. Per-series session restoration, zero-ROI mouse sections, d4-invalid pixel
+appearance and the outer-two-pixel display mask are covered. Common ranges,
+source rasters, normalized values and independent intensity-analysis selection
+remain unchanged. Navigation regressions
 open section details in a separate tab while retaining the original 3D camera,
 selection and unsaved placement candidates. The new detail tab has no 3D return
 link; legacy same-tab return URLs remain supported. Source-update notifications
