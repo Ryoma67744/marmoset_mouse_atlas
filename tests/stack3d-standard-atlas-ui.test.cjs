@@ -54,13 +54,13 @@ test('matching standard Atlas defaults on, switches without writes or 2D changes
   try {
     await seed(h); await open(h);
     assert.equal(await p.locator('#placement-mode').inputValue(), 'atlas');
-    assert.equal(await p.locator('#spacing').isDisabled(), true);
-    assert.match(await p.locator('#spacing-value').innerText(), /50 µm/);
+    assert.equal(await p.locator('#spacing').isDisabled(), false);
+    assert.match(await p.locator('#spacing-value').innerText(), /等間隔/);
     assert.match(await p.locator('#standard-atlas-section-note').innerText(), /s = 280.*採用済み代表切片/);
     for (const id of ['offset-x', 'offset-y', 'rotation', 'save-placement', 'save-cloud', 'batch-calculate', 'alignment-calculate'])
       assert.equal(await p.locator('#' + id).isDisabled(), true, id);
     const before = await snapshot(p), atlas = await p.evaluate(() => Atlas3D.renderer.getStats());
-    assert.deepEqual(atlas.placements.map(row => Number(row.position[2].toFixed(6))), [-1.7, 0, 1.8]);
+    assert.deepEqual(atlas.placements.map(row => Number(row.position[2].toFixed(6))), [-.595, 0, .595]);
     await p.evaluate(() => {
       window.__atlasWrites = 0;
       ProjectStorage.patchProjectFields = async () => { window.__atlasWrites++; throw Error('Unexpected write'); };
@@ -87,7 +87,7 @@ test('matching standard Atlas defaults on, switches without writes or 2D changes
     assert.match(await p.locator('#standard-atlas-section-note').innerText(), /輪郭対応を要確認/);
     assert.match(await p.locator('#standard-atlas-section-note').innerText(), /参照輪郭の外に出るHE領域あり/);
     await p.evaluate(() => Atlas3D.selectSection(2));
-    assert.match(await p.locator('#standard-atlas-section-note').innerText(), /前後位置も補間推定/);
+    assert.match(await p.locator('#standard-atlas-section-note').innerText(), /参照Atlas断面番号は補間推定/);
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
@@ -170,6 +170,37 @@ test('missing preset explains fallback and Mouse keeps its saved pixel placement
     assert.deepEqual(pose.position, [5, -3, 0]);
     assert.ok(Math.abs(pose.rotationDeg - 30) < 1e-10);
     assert.equal(await p.evaluate(() => Boolean(Atlas3D.sections[0].standardAtlasPose)), false);
+    assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
+test('Atlas spacing is uniform and adjustable without changing XY, angles or data, and survives mode switches and reload', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), p = h.page;
+  const shape = rows => rows.map(row => ({ id: row.id, xy: row.position.slice(0, 2), angle: row.rotationDeg, width: row.width, height: row.height }));
+  try {
+    await seed(h); await open(h);
+    const before = await snapshot(p), original = await p.evaluate(() => Atlas3D.renderer.getStats().placements);
+    assert.match(await p.locator('#spacing-help').innerText(), /切片順の表示用等間隔/);
+    assert.match(await p.locator('#standard-atlas-scene-note').innerText(), /等間隔.*実測距離ではありません/);
+    assert.match(await p.locator('#standard-atlas-section-note').innerText(), /参照Atlas s = 280/);
+    await p.locator('#spacing').fill('1.25'); await p.locator('#spacing').dispatchEvent('input');
+    const spaced = await p.evaluate(() => Atlas3D.renderer.getStats().placements);
+    assert.deepEqual(spaced.map(row => row.position[2]), [-1.25, 0, 1.25]);
+    assert.deepEqual(shape(spaced), shape(original), 'only depth changes');
+    assert.deepEqual(await snapshot(p), before, 'spacing changes no source data or 2D preview');
+    // Hidden sections retain their rank and do not compress the remaining gaps.
+    await p.locator('.section-visible').nth(1).uncheck();
+    assert.deepEqual(await p.evaluate(() => Atlas3D.renderer.getStats().placements), spaced);
+    await mode(p, 'legacy'); await mode(p, 'atlas');
+    assert.equal(await p.locator('#spacing').inputValue(), '1.25');
+    assert.deepEqual(await p.evaluate(() => Atlas3D.renderer.getStats().placements), spaced);
+    await p.reload(); await ready(p);
+    assert.equal(await p.locator('#spacing').inputValue(), '1.25');
+    assert.deepEqual(await p.evaluate(() => Atlas3D.renderer.getStats().placements), spaced);
+    // A two-section subset keeps the original three-section preset's ranks.
+    await p.evaluate(ids => sessionStorage.setItem('atlas-stack3d-selection:legacy_marmoset', JSON.stringify([ids[0], ids[2]])), IDS);
+    await p.reload(); await ready(p, 2);
+    assert.deepEqual(await p.evaluate(() => Atlas3D.renderer.getStats().placements.map(row => Number(row.position[2].toFixed(6)))), [-.595, .595]);
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { startBrowserHarness } = require('./browser-harness.cjs');
 const near = (a, b, eps = 1e-9) => assert.ok(Math.abs(a - b) < eps, `${a} != ${b}`);
 
-test('switching Atlas placement retains textures, camera and visibility while all four layers share the same physical pose', async () => {
+test('Atlas layers share uniform slider spacing without changing XY, textures, camera, or visibility', async () => {
   const h = await startBrowserHarness();
   try {
     await h.page.goto(h.baseURL + '/__test_seed');
@@ -83,26 +83,33 @@ test('switching Atlas placement retains textures, camera and visibility while al
       }
     });
     assert.equal(result.atlas.stats.placementMode, 'atlas');
-    assert.deepEqual(result.atlas.captureLabels, ['BMA2023 ESTIMATED PLACEMENT', 'RIGHT HEMISPHERE / ATLAS RELATIVE SPACING']);
-    assert.deepEqual(result.combinedBadge.captureLabels, ['BMA2023 ESTIMATED PLACEMENT', 'RIGHT HEMISPHERE / ATLAS RELATIVE SPACING', 'SCHEMATIC / NOT REGISTERED']);
+    assert.deepEqual(result.atlas.captureLabels, ['BMA2023 ESTIMATED PLACEMENT / RIGHT HEMISPHERE', 'UNIFORM DISPLAY SPACING / NOT MEASURED']);
+    assert.deepEqual(result.combinedBadge.captureLabels, ['BMA2023 ESTIMATED PLACEMENT / RIGHT HEMISPHERE', 'UNIFORM DISPLAY SPACING / NOT MEASURED', 'SCHEMATIC / NOT REGISTERED']);
     assert.deepEqual(result.before.captureLabels, []); assert.deepEqual(result.restored.captureLabels, []);
     assert.deepEqual(result.atlas.view, result.before.view);
     assert.deepEqual(result.atlas.stats.hiddenSectionIds, result.before.stats.hiddenSectionIds);
     assert.deepEqual(result.atlas.stats.range, result.before.stats.range);
     assert.equal(result.atlas.stats.selectedIndex, result.before.stats.selectedIndex);
     assert.equal(result.atlas.stats.textureCount, 2); assert.equal(result.atlas.stats.heTextureCount, 2);
-    for (const [i, section] of result.atlas.stats.placements.entries()) {
-      near(section.position[2], ([46, 165][i] - 314) * 0.05);
-      near(section.rotationDeg, [-17, 12][i]);
-      const planes = result.atlas.planes.filter(p => p.id === section.id);
-      assert.equal(planes.length, 2);
-      for (const object of [...planes, ...result.atlas.rois.filter(o => o.id === section.id), ...result.atlas.outlines.filter(o => o.id === section.id)]) {
-        object.position.forEach((v, j) => near(v, section.position[j])); near(object.angle, section.rotationDeg);
+    for (const [state, spacing] of [[result.atlas, 0.8], [result.spacingChanged, 2.25]]) {
+      assert.deepEqual(state.view, result.before.view);
+      assert.deepEqual(state.stats.hiddenSectionIds, result.before.stats.hiddenSectionIds);
+      assert.deepEqual(state.stats.range, result.before.stats.range);
+      for (const [i, section] of state.stats.placements.entries()) {
+        near(section.position[2], (i - 0.5) * spacing);
+        near(section.rotationDeg, [-17, 12][i]);
+        const planes = state.planes.filter(p => p.id === section.id);
+        assert.equal(planes.length, 2);
+        for (const object of [...planes, ...state.rois.filter(o => o.id === section.id), ...state.outlines.filter(o => o.id === section.id)]) {
+          object.position.forEach((v, j) => near(v, section.position[j])); near(object.angle, section.rotationDeg);
+        }
+        near(section.position[0], result.atlas.stats.placements[i].position[0]);
+        near(section.position[1], result.atlas.stats.placements[i].position[1]);
       }
     }
-    assert.deepEqual(result.spacingChanged.stats.placements, result.atlas.stats.placements, 'Atlas depth ignores ordinal spacing');
+    assert.notDeepEqual(result.spacingChanged.stats.placements, result.atlas.stats.placements, 'Atlas depth responds to display spacing');
     assert.match(result.partialError, /同時/);
-    assert.deepEqual(result.afterRejected.stats.placements, result.atlas.stats.placements, 'failed mixed switch is atomic');
+    assert.deepEqual(result.afterRejected.stats.placements, result.spacingChanged.stats.placements, 'failed mixed switch is atomic');
     for (const plane of result.before.planes) {
       const atlas = result.atlas.planes.find(p => p.id === plane.id && p.layer === plane.layer);
       assert.equal(atlas.uuid, plane.uuid); assert.equal(atlas.texture, plane.texture); assert.equal(atlas.geometry, plane.geometry);
@@ -114,7 +121,7 @@ test('switching Atlas placement retains textures, camera and visibility while al
       near(pose.position[0], result.before.stats.placements[i].position[0]); near(pose.position[1], result.before.stats.placements[i].position[1]);
       near(pose.rotationDeg, result.before.stats.placements[i].rotationDeg); near(pose.position[2], (i - 0.5) * 2.25);
     });
-    assert.deepEqual(result.subset.stats.placements[0], result.atlas.stats.placements[1], 'omitted slices do not recenter Atlas depth');
+    assert.deepEqual(result.subset.stats.placements[0], result.spacingChanged.stats.placements[1], 'omitted slices do not recenter Atlas depth');
     assert.equal(result.finalProjects, result.originalProjects); assert.deepEqual(result.finalBytes, result.rawBytes);
     assert.deepEqual(result.errors, []); assert.deepEqual(h.errors, []);
   } finally { await h.close(); }

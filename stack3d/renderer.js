@@ -68,7 +68,7 @@
     function position(entry) {
       const d = entry.descriptor, placement = global.Stack3D.scenePlacement(d);
       entry.mesh.rotation.z = placement.angleDeg * RAD;
-      entry.mesh.position.set(placement.x, placement.y, Number.isFinite(placement.zMm) ? placement.zMm : (entry.zIndex - zCenter) * spacing);
+      entry.mesh.position.set(placement.x, placement.y, (Number.isFinite(placement.ordinalZ) ? placement.ordinalZ : entry.zIndex - zCenter) * spacing);
       entry.mesh.updateMatrixWorld();
       if (entry.roi) { entry.roi.group.position.copy(entry.mesh.position); entry.roi.group.rotation.copy(entry.mesh.rotation); }
       if (entry.sectionOutline) {
@@ -399,7 +399,7 @@
       const context = output.getContext('2d');
       if (!context) throw new Error('画像保存用の描画を開始できません。');
       context.drawImage(canvas, 0, 0);
-      const labels = atlasMode ? ['BMA2023 ESTIMATED PLACEMENT', 'RIGHT HEMISPHERE / ATLAS RELATIVE SPACING'] : [];
+      const labels = atlasMode ? ['BMA2023 ESTIMATED PLACEMENT / RIGHT HEMISPHERE', 'UNIFORM DISPLAY SPACING / NOT MEASURED'] : [];
       if (pixelMode) labels.push('PIXEL COORDINATES / PHYSICAL SPACING UNKNOWN');
       if (schematicVisible) labels.push('SCHEMATIC / NOT REGISTERED');
       let fontSize = Math.max(12, Math.round(Math.min(output.width, output.height) / 48));

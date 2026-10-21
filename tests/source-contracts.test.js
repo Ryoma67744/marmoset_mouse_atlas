@@ -18,7 +18,9 @@ test('all production scripts and inline scripts parse without executing', () => 
     const sources = [...source.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map(match=>match[1]);
     assert.ok(sources.some(src=>src.endsWith('/normalization.js')));
     for (const src of sources.filter(src=>!/^https?:/.test(src))) {
-      const scriptPath = path.resolve(path.dirname(path.join(root,name)), src);
+      // Version/search/hash URL components are not part of the local filename.
+      const localPath = decodeURIComponent(src.split(/[?#]/, 1)[0]);
+      const scriptPath = path.resolve(path.dirname(path.join(root,name)), localPath);
       assert.ok(fs.existsSync(scriptPath), src + ' exists');
       new vm.Script(fs.readFileSync(scriptPath, 'utf8'), { filename: scriptPath });
     }

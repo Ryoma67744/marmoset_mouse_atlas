@@ -15,8 +15,8 @@
       360
     ],
     "relativeSliceOrigin": 314,
-    "sceneCoordinateFormula": "x=(u-360)*0.05; y=(360-v)*0.05; z=(atlasSlice-314)*0.05",
-    "coordinateMeaning": "Native image u-right,v-down continuous pixels. Scene uses centered image X-right,Y-up and relative reference slice axis. No Bregma/absolute AP interpretation.",
+    "sceneCoordinateFormula": "x=(u-360)*0.05; y=(360-v)*0.05; z=(displayIndex-(displayCount-1)/2)*displaySpacing",
+    "coordinateMeaning": "Native image u-right,v-down continuous pixels. Scene preserves Atlas-derived centered X-right,Y-up and rotation, with uniform natural-section-order display Z. Reference slice depth is metadata only; no measured spacing or Bregma/absolute AP interpretation.",
     "rawMSIPixelConvention": "Raw image continuous pixel coordinates; measured pixel i,j is represented by i+0.5,j+0.5.",
     "specimenHemisphere": "right",
     "hemisphereConfirmedByUser": true,
@@ -43,7 +43,8 @@
     "maskConvention": "HE: channel range>14, R-G>6,B-G>4; closing2,fillholes; retain components >=max(60px,10%largest). Native Atlas T2 mean>35,close1,fillholes,right half u<360,open1; retain components>=max(30px,1%largest). Significant fragments retained; these are image envelopes, not manually certified tissue boundaries.",
     "orientationPolicy": "Nominal raw MSI image rotation = saved rotation.all + rotation.msi - 180 degrees, then accepted/interpolated residual. No automated reflection or180-degree search.",
     "defaultModeIntent": "Reversible app preset; source cloud poses are preserved, not rewritten.",
-    "rawDataFingerprintProvenance": "source.rawFingerprint supplied by parent via official ZipIO import + Normalization.fingerprint on the corresponding full raw dataset; not derived by this Python image-processing script."
+    "rawDataFingerprintProvenance": "source.rawFingerprint supplied by parent via official ZipIO import + Normalization.fingerprint on the corresponding full raw dataset; not derived by this Python image-processing script.",
+    "referenceCoordinateFormula": "x=(u-360)*0.05; y=(360-v)*0.05; z=(atlasSlice-314)*0.05"
   },
   "summary": {
     "sectionCount": 69,
@@ -9392,5 +9393,11 @@
         ]
       }
     }
-  ]
+  ],
+  "display": {
+    "depthMode": "uniform-ordinal",
+    "order": "natural Cor order of the complete preset",
+    "defaultSpacing": 0.595,
+    "spacingMeaning": "Display spacing only; not measured specimen spacing. Reference atlasSlice remains metadata."
+  }
 }
