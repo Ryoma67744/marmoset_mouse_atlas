@@ -34,8 +34,8 @@
   const defaultSpacing = () => pixelSeries() ? finite(sections[0]?.project?.atlas?.displaySpacing, 2) : DEFAULT_SPACING;
   const viewState = () => session.get(viewKey());
   let sections = [], rendered = [], renderer = null, selected = 0, previewKind = 'MSI';
-  // null means unrestricted MSI; an empty list deliberately hides every region.
-  let roiRegions = null;
+  let roiSelection = Stack3D.normalizeRoiSelection({});
+  let roiInventory = [];
   let renderGeneration = 0, loadGeneration = 0, previewGeneration = 0, heGeneration = 0, detailGeneration = 0;
   let busy = false, saving = false, noticeTimer, unsubscribe = null, sourceChanged = false, restoredCamera = null, repaintPending = false;
   let pendingPreview = null, previewWorker = null;
@@ -146,7 +146,9 @@
   }
   function options() {
     return { mode: fixedMouseDisplay() ? 'normalized' : $('value-mode').value, outerEdgeWidth: fixedMouseDisplay() ? 2 : 0,
-      rangeMode: 'common', roiRegions: roiRegions === null ? null : [...roiRegions],
+      rangeMode: 'common', roiRegions: roiSelection.regions === null ? null : [...roiSelection.regions],
+      roiSelectionVersion: roiSelection.selectionVersion, roiIncludeUnassigned: roiSelection.includeUnassigned,
+      roiLegacyVisibleOnlyNames: [...roiSelection.legacyVisibleOnlyNames],
       channels: Array.from(document.querySelectorAll('input[name=channel]:checked'), input => input.value)
         .filter(name => !(fixedMouseDisplay() || mouseRatioMode()) || name !== MOUSE_STANDARD), threshold: finite($('threshold').value, 0) };
   }
@@ -191,7 +193,10 @@
     $('roi-labels').checked = view.roi?.labelsVisible !== false;
     const savedRegions = view.roi?.regions !== undefined ? view.roi.regions : saved.roiRegions;
     const legacyRegion = view.roi?.region || saved.roiRegion;
-    setRoiSelection(Array.isArray(savedRegions) ? savedRegions : savedRegions === null ? null : legacyRegion ? [legacyRegion] : null);
+    setRoiSelection({ selectionVersion: view.roi?.selectionVersion ?? saved.roiSelectionVersion,
+      regions: savedRegions !== undefined ? savedRegions : legacyRegion ? [legacyRegion] : null,
+      includeUnassigned: view.roi?.includeUnassigned ?? saved.roiIncludeUnassigned,
+      legacyVisibleOnlyNames: view.roi?.legacyVisibleOnlyNames ?? saved.roiLegacyVisibleOnlyNames });
     $('brain-visible').checked = view.brain?.visible === true;
     $('brain-opacity').value = Math.max(0.02, Math.min(0.35, finite(view.brain?.opacity, 0.12)));
     $('section-outline-visible').checked = view.sectionOutlines?.visible !== false;
@@ -451,30 +456,45 @@
       : `外周を取得 ${available} / ${sections.length}切片 · 表示 ${stats.visibleCount}切片` +
         (available < sections.length ? '。境界が不明な切片には外周を表示しません。' : '');
   }
-  function roiOptions() { return { visible: $('roi-visible').checked, labelsVisible: $('roi-labels').checked, regions: roiRegions === null ? null : [...roiRegions] }; }
+  function roiOptions() { return { ...roiSelection, regions: roiSelection.regions === null ? null : [...roiSelection.regions],
+    legacyVisibleOnlyNames: [...roiSelection.legacyVisibleOnlyNames], visible: $('roi-visible').checked, labelsVisible: $('roi-labels').checked }; }
   function roiInputs() { return Array.from($('roi-region-list').querySelectorAll('input[name=roi-region]')); }
-  function setRoiSelection(regions) {
-    const inputs = roiInputs(), known = new Set(inputs.map(input => input.value));
-    roiRegions = regions === null ? null : [...new Set(regions)].filter(name => known.has(name));
-    $('roi-unrestricted').checked = roiRegions === null;
-    for (const input of inputs) input.checked = roiRegions === null || roiRegions.includes(input.value);
-    $('roi-selection-status').textContent = roiRegions === null ? '領域制限なし · ROI外も表示'
-      : roiRegions.length ? `${roiRegions.length} / ${inputs.length}領域を表示` : '全消し · MSIとROIは非表示';
+  function setRoiSelection(state) {
+    roiSelection = Stack3D.normalizeRoiSelection(state, roiInventory);
+    const inputs = roiInputs(), selected = roiSelection.regions === null ? null : new Set(roiSelection.regions);
+    const legacy = new Set(roiSelection.legacyVisibleOnlyNames), hiddenNames = new Set(roiInventory.filter(p => !p.visible).map(p => p.name));
+    $('roi-unassigned').checked = roiSelection.includeUnassigned;
+    for (const input of inputs) {
+      input.checked = selected === null || selected.has(input.value);
+      input.indeterminate = input.checked && legacy.has(input.value) && hiddenNames.has(input.value);
+      input.title = input.indeterminate ? '旧設定の表示中ROIだけを保持しています。この項目を選び直すと同名の全登録ROI内を表示します。' : '';
+    }
+    const count = inputs.filter(input => input.checked).length, outside = roiSelection.includeUnassigned;
+    $('roi-selection-status').textContent = roiSelection.regions === null && outside ? '全測定範囲を表示 · ROI未付与部分を含む'
+      : !count && !outside ? '全消し · MSIとROIは非表示'
+      : (count ? `${count} / ${inputs.length}領域` : '') + (outside ? (count ? ' ＋ ' : '') + 'ROI未付与部分' : '') + 'を表示' +
+        (inputs.some(input => input.indeterminate) ? ' · 一部ROIは旧設定の表示範囲を保持' : '');
   }
-  function roiSelectionChanged(regions) {
+  function roiSelectionChanged(state) {
     if (busy) return;
-    setRoiSelection(regions); renderer?.setRoiOverlay(roiOptions()); requestRepaint(); saveView();
+    setRoiSelection(state); renderer?.setRoiOverlay(roiOptions()); requestRepaint(); saveView();
   }
   function buildRoiList() {
     const list = $('roi-region-list'); list.replaceChildren();
-    const names = new Set(sections.flatMap(section => Stack3D.roiPolygons(section).filter(p => p.visible).map(p => p.name)));
+    roiInventory = sections.flatMap(section => Stack3D.roiPolygons(section));
+    const names = new Set(roiInventory.map(p => p.name));
     for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
       const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
       label.className = 'roi-region-row'; input.type = 'checkbox'; input.name = 'roi-region'; input.value = name;
       input.disabled = busy; text.textContent = name; label.append(input, text); list.append(label);
+      const members = roiInventory.filter(p => p.name === name);
+      if (members.some(p => !p.visible)) {
+        const note = document.createElement('small'); note.className = 'roi-source-visibility';
+        note.textContent = members.some(p => p.visible) ? '一部の輪郭は非表示' : '輪郭は非表示'; text.append(note);
+      }
     }
-    if (!names.size) { const empty = document.createElement('p'); empty.className = 'hint'; empty.textContent = '表示できるROIがありません。'; list.append(empty); }
-    setRoiSelection(null);
+    if (!names.size) { const empty = document.createElement('p'); empty.className = 'hint'; empty.textContent = '登録されたROIはありません。「ROI未付与部分」でMSIを表示できます。'; list.append(empty); }
+    setRoiSelection({});
   }
   async function repaint() {
     const generation = ++renderGeneration, loadToken = loadGeneration, seriesId = activeSeries, current = options(); updateLabels();
@@ -612,14 +632,14 @@
       const result = Stack3D.renderSection(section, { ...current, previewPixelScale: previewScale(section, maxSize), roi: true });
       result.canvas.width = 0; result.canvas.height = 0; return result.previewCanvas;
     }
-    if (kind === 'HE_Stain') return Stack3D.renderHePreview(section, { maxSize: 2048, roi: true, roiRegions });
+    if (kind === 'HE_Stain') return Stack3D.renderHePreview(section, { maxSize: 2048, roi: true, roiRegions: roiSelection.regions });
     if (kind === 'ATLAS') { const source = await Stack3D.loadReferenceImage(section, 'ATLAS'); if (!source) return null; const image = source.cloneNode(); image.alt = `${section.name} 参照アトラス`; return image; }
     return null;
   }
   function previewStatus(index) {
     const section = sections[index], status = rendered[index]?.status; if (!section || !status) return '';
     const roi = Stack3D.roiSummary(section);
-    const visiblePolygons = Stack3D.roiPolygons(section).filter(polygon => polygon.visible && (roiRegions === null || roiRegions.includes(polygon.name))).length;
+    const visiblePolygons = Stack3D.roiPolygons(section).filter(polygon => polygon.visible && (roiSelection.regions === null || roiSelection.regions.includes(polygon.name))).length;
     const roiText = roi.totalPolygons ? `ROI輪郭 ${visiblePolygons} / ${roi.totalPolygons}` : 'ROI未登録';
     const off = hiddenSectionIds.has(section.id) ? '3D表示OFF・共通色範囲の計算対象外 · ' : '';
     if (previewKind === 'ATLAS') return off + '参照用の2Dアトラス画像';
@@ -934,11 +954,13 @@
     renderer?.setRoiOverlay(roiOptions()); saveView();
   });
   $('roi-region-list').addEventListener('change', event => {
-    if (event.target.matches('input[name=roi-region]')) roiSelectionChanged(roiInputs().filter(input => input.checked).map(input => input.value));
+    if (event.target.matches('input[name=roi-region]')) roiSelectionChanged({ ...roiSelection,
+      regions: roiInputs().filter(input => input.checked).map(input => input.value),
+      legacyVisibleOnlyNames: roiSelection.legacyVisibleOnlyNames.filter(name => name !== event.target.value) });
   });
-  $('roi-unrestricted').addEventListener('change', () => roiSelectionChanged($('roi-unrestricted').checked ? null : roiInputs().filter(input => input.checked).map(input => input.value)));
-  $('roi-select-all').addEventListener('click', () => roiSelectionChanged(roiInputs().map(input => input.value)));
-  $('roi-clear-all').addEventListener('click', () => roiSelectionChanged([]));
+  $('roi-unassigned').addEventListener('change', () => roiSelectionChanged({ ...roiSelection, includeUnassigned: $('roi-unassigned').checked }));
+  $('roi-select-all').addEventListener('click', () => roiSelectionChanged({ selectionVersion: 2, regions: null, includeUnassigned: true }));
+  $('roi-clear-all').addEventListener('click', () => roiSelectionChanged({ selectionVersion: 2, regions: [], includeUnassigned: false }));
   for (const [id, event] of [['brain-visible', 'change'], ['brain-opacity', 'input']]) $(id).addEventListener(event, () => { renderer?.setBrainContext(brainOptions()); updateLabels(); saveView(); });
   for (const [id, event] of [['section-outline-visible', 'change'], ['section-outline-color', 'input'], ['section-outline-opacity', 'input']]) {
     $(id).addEventListener(event, () => { renderer?.setSectionOutlines(sectionOutlineOptions()); syncSectionOutlineControls(); saveView(); });

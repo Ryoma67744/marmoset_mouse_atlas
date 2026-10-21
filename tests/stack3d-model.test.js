@@ -149,3 +149,34 @@ test('ROI summary counts disjoint valid contours, respects saved visibility and 
   assert.deepEqual(roi, before);
   assert.deepEqual(plain(c.Stack3D.roiSummary({ project: {} })), { visiblePolygons: 0, totalPolygons: 0 });
 });
+
+test('ROI selection migration preserves old unrestricted, empty, named and hidden-contour behavior', () => {
+  const c = app(), polygons = [{ name: 'A', visible: true }, { name: 'A', visible: false }, { name: 'Hidden', visible: false }];
+  const cases = [
+    [{}, { regions: null, includeUnassigned: true, legacyVisibleOnlyNames: [] }],
+    [{ regions: null, region: 'A' }, { regions: null, includeUnassigned: true, legacyVisibleOnlyNames: [] }],
+    [{ regions: [], region: 'A' }, { regions: [], includeUnassigned: false, legacyVisibleOnlyNames: [] }],
+    [{ region: 'A' }, { regions: ['A'], includeUnassigned: false, legacyVisibleOnlyNames: ['A'] }],
+    [{ regions: ['A', 'Hidden', 'Unknown', 'A'] }, { regions: ['A'], includeUnassigned: false, legacyVisibleOnlyNames: ['A'] }],
+    [{ regions: ['Unknown'] }, { regions: [], includeUnassigned: false, legacyVisibleOnlyNames: [] }],
+  ];
+  for (const [source, expected] of cases) {
+    const before = structuredClone(source);
+    assert.deepEqual(plain(c.Stack3D.normalizeRoiSelection(source, polygons)), { selectionVersion: 2, ...expected });
+    assert.deepEqual(source, before);
+  }
+});
+
+test('new ROI selections independently retain unassigned pixels, explicit hidden names and per-name compatibility', () => {
+  const c = app(), polygons = [{ name: 'A', visible: true }, { name: 'A', visible: false }, { name: 'Hidden', visible: false }];
+  const source = { selectionVersion: 2, regions: ['A', 'Hidden', 'Unknown'], includeUnassigned: true,
+    legacyVisibleOnlyNames: ['A', 'Unknown', 'Not selected'] };
+  assert.deepEqual(plain(c.Stack3D.normalizeRoiSelection(source, polygons)), {
+    selectionVersion: 2, regions: ['A', 'Hidden'], includeUnassigned: true, legacyVisibleOnlyNames: ['A'] });
+  assert.deepEqual(plain(c.Stack3D.normalizeRoiSelection({ selectionVersion: 2, regions: [], includeUnassigned: true }, [])), {
+    selectionVersion: 2, regions: [], includeUnassigned: true, legacyVisibleOnlyNames: [] });
+  assert.deepEqual(plain(c.Stack3D.normalizeRoiSelection({ selectionVersion: 2, regions: null, includeUnassigned: false }, [])), {
+    selectionVersion: 2, regions: null, includeUnassigned: false, legacyVisibleOnlyNames: [] });
+  assert.deepEqual(plain(c.Stack3D.normalizeRoiSelection({ selectionVersion: 2, regions: 'malformed', includeUnassigned: false }, polygons)), {
+    selectionVersion: 2, regions: [], includeUnassigned: false, legacyVisibleOnlyNames: [] });
+});

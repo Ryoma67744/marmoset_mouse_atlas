@@ -1,0 +1,102 @@
+/* Adapted from Share_Test 1d3f4e1. The alignment workspace alone occupies the viewport; other dialogs keep
+   their normal size. All transforms below affect display pixels only. */
+.modal-backdrop.msi-alignment-backdrop { background:#f8fafc; align-items:stretch; justify-content:stretch; }
+.modal-box.msi-alignment-workspace,
+.modal-card.msi-alignment-workspace,
+.modal-card.help-card.msi-alignment-workspace {
+    width:100vw; max-width:none; height:100vh; height:100dvh; max-height:none;
+    padding:0; border-radius:0; box-shadow:none; overflow:hidden;
+    display:grid; grid-template-rows:auto auto minmax(0,1fr) auto; gap:0;
+    background:#f8fafc; color:#0f172a; box-sizing:border-box;
+}
+.msi-alignment-workspace *, .msi-alignment-workspace *::before, .msi-alignment-workspace *::after { box-sizing:border-box; }
+.msi-alignment-workspace [hidden] { display:none !important; }
+.msi-alignment-workspace .msi-align-header { padding:10px 16px 7px; border-bottom:1px solid #e2e8f0; background:#fff; }
+.msi-alignment-workspace .msi-align-header > div { margin-bottom:0 !important; gap:8px 16px !important; }
+.msi-alignment-workspace .msi-align-header h2 { font-size:15px; margin:0; white-space:nowrap; }
+.msi-alignment-workspace .msi-align-header label { margin:0; display:inline-flex; align-items:center; gap:5px; min-width:0; }
+.msi-alignment-workspace .msi-align-header select { width:auto; min-width:85px; max-width:min(32vw,400px); margin:0; font-size:12px !important; padding:5px 7px !important; }
+.msi-alignment-workspace .msi-align-hint { display:block; margin-top:5px; font-size:11px; color:#64748b; }
+.msi-alignment-workspace .msi-align-toolbar { padding:6px 16px; display:flex; align-items:center; gap:6px 12px; flex-wrap:wrap; background:#fff; border-bottom:1px solid #e2e8f0; }
+.msi-alignment-workspace .msi-align-toolbar > div { gap:6px !important; }
+.msi-alignment-workspace .msi-align-toolbar [data-clear-lm] { margin-left:4px !important; }
+.msi-alignment-workspace .msi-align-view-controls { display:flex; align-items:center; flex-wrap:wrap; gap:6px; margin-left:auto; }
+.msi-alignment-workspace .msi-align-view-controls [aria-pressed="true"] { color:#1d4ed8; background:#eff6ff; border-color:#93c5fd; }
+.msi-alignment-workspace .msi-align-sync { display:inline-flex; align-items:center; gap:4px; margin:0 3px; white-space:nowrap; }
+.msi-alignment-workspace .msi-align-stage { position:relative; display:grid; min-width:0; min-height:0; padding:10px 12px; overflow:hidden; }
+.msi-alignment-workspace .msi-align-split { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; min-width:0; min-height:0; }
+.msi-alignment-workspace .msi-align-pane { display:grid; grid-template-rows:auto minmax(0,1fr); min-width:0; min-height:0; overflow:hidden; border:1px solid #cbd5e1; border-radius:7px; background:#0f172a; }
+.msi-alignment-workspace .msi-align-pane-header { display:flex; align-items:center; gap:5px; padding:5px 8px; background:#f1f5f9; border-bottom:1px solid #cbd5e1; }
+.msi-alignment-workspace .msi-align-pane-header strong { margin-right:auto; font-size:12px; }
+.msi-alignment-workspace .msi-align-pane-header .btn { padding:3px 9px; min-width:30px; }
+.msi-alignment-workspace .msi-align-viewport { position:relative; overflow:hidden; min-width:0; min-height:0; background:#0f172a; touch-action:none; user-select:none; cursor:crosshair; }
+.msi-alignment-workspace .msi-align-viewport:focus-visible { outline:3px solid #60a5fa; outline-offset:-3px; }
+.msi-alignment-workspace .msi-align-content { position:absolute; top:0; left:0; transform-origin:0 0; }
+.msi-alignment-workspace .msi-align-content > img { display:block; width:100%; height:100%; max-width:none; max-height:none; user-select:none; -webkit-user-drag:none; }
+.msi-alignment-workspace .msi-align-content > svg { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; overflow:visible; }
+.msi-alignment-workspace .msi-align-details { position:relative; z-index:5; width:180px; flex-shrink:0; background:#fff; border:1px solid #cbd5e1; border-radius:5px; }
+.msi-alignment-workspace .msi-align-details > summary { padding:7px 10px; font-size:11px; font-weight:600; cursor:pointer; }
+.msi-alignment-workspace .msi-align-details-body { position:absolute; left:0; bottom:calc(100% + 8px); width:440px; max-width:calc(100vw - 32px); max-height:calc(100vh - 210px); max-height:calc(100dvh - 210px); padding:10px; overflow:auto; background:#fff; border:1px solid #cbd5e1; border-radius:6px; box-shadow:0 4px 20px #0f172a30; }
+.msi-alignment-workspace .msi-align-details:not([open]) > .msi-align-details-body { display:none; }
+.msi-alignment-workspace .msi-align-details fieldset { min-width:0; margin-top:8px !important; }
+.msi-alignment-workspace .msi-align-details label { margin-top:0; }
+.msi-alignment-workspace .msi-align-details input[type="number"] { margin-top:0; }
+.msi-alignment-workspace .msi-align-details p { font-size:11px !important; }
+.msi-alignment-workspace .msi-align-details [data-lm-table] { font-size:11px !important; }
+.msi-alignment-workspace .msi-align-footer { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:8px; padding:8px 16px; border-top:1px solid #e2e8f0; background:#fff; }
+.msi-alignment-workspace .msi-align-footer-status { margin-right:auto; font-size:11px; color:#64748b; }
+.msi-alignment-workspace .msi-align-footer [data-save] { min-width:90px; }
+.msi-alignment-workspace .msi-align-composite { display:none; position:relative; min-width:0; min-height:0; overflow:hidden; border:1px solid #cbd5e1; border-radius:7px; background:#0f172a; }
+.msi-alignment-workspace .msi-align-composite > canvas { display:block; width:100%; height:100%; }
+.msi-alignment-workspace .msi-align-composite-message { position:absolute; left:10px; right:10px; top:15px; text-align:center; color:#e2e8f0; font-size:12px; }
+.msi-alignment-workspace .msi-align-opacity { display:none; align-items:center; gap:6px; margin:0; white-space:nowrap; }
+.msi-alignment-workspace .msi-align-opacity input { width:110px; }
+.msi-alignment-workspace.msi-align-overlay-mode .msi-align-split { display:none; }
+.msi-alignment-workspace.msi-align-overlay-mode .msi-align-composite { display:block; }
+.msi-alignment-workspace.msi-align-overlay-mode .msi-align-opacity { display:inline-flex; }
+.msi-alignment-workspace.msi-align-overlay-mode .msi-align-sync { display:none; }
+@media (max-width:900px) {
+    .msi-alignment-workspace .msi-align-header { padding:7px 10px; }
+    .msi-alignment-workspace .msi-align-toolbar { padding:5px 10px; }
+    .msi-alignment-workspace .msi-align-view-controls { margin-left:0; }
+    .msi-alignment-workspace .msi-align-hint { display:none; }
+    .msi-alignment-workspace .msi-align-header select { max-width:30vw; }
+    .msi-alignment-workspace .msi-align-stage { padding:6px; }
+    .msi-alignment-workspace .msi-align-split { gap:6px; }
+    .msi-alignment-workspace .msi-align-details { width:175px; }
+    .msi-alignment-workspace .msi-align-footer-status { display:none; }
+}
+@media (max-width:600px) {
+    .msi-alignment-workspace .msi-align-header h2 { font-size:12px; }
+    .msi-alignment-workspace .msi-align-split { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr) minmax(0,1fr); }
+    .msi-alignment-workspace .msi-align-details-body { max-width:calc(100vw - 22px); }
+    .msi-alignment-workspace .msi-align-footer { padding:6px 10px; }
+}
+
+/* Atlas adapter: existing orientation/point controls retain their ownership. */
+.alignment-modal .modal-box.msi-alignment-workspace { width:100vw; max-width:none; height:100dvh; max-height:none; padding:0; border-radius:0; overflow:hidden; }
+.alignment-modal.msi-alignment-backdrop { padding:0; }
+.alignment-modal .msi-align-header .align-header { margin:0 0 4px; }
+.alignment-modal .msi-align-header .align-stepper { margin:2px 0 5px; gap:6px; }
+.alignment-modal .msi-align-header .align-stepper [data-step] { padding:3px 8px; }
+.alignment-modal .msi-align-header .align-reference { padding:5px 8px; margin:0; }
+.alignment-modal .msi-align-header [data-el=status], .alignment-modal .msi-align-header [data-el=solve-error] { margin:3px 0 0; }
+.alignment-modal .msi-align-toolbar .align-orient-toolbar, .alignment-modal .msi-align-toolbar .align-pick-guide, .alignment-modal .msi-align-toolbar .align-actions { margin:0; padding:0; }
+.alignment-modal .msi-align-toolbar .align-orient-toolbar .align-note { display:none; }
+.alignment-modal .msi-align-toolbar .align-pick-guide { background:none; }
+.alignment-modal .msi-align-toolbar .align-actions { flex-wrap:wrap; }
+.alignment-modal .msi-align-viewport.pick-pane { width:100%; height:100%; max-width:none; aspect-ratio:auto!important; margin:0; border:0; border-radius:0; }
+.alignment-modal .msi-align-content.align-image-layer { inset:auto; left:0; top:0; }
+.alignment-modal .msi-align-content > img { height:100%; }
+.alignment-modal .msi-align-details[open] { width:100%; }
+.alignment-modal .msi-align-details-body { position:static; width:100%; max-width:none; max-height:min(30vh,260px); padding:8px; border:0; border-top:1px solid #e2e8f0; border-radius:0; box-shadow:none; }
+.alignment-modal .msi-align-details-body .align-controls { grid-template-columns:1fr; margin:0; }
+.alignment-modal .msi-align-details-body .align-point-controls > .align-pane-title { display:none; }
+.alignment-modal .msi-align-residual-panel { margin-top:12px; }
+.alignment-modal .msi-align-residual-panel .pick-pane { width:100%; max-height:320px; }
+.alignment-modal .msi-align-footer .align-next { margin:0; }
+.alignment-modal .msi-align-footer .align-next button { padding:4px 9px; }
+.alignment-modal .msi-align-point-buttons { display:flex; gap:5px; }
+.alignment-modal .msi-align-final-mode .msi-align-opacity { display:none; }
+.alignment-modal .msi-align-final-note { padding:3px 8px; color:#475569; }
+.alignment-modal .msi-align-pane.active { outline:2px solid #3b82f6; }

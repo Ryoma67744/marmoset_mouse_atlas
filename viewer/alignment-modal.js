@@ -41,7 +41,7 @@
     let heMaskLoaded = false, heMaskTint = null, msiMaskCanvas = null;
     let autoMeta = null, previousAutoMeta = saved?.previousAutoAligned ? clone(saved.previousAutoAligned) : null;
     let selectedPoint = -1, editPair = null, fitStale = false, geometryChanged = false, sourceChanged = false, draftTouched = false;
-    let inputValid = true, closed = false, saving = false, busy = false, revision = 0, raf = 0;
+    let inputValid = true, closed = false, saving = false, busy = false, revision = 0, raf = 0, workspace = null;
     let status = '① HE と MSI の向きを揃えてください。保存済みの位置合わせは、そのまま保持しています。';
     let fitMethod = saved?.fit?.method || 'saved';
     const activeBefore = document.activeElement;
@@ -133,6 +133,7 @@
       autoMeta = null;
     }
     function sizePane(which, width, height) {
+      const image = q('[data-img=' + which + ']'); if (image) { image.dataset.frameWidth = String(width); image.dataset.frameHeight = String(height); }
       const pane = q(`[data-pane=${which}]`), ratio = width / height;
       pane.style.aspectRatio = String(ratio); pane.style.setProperty('--align-pane-vh', `${40 * ratio}vh`); pane.style.setProperty('--align-pane-px', `${440 * ratio}px`);
     }
@@ -187,6 +188,7 @@
       else q('[data-el=reference-error]').textContent = '';
     }
     function updateView(which) {
+      if (workspace) { workspace.refresh(); return; }
       const v = view[which]; q(`[data-layer=${which}]`).style.transform = `translate(${v.x}px, ${v.y}px) scale(${v.zoom})`;
       q(`[data-layer=${which}]`).querySelectorAll('.pick-dot').forEach(dot => { dot.style.transform = `translate(-50%, -50%) scale(${1 / v.zoom})`; });
       q(`[data-act=zoom-reset][data-zoom-pane=${which}]`).textContent = v.zoom === 1 ? '全体' : `${Math.round(v.zoom * 100)}%`;
@@ -255,7 +257,7 @@
           dot.type = 'button'; dot.className = 'pick-dot'; dot.dataset.point = i; dot.disabled = saving;
           dot.setAttribute('aria-label', `${which.toUpperCase()} 対応点 ${i + 1}`);
           dot.classList.toggle('align-excluded', landmarks.excluded.includes(i)); dot.style.left = `${xy[0] / frame.width * 100}%`; dot.style.top = `${xy[1] / frame.height * 100}%`; dot.style.background = which === 'he' ? '#16a34a' : '#f97316'; dot.textContent = i + 1;
-          dot.style.transform = `translate(-50%, -50%) scale(${1 / view[which].zoom})`;
+          dot.style.transform = `translate(-50%, -50%) scale(${1 / (workspace?.getViewState()[which]?.pixelScale || view[which].zoom)})`;
           dot.addEventListener('click', event => { event.stopPropagation(); highlightPoint(i); if (editPair && expectedPane() === which) clickPoint(which, event); }); layer.appendChild(dot);
         });
       }
@@ -303,7 +305,7 @@
       if (autoMeta) report += `<div>輪郭の一致 Dice ${fmt(autoMeta.dice, 4)}${autoMeta.evaluationOnly ? '（確認のみ・変換は維持）' : ''}</div>`;
       report += warnings.map(w => `<div class="align-warning">${escapeHtml(w)}</div>`).join(''); q('[data-el=report]').innerHTML = report;
     }
-    function refresh() { const resid = residuals(); q('[data-el=status]').textContent = status; renderResiduals(resid); renderPreview(); renderPoints(resid); updateGuide(); updateEnabled(); }
+    function refresh() { const resid = residuals(); q('[data-el=status]').textContent = status; renderResiduals(resid); renderPreview(); renderPoints(resid); updateGuide(); updateEnabled(); workspace?.refresh(); }
     function adoptFit(fit, method) {
       T = clone(fit.T); currentModel = editModel; fitMethod = method; fitStale = false; inputValid = true; geometryChanged = false;
       q('[data-el=input-error]').textContent = ''; q('[data-el=solve-error]').textContent = ''; syncParameters();
@@ -328,7 +330,7 @@
       updateEnabled(); scheduleRefresh();
     }
     function clickPoint(which, event) {
-      if (saving || stage !== 2 || !reference || expectedPane() !== which) return;
+      if (saving || stage !== 2 || !reference || expectedPane() !== which || workspace && !workspace.acceptsPoint(which, event)) return;
       const image = which === 'he' ? heImage : msiImage, rect = image.getBoundingClientRect(), frame = orientation[which];
       if (!rect.width || !rect.height) return;
       const x = (event.clientX - rect.left) / rect.width, y = (event.clientY - rect.top) / rect.height;
@@ -339,7 +341,7 @@
       else { landmarks[which].push(raw); selectedPoint = landmarks[which].length - 1; }
       pointsChanged(); updateStage();
     }
-    function close() { if (saving || closed) return; closed = true; revision++; if (raf) cancelAnimationFrame(raf); document.removeEventListener('keydown', keyboard); backdrop.remove(); activeBefore?.focus(); }
+    function close() { if (saving || closed) return; closed = true; revision++; if (raf) cancelAnimationFrame(raf); document.removeEventListener('keydown', keyboard); workspace?.destroy(); backdrop.remove(); activeBefore?.focus(); }
     function keyboard(event) {
       event.stopPropagation();
       if (event.key === 'Escape') { event.preventDefault(); close(); }
@@ -361,16 +363,9 @@
     });
     q('[data-act=orient-back]').addEventListener('click', () => { if (saving) return; if (editPair) cancelPairEdit(); stage = 1; clearAuto(); status = 'HE の向きを確認してください。変更した場合は位置合わせを計算し直します。'; updateStage(); scheduleRefresh(); });
     q('[data-act=edit-cancel]').addEventListener('click', cancelPairEdit);
-    all('[data-zoom-pane]').forEach(button => button.addEventListener('click', () => { if (saving) return; const which = button.dataset.zoomPane; if (button.dataset.act === 'zoom-reset') { view[which] = { zoom: 1, x: 0, y: 0 }; updateView(which); } else zoomAt(which, view[which].zoom * (button.dataset.act === 'zoom-in' ? 1.35 : 1 / 1.35)); }));
-    for (const which of ['he', 'msi']) {
-      const pane = q(`[data-pane=${which}]`); let gesture = null, suppressClick = false;
-      pane.addEventListener('wheel', event => { if (saving) return; event.preventDefault(); const rect = pane.getBoundingClientRect(); zoomAt(which, view[which].zoom * (event.deltaY < 0 ? 1.15 : 1 / 1.15), event.clientX - rect.left, event.clientY - rect.top); }, { passive: false });
-      pane.addEventListener('pointerdown', event => { if (saving || event.button !== 0 || event.target.closest('.pick-dot')) return; gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, vx: view[which].x, vy: view[which].y, moved: false }; pane.setPointerCapture(event.pointerId); });
-      pane.addEventListener('pointermove', event => { if (!gesture || gesture.id !== event.pointerId || saving) return; const dx = event.clientX - gesture.x, dy = event.clientY - gesture.y; if (Math.hypot(dx, dy) > 4) gesture.moved = true; if (gesture.moved) { view[which].x = gesture.vx + dx; view[which].y = gesture.vy + dy; updateView(which); } });
-      pane.addEventListener('pointerup', event => { if (!gesture || gesture.id !== event.pointerId) return; suppressClick = gesture.moved; gesture = null; if (pane.hasPointerCapture(event.pointerId)) pane.releasePointerCapture(event.pointerId); });
-      pane.addEventListener('pointercancel', () => { gesture = null; suppressClick = true; });
-      pane.addEventListener('click', event => { if (suppressClick) { suppressClick = false; return; } if (!event.target.closest('.pick-dot')) clickPoint(which, event); });
-    }
+    for (const which of ['he', 'msi']) q('[data-pane=' + which + ']').addEventListener('click', event => {
+      if (!event.target.closest('.pick-dot')) clickPoint(which, event);
+    });
     all('[data-p]').forEach(input => input.addEventListener('input', () => {
       if (saving || stage !== 2 || !orientation?.confirmed) return;
       clearAuto(); draftTouched = true;
@@ -433,6 +428,33 @@
         if (!draftTouched && !O.check(T, constraints()).valid) alignment.orientation.confirmed = false;
         await save(clone(T), alignment); saving = false; close();
       } catch (error) { q('[data-el=save-error]').textContent = `保存できませんでした。編集内容はこの画面に保持しています。${error.message}`; saving = false; disabledStates.forEach(([el, disabled]) => { el.disabled = disabled; }); updateEnabled(); scheduleRefresh(); }
+    });
+    function paintComposite({canvas, width, height, opacity}) {
+      if (!reference || !orientation || !msiBase) return;
+      const ctx = canvas.getContext('2d'), frame = orientation.msi;
+      const scale = Math.min(width / frame.width, height / frame.height);
+      ctx.save(); ctx.translate((width - frame.width * scale) / 2, (height - frame.height * scale) / 2); ctx.scale(scale, scale);
+      const M = frame.matrix; ctx.transform(M[0][0], M[1][0], M[0][1], M[1][1], M[0][2], M[1][2]);
+      ctx.save(); ctx.imageSmoothingEnabled = true;
+      ctx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]); ctx.drawImage(heImg, 0, 0); ctx.restore();
+      ctx.globalAlpha = opacity; ctx.imageSmoothingEnabled = false; ctx.drawImage(msiBase, 0, 0); ctx.restore();
+    }
+    async function paintFinal({canvas, width, height, signal, isCurrent}) {
+      const capturedRevision = revision, matrix = clone(T);
+      const result = await options.renderFinalPreview(matrix);
+      if (closed || signal.aborted || !isCurrent() || capturedRevision !== revision) return;
+      if (!result || !(result.width > 0 && result.height > 0)) throw new Error('保存後の表示を取得できません');
+      const ctx = canvas.getContext('2d'), scale = Math.min(width / result.width, Math.max(1, height - 24) / result.height);
+      ctx.imageSmoothingEnabled = true; ctx.drawImage(result, (width - result.width * scale) / 2, 24 + (height - 24 - result.height * scale) / 2, result.width * scale, result.height * scale);
+      ctx.font = '12px sans-serif'; ctx.fillStyle = '#e2e8f0'; ctx.fillText('保存後の表示（現在のHE/MSI表示回転を含む）', 12, 16);
+    }
+    if (!global.MsiAlignmentWorkspace) { backdrop.remove(); throw new Error('位置合わせの作業画面を読み込めませんでした。再読み込みしてください。'); }
+    workspace = global.MsiAlignmentWorkspace.mount(q('.modal-box'), {
+      onComposite: paintComposite,
+      onFinalComposite: typeof options.renderFinalPreview === 'function' ? paintFinal : null,
+      canSync: () => !!reference && !!orientation,
+      onViewChange: () => { if (!closed) renderPoints(residuals()); },
+      onClose: close
     });
     document.addEventListener('keydown', keyboard); heImage.addEventListener('load', scheduleRefresh); msiImage.addEventListener('load', scheduleRefresh);
     refreshReference(true);
