@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>3D Atlas — Marmoset / Mouse Atlas</title>
-  <link rel="stylesheet" href="style.css?v=2.34.2">
+  <link rel="stylesheet" href="style.css?v=2.35.0">
   <link rel="stylesheet" href="analysis.css">
 </head>
 <body>
@@ -24,7 +24,7 @@
         <label class="channel ne"><input type="checkbox" name="channel" value="NE" checked><span class="swatch"></span><strong>NE</strong><small>Norepinephrine</small></label>
         <label class="channel ht"><input type="checkbox" name="channel" value="5-HT" checked><span class="swatch"></span><strong>5-HT</strong><small>Serotonin</small></label>
       </fieldset>
-      <div class="control-block"><label for="value-mode">表示値</label><select id="value-mode"><option value="raw">原値</option><option value="normalized">補正値</option></select><p id="value-mode-help" class="hint" hidden></p></div>
+      <div class="control-block"><label id="value-mode-label" for="value-mode">表示値</label><select id="value-mode"><option value="raw">原値</option><option value="normalized">補正値</option></select><p id="value-mode-fixed" class="fixed-value" hidden>画素d4（従来）・外側2画素を非表示</p><p id="value-mode-help" class="hint" hidden></p></div>
       <div class="control-block"><span class="control-label">色の範囲</span><p class="fixed-value">全切片共通 · 分子ごと</p><p id="range-note" class="hint">ONの切片で色範囲を揃えます。OFFにすると残りの切片で再計算します。</p></div>
       <div class="control-block"><label for="opacity">不透明度 <output id="opacity-value">55%</output></label><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.55"></div>
       <div class="control-block section-outline-controls">
@@ -122,7 +122,7 @@
   <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
   <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="../lib/version.js?v=2.34.2"></script>
+  <script src="../lib/version.js?v=2.35.0"></script>
   <script src="../lib/storage.js"></script>
   <script src="../lib/otsu.js"></script>
   <script src="../lib/align.js"></script>
@@ -137,7 +137,8 @@
   <script src="../lib/cloud.js"></script>
   <script src="../lib/project-sync.js"></script>
   <script src="../lib/section-display.js"></script>
-  <script src="../lib/stack3d.js?v=2.34.2"></script>
+  <script src="../lib/section-edge-mask.js"></script>
+  <script src="../lib/stack3d.js?v=2.35.0"></script>
   <script src="../lib/section-outline.js"></script>
   <script src="../lib/roi-distribution.js"></script>
   <script src="../lib/intensity-axis.js"></script>
@@ -149,13 +150,13 @@
   <script src="brain-context.js"></script>
   <script src="roi.js"></script>
   <script src="section-outline.js"></script>
-  <script src="renderer.js?v=2.34.2"></script>
+  <script src="renderer.js?v=2.35.0"></script>
   <script src="panel-resize.js"></script>
   <script src="panel-collapse.js"></script>
   <script src="batch-alignment.js"></script>
   <script src="analysis-worker-client.js"></script>
   <script src="analysis-resize.js"></script>
-  <script src="analysis.js"></script>
-  <script src="app.js?v=2.34.2"></script>
+  <script src="analysis.js?v=2.35.0"></script>
+  <script src="app.js?v=2.35.0"></script>
 </body>
 </html>
