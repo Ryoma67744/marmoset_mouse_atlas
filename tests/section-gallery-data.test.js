@@ -128,7 +128,7 @@ test('abort suppresses all callbacks and no stale generation is painted', async 
   assert.equal(calls, 0); assert.equal(f.paintCalls.length, 0);
 });
 
-test('HE and IF absence is explicit and IF never borrows HE alignment', async () => {
+test('HE, IF and Atlas absence is explicit and reference images never borrow HE alignment', async () => {
   const f = fixture(), p = f.mouse(1), a = f.create(); p.images.IF_Stain = { blobId: 'if' };
   p.world_coords = { T_he_to_msi: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] };
   let heCalls = 0; f.c.Stack3D.renderHePlane = async () => { heCalls++; throw new Error('must not warp IF'); };
@@ -138,6 +138,15 @@ test('HE and IF absence is explicit and IF never borrows HE alignment', async ()
   assert.equal(outputs[0].status, 'missing'); assert.match(outputs[0].notice, /未登録/);
   outputs = []; await a.renderThumbnails(catalog, 'if:IF_Stain', { onThumbnail: item => outputs.push(item) });
   assert.equal(outputs[0].status, 'ready'); assert.match(outputs[0].notice, /位置合わせは適用していません/); assert.equal(heCalls, 0);
+  outputs = []; await a.renderThumbnails(catalog, 'atlas', { onThumbnail: item => outputs.push(item) });
+  assert.equal(outputs[0].status, 'missing'); assert.match(outputs[0].notice, /Atlas は未登録/);
+  p.images.ATLAS = { blobId: 'atlas' };
+  f.c.Stack3D.loadReferenceImage = async (section, key) => {
+    assert.equal(key, 'ATLAS'); return { width: 320, height: 80 };
+  };
+  outputs = []; await a.renderThumbnails(catalog, 'atlas', { onThumbnail: item => outputs.push(item) });
+  assert.equal(outputs[0].status, 'ready'); assert.equal(outputs[0].canvas.width, 240); assert.equal(outputs[0].canvas.height, 60);
+  assert.match(outputs[0].notice, /位置合わせは適用していません/); assert.equal(heCalls, 0);
 });
 
 test('duplicate confirmed section numbers are reported, not silently renumbered', async () => {
