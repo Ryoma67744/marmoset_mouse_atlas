@@ -25,17 +25,18 @@ function galleryTest(name, run) {
 async function seedGallery(h) {
   await seedViewerProject(h.page, h.baseURL, { id: 'gallery-template' });
   await h.page.evaluate(async ({ analytes, series }) => {
-    async function reference(key, left, right) {
-      const canvas = document.createElement('canvas'); canvas.width = 24; canvas.height = 16;
+    async function reference(key, left, right, width = 24, height = 16) {
+      const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
       const ctx = canvas.getContext('2d');
-      ctx.fillStyle = left; ctx.fillRect(0, 0, 12, 16);
-      ctx.fillStyle = right; ctx.fillRect(12, 0, 12, 16);
+      ctx.fillStyle = left; ctx.fillRect(0, 0, width / 2, height);
+      ctx.fillStyle = right; ctx.fillRect(width / 2, 0, width / 2, height);
       const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
       return { blobId: await ProjectStorage.putBlob({ blob, mime: 'image/png', filename: key + '.png' }),
         filename: key + '.png', mime: 'image/png' };
     }
     const he = await reference('HE_Stain', '#d11937', '#18ca65');
     const immuno = await reference('IF_Stain', '#182ce1', '#e6cc17');
+    const atlas = await reference('ATLAS', '#9b35c7', '#ed801f', 40, 10);
     const legacy = await ProjectStorage.getProject('gallery-template');
     legacy.grid.umPerPxX = 150; legacy.grid.umPerPxY = 150;
     legacy.rotation = { all: 0, he: 0, msi: 0 }; legacy.images = { HE_Stain: he, IF_Stain: immuno };
@@ -52,7 +53,8 @@ async function seedGallery(h) {
         atlas: { species: 'mouse', seriesId: series, seriesName: 'tissue_1set', specimenId: 'tissue_1set',
           sectionNumber: number, sourceCandidateId: number === 11 ? 'C028' : 'candidate-' + number,
           coordinateMode: 'pixel', physicalSectionSpacing: null, displaySpacing: 2 },
-        molecules: [], images: number === 1 ? { HE_Stain: he, IF_Stain: immuno } : number === 2 ? {} : { HE_Stain: he },
+        molecules: [], images: number === 1 ? { HE_Stain: he, IF_Stain: immuno, ATLAS: atlas } : number === 2 ? {} :
+          number === 4 ? { HE_Stain: he, IF_Stain: immuno } : { HE_Stain: he },
         valueDisplay: { mode: 'raw', scale: 'individual' }, visibleLayers: ['MSI_Serotonin-DPP'], layerDisplay: {},
         rotation: { all: 0, msi: 0, he: 0 }, stack3d: { coordinateMode: 'pixel', offsetXPx: 0, offsetYPx: 0, rotationDeg: 0 },
         alignment: { HE_Stain: { T: [[1, 0, 0], [0, 1, 0], [0, 0, 1]] } },
@@ -122,7 +124,7 @@ async function colorsInThumbnail(page, id) {
       colors.add(Array.from(pixels.slice(i, i + 3)).join(','));
       if (pixels[i] || pixels[i + 1] || pixels[i + 2]) colored++;
     }
-    return { colors: [...colors], colored, png: canvas.toDataURL() };
+    return { colors: [...colors], colored, png: canvas.toDataURL(), width: canvas.width, height: canvas.height };
   });
 }
 
@@ -210,13 +212,13 @@ galleryTest('The gallery remains usable on a narrow screen and Escape returns fo
   assert.equal(await h.page.locator('#section-gallery-launcher').evaluate(el => el === document.activeElement), true);
 });
 
-galleryTest('Gallery thumbnails use the selected MSI, HE and IF sources and keep genuinely missing sections blank', async h => {
+galleryTest('Gallery thumbnails use the selected MSI, HE, IF and Atlas sources and keep genuinely missing sections blank', async h => {
   await seedGallery(h); await openViewer(h);
   const before = await snapshot(h.page);
   await openGallery(h.page);
   const source = h.page.locator('#section-gallery-source');
   const options = await source.locator('option').evaluateAll(nodes => nodes.map(node => node.value));
-  for (const value of ['msi:GABA-DPP', 'msi:Histamine-DPP', 'he', 'if:IF_Stain']) assert.ok(options.includes(value), value);
+  for (const value of ['msi:GABA-DPP', 'msi:Histamine-DPP', 'he', 'if:IF_Stain', 'atlas']) assert.ok(options.includes(value), value);
 
   await source.selectOption('msi:GABA-DPP');
   await thumbnailState(h.page, MOUSE_IDS[0], 'ready');
@@ -246,8 +248,25 @@ galleryTest('Gallery thumbnails use the selected MSI, HE and IF sources and keep
   assert.notEqual(immuno.png, he.png);
   assert.equal(await h.page.locator('#section-gallery-grid a[data-project-id="' + MOUSE_IDS[2] + '"] canvas').count(), 0);
 
+  await source.selectOption('atlas');
+  await thumbnailState(h.page, MOUSE_IDS[0], 'ready');
+  await thumbnailState(h.page, MOUSE_IDS[1], 'missing');
+  await thumbnailState(h.page, MOUSE_IDS[2], 'missing');
+  await thumbnailState(h.page, MOUSE_IDS[3], 'missing');
+  const atlas = await colorsInThumbnail(h.page, MOUSE_IDS[0]);
+  assert.ok(atlas.colors.includes('155,53,199') && atlas.colors.includes('237,128,31'), 'Atlas uses its own stored two-color PNG');
+  assert.equal(atlas.width / atlas.height, 4, 'Atlas keeps its native 4:1 aspect ratio rather than the MSI grid or HE alignment');
+  assert.equal(await h.page.locator('#section-gallery-grid a[data-project-id="' + MOUSE_IDS[0] + '"] canvas')
+    .evaluate(canvas => getComputedStyle(canvas).objectFit), 'contain', 'the thumbnail display retains that native aspect ratio');
+  assert.notEqual(atlas.png, he.png); assert.notEqual(atlas.png, immuno.png);
+  for (const id of MOUSE_IDS.slice(1, 4)) {
+    const card = h.page.locator('#section-gallery-grid a[data-project-id="' + id + '"]');
+    assert.equal(await card.locator('canvas,img').count(), 0, 'missing Atlas never borrows an available HE, IF or previous MSI image');
+    assert.match(await card.innerText(), /未登録|なし|見つか|ありません|欠損/);
+  }
+
   // Fast source changes must not let an older asynchronous reference image win.
-  await source.selectOption('he'); await source.selectOption('if:IF_Stain'); await source.selectOption('msi:Histamine-DPP');
+  await source.selectOption('he'); await source.selectOption('if:IF_Stain'); await source.selectOption('atlas'); await source.selectOption('msi:Histamine-DPP');
   await thumbnailState(h.page, MOUSE_IDS[0], 'ready'); await thumbnailState(h.page, MOUSE_IDS[1], 'missing');
   assert.equal((await colorsInThumbnail(h.page, MOUSE_IDS[0])).png, histamine.png);
   assert.deepEqual(await snapshot(h.page), before, 'source choices do not rewrite original rasters, normalization, ROI, alignment or preferences');
