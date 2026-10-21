@@ -11,12 +11,13 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-    <script src="../lib/version.js?v=2.37.1"></script>
+    <script src="../lib/version.js?v=2.37.2"></script>
     <script src="../lib/storage.js"></script>
     <script src="../lib/otsu.js"></script>
     <script src="../lib/align.js"></script>
     <script src="../lib/alignment-orientation.js"></script>
     <script src="../lib/alignment-reference.js"></script>
+    <script src="../lib/viewer-display-geometry.js?v=2.37.2"></script>
     <script src="./alignment-modal.js"></script>
     <link rel="stylesheet" href="./alignment-modal.css">
     <script src="../lib/msi.js"></script>
@@ -495,6 +496,9 @@
         let imageSources = {};
         let imageSettings = {};
         let isRendering = false;
+        let viewerDisplayGeometry = null;
+        let viewerResizeObserver = null;
+        let viewerResizeWired = false;
 
         // MSI の生値ラスタ (key -> {values: Float32Array, W, H})。
         // 8bit の PNG では生単位の強度ウィンドウも大津法もできないので、
@@ -957,9 +961,8 @@
 
         /**
          * 画面上で MSI 1 画素が何 CSS px を占めるか。
-         * キャンバス内部解像度は MSI を CCW90° した (H, W) の renderScale 倍なので、
-         * cssW / msiRef.h とすると renderScale が約分で消える (canvasToMsi と同じ対応)。
-         * 縦横でアスペクト比は保たれているので 1 つの値で足りる。
+         * 余白を含むCanvasの幅ではなく、生MSI→表示行列の倍率を使用する。
+         * 共通の拡縮なので、HEが表示範囲を広げてもMSIのスケールは変わらない。
          */
         function screenPxPerMsiPx() {
             if (!displayCanvas) return 0;
@@ -967,7 +970,9 @@
             if (!msiRef || !(msiRef.h > 0)) return 0;
             const cssW = parseFloat(displayCanvas.style.width) || displayCanvas.width;
             if (!(cssW > 0)) return 0;
-            return (cssW / msiRef.h) * (viewTransform.scale || 1);
+            const matrix = viewerDisplayGeometry?.msiMatrix;
+            if (!matrix) return 0;
+            return Math.hypot(matrix[0], matrix[1]) * cssW / displayCanvas.width * (viewTransform.scale || 1);
         }
 
         /** 1・2・5 × 10ⁿ のうち、目標の長さに最も近いものを µm で返す。 */
@@ -1029,26 +1034,11 @@
         function buildExportCanvas() {
             const src = displayCanvas;
             if (!src || !(src.width > 0)) throw new Error('表示中の画像がありません');
-            const deg = (Number(rotationState.all) || 0) - 90 + nativeOrientationOffset();
-            const rad = deg * Math.PI / 180;
-            const ca = Math.abs(Math.cos(rad)), sa = Math.abs(Math.sin(rad));
-            const W = Math.max(1, Math.round(src.width * ca + src.height * sa));
-            const H = Math.max(1, Math.round(src.width * sa + src.height * ca));
-            const out = document.createElement('canvas');
-            out.width = W; out.height = H;
+            const overlay = roiCanvas?.width === src.width && roiCanvas.height === src.height ? roiCanvas : null;
+            const rotated = rotateViewerCanvas(src, overlay), W = rotated.width, H = rotated.height;
+            const out = document.createElement('canvas'); out.width = W; out.height = H;
             const ctx = out.getContext('2d');
-            ctx.fillStyle = '#000';
-            ctx.fillRect(0, 0, W, H);
-            ctx.imageSmoothingEnabled = false;
-            ctx.save();
-            ctx.translate(W / 2, H / 2);
-            ctx.rotate(rad);
-            ctx.drawImage(src, -src.width / 2, -src.height / 2);
-            // ROI の線も画面と同じように重ねる
-            if (roiCanvas && roiCanvas.width === src.width && roiCanvas.height === src.height) {
-                ctx.drawImage(roiCanvas, -src.width / 2, -src.height / 2);
-            }
-            ctx.restore();
+            ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); ctx.drawImage(rotated, 0, 0);
             drawScaleBarOnCanvas(ctx, W, H, src.width);
             // Provenance is outside the image area, never covering a tissue pixel.
             const annotated = document.createElement('canvas');
@@ -1089,8 +1079,10 @@
             const um = msiUmPerPx();
             const msiRef = getMsiRefSize();
             if (!um || !msiRef || !(msiRef.h > 0) || !(srcW > 0)) return null;
-            // 回転は剛体変換なので倍率は変わらない。1 MSI 画素 = srcW / msiRef.h キャンバス px
-            const umPerCanvasPx = um * msiRef.h / srcW;
+            // 余白や回転では倍率は変わらない。MSI軸の表示行列から取得する。
+            const matrix = viewerDisplayGeometry?.msiMatrix;
+            if (!matrix) return null;
+            const umPerCanvasPx = um / Math.hypot(matrix[0], matrix[1]);
             const barUm = niceScaleUm(umPerCanvasPx, W / 5);
             if (!(barUm > 0)) return null;
             const barPx = barUm / umPerCanvasPx;
@@ -1743,96 +1735,71 @@ function loadAllImages() {
             setActiveSettingsKey(firstChecked || imageKeys.find(k => atlasData.images[k] && imageSettings[k]) || null);
 
             if (imageKeys.length > 0) {
-                // MSI 座標系をキャンバスの基準にする。MSI が無ければ HE/IF → なんでも の順でフォールバック
-                const msiKey0 = imageKeys.find(k => /^MSI_/i.test(k) && atlasData.images[k]);
-                const heKey0  = imageKeys.find(k => /HE_STAIN|IF_STAIN/i.test(k) && atlasData.images[k]);
-                const firstKey = msiKey0 || heKey0 || imageKeys.find(k => atlasData.images[k]);
-                if (firstKey) {
-                    const firstImage = imageSources[firstKey];
-                    const refIsMsi = !!msiKey0 && firstKey === msiKey0;
-                    const heImage  = heKey0 ? imageSources[heKey0] : null;
-                    const setCanvasSize = () => {
-                        let w = firstImage.naturalWidth;
-                        let h = firstImage.naturalHeight;
-                        // MSI を基準に採る場合は CCW90° 回転後のランドスケープ寸法をキャンバス内部解像度に
-                        if (refIsMsi) { const tmp = w; w = h; h = tmp; }
-                        // HE が MSI より高解像なら、HE のディテール保持のためキャンバス内部解像度を倍率アップ
-                        let renderScale = 1;
-                        if (refIsMsi && heImage && heImage.naturalWidth > 0) {
-                            const ratio = Math.max(heImage.naturalWidth / firstImage.naturalWidth,
-                                                   heImage.naturalHeight / firstImage.naturalHeight);
-                            renderScale = Math.max(1, Math.min(8, Math.ceil(ratio)));
-                        }
-                        w = Math.round(w * renderScale);
-                        h = Math.round(h * renderScale);
-                        [displayCanvas, roiCanvas].forEach(c => { c.width = w; c.height = h; });
-
-                        // コンテナにフィットしつつアスペクト比を完全に維持するCSS寸法を計算。
-                        // #image-viewer-rot が CSS で −90° 回転するため、可視 bbox は
-                        // キャンバス CSS 寸法の w/h を入れ替えた転置になる。
-                        // コンテナにフィットさせるのは「回転後の可視 bbox」なので、
-                        // h/w（転置アスペクト比）を基準に計算する。
-                        const viewer = document.getElementById('image-viewer');
-                        const cw = viewer.clientWidth;
-                        const ch = viewer.clientHeight;
-                        if (cw > 0 && ch > 0) {
-                            const displayedRatio = h / w; // 回転後 visible width/height
-                            const containerRatio = cw / ch;
-                            let cssW, cssH;
-                            // 回転後の visible bbox は (visible_W, visible_H) = (cssH, cssW)。
-                            // どちらの辺で container に接するかで 2 分岐。
-                            if (containerRatio > displayedRatio) {
-                                // 高さで制約: visible_H = cssW = ch
-                                cssW = ch;
-                                cssH = ch * displayedRatio; // = ch * h/w
-                            } else {
-                                // 幅で制約: visible_W = cssH = cw
-                                cssH = cw;
-                                cssW = cw / displayedRatio; // = cw * w/h
-                            }
-                            // Canvas 自身は回転前のローカル座標系で配置する。
-                            // 中央合わせは回転ラッパ内部での配置として計算。
-                            [displayCanvas, roiCanvas].forEach(c => {
-                                c.style.width = cssW + 'px';
-                                c.style.height = cssH + 'px';
-                                c.style.left = ((cw - cssW) / 2) + 'px';
-                                c.style.top = ((ch - cssH) / 2) + 'px';
-                            });
-                            // 回転ラッパをコンテナ全面に合わせ、中心軸での −90° 回転が
-                            // そのままコンテナ中心で行われるようにする。
-                            const rotWrap = document.getElementById('image-viewer-rot');
-                            if (rotWrap) {
-                                rotWrap.style.width = cw + 'px';
-                                rotWrap.style.height = ch + 'px';
-                            }
-                        }
-
-                        refreshPixelated();
-                        refreshScaleBar();
-                        renderCompositeImage();
-                        drawAllRois();
-                        // ★ ここで常に firstKey を掴むと、ウィンドウリサイズや
-                        //   ResizeObserver のたびに選択中レイヤのハイライトが奪われる。
-                        focusThumbnail(activeSettingsKey || firstKey);
-                    };
-                    if (firstImage && firstImage.complete && firstImage.naturalWidth > 0) setCanvasSize();
-                    else if (firstImage) firstImage.addEventListener('load', setCanvasSize, { once: true });
-
-                    // ウィンドウリサイズ時にアスペクト比を再計算
-                    window.addEventListener('resize', () => { setCanvasSize(); });
-
-                    // サムネ load 後の IMAGES 行拡張やパネル折畳みで
-                    // #image-viewer 自体のサイズが変わった場合も再計算する
-                    if (typeof ResizeObserver !== 'undefined') {
-                        let rafId = 0;
-                        const ro = new ResizeObserver(() => {
-                            if (rafId) cancelAnimationFrame(rafId);
-                            rafId = requestAnimationFrame(() => { rafId = 0; setCanvasSize(); });
-                        });
-                        ro.observe(document.getElementById('image-viewer'));
-                    }
+                const resize = () => {
+                    renderCompositeImage(); drawAllRois();
+                    focusThumbnail(activeSettingsKey || imageKeys[0]);
+                };
+                resize();
+                if (!viewerResizeWired) {
+                    window.addEventListener('resize', resize);
+                    viewerResizeWired = true;
+                }
+                if (!viewerResizeObserver && typeof ResizeObserver !== 'undefined') {
+                    let rafId = 0;
+                    viewerResizeObserver = new ResizeObserver(() => {
+                        if (rafId) cancelAnimationFrame(rafId);
+                        rafId = requestAnimationFrame(() => { rafId = 0; resize(); });
+                    });
+                    viewerResizeObserver.observe(document.getElementById('image-viewer'));
                 }
             }
+        }
+
+        function computeViewerDisplayGeometry(T = atlasData.world_coords?.T_he_to_msi) {
+            const layers = Object.keys(atlasData.images || {}).filter(key => !isRefKey(key)).map(key => {
+                const img = imageSources[key], vr = valueRasters[key];
+                return { key, w: vr?.W || img?.naturalWidth, h: vr?.H || img?.naturalHeight,
+                    kind: /^MSI/i.test(key) ? 'msi' : /HE_STAIN|IF_STAIN/i.test(key) ? 'he' : 'image' };
+            }).filter(layer => layer.w > 0 && layer.h > 0);
+            const firstMsi = layers.find(layer => layer.kind === 'msi');
+            const first = firstMsi || layers.find(layer => layer.kind === 'he') || layers[0];
+            if (!first) return null;
+            const roiPoints = Object.values(atlasData.roi?.roi_items || {}).flatMap(items =>
+                items.flatMap(item => Array.isArray(item.poly_msi) ? item.poly_msi : []));
+            return ViewerDisplayGeometry.build({
+                msiSize: firstMsi ? { w: firstMsi.w, h: firstMsi.h } : null,
+                referenceSize: { w: first.w, h: first.h }, layers, rotation: rotationState, T, roiPoints,
+            });
+        }
+
+        function fitViewerDisplay() {
+            if (!viewerDisplayGeometry) return;
+            const viewer = document.getElementById('image-viewer');
+            const cw = viewer?.clientWidth, ch = viewer?.clientHeight;
+            if (!(cw > 0 && ch > 0)) return;
+            const angle = (Number(rotationState.all) || 0) - 90 + nativeOrientationOffset();
+            const fit = ViewerDisplayGeometry.fit(displayCanvas.width, displayCanvas.height, angle, cw, ch);
+            for (const canvas of [displayCanvas, roiCanvas]) {
+                canvas.style.width = fit.width + 'px'; canvas.style.height = fit.height + 'px';
+                canvas.style.left = (cw - fit.width) / 2 + 'px'; canvas.style.top = (ch - fit.height) / 2 + 'px';
+            }
+            const wrapper = document.getElementById('image-viewer-rot');
+            if (wrapper) { wrapper.style.width = cw + 'px'; wrapper.style.height = ch + 'px'; }
+        }
+
+        function updateViewerDisplayGeometry() {
+            const geometry = computeViewerDisplayGeometry();
+            if (!geometry) return false;
+            const previous = viewerDisplayGeometry;
+            viewerDisplayGeometry = geometry;
+            let resized = false;
+            for (const canvas of [displayCanvas, roiCanvas]) {
+                if (canvas.width !== geometry.width || canvas.height !== geometry.height) {
+                    canvas.width = geometry.width; canvas.height = geometry.height; resized = true;
+                }
+            }
+            fitViewerDisplay();
+            return resized || !previous || previous.msiMatrix.some((v, i) => v !== geometry.msiMatrix[i]);
         }
 
         // 現在チェックされているレイヤ一覧
@@ -2135,10 +2102,20 @@ function loadAllImages() {
         function renderCompositeImage() {
             if (isRendering || !displayCtx) return;
             isRendering = true;
-            // ★ try/finally が無いと、描画中の例外でフラグが立ちっぱなしになり、
-            //   以後すべての再描画が黙って無視される (操作が一切効かなくなる)。
+            let geometryChanged = false;
             try {
-            
+                geometryChanged = updateViewerDisplayGeometry();
+                if (!viewerDisplayGeometry) return;
+                refreshPixelated(); refreshScaleBar();
+                paintViewerComposite(displayCanvas, viewerDisplayGeometry);
+            } finally { isRendering = false; }
+            if (geometryChanged) drawAllRois(document.querySelector('.roi-item.active')?.dataset.roiKey || null);
+        }
+
+        function paintViewerComposite(target, geometry) {
+            // Match the live canvas backend as well as its transforms: mixing
+            // GPU and CPU canvases changes half-pixel edge interpolation.
+            const ctx = target.getContext('2d', { willReadFrequently: true });
             // HE/IF を先に、MSI を後に描く。こうしておくと MSI の透明度が
             // 「100% で HE を覆い、0% で HE が見える」という直感どおりに働く。
             const keysToRender = checkedLayerKeys().sort((a, b) => {
@@ -2146,10 +2123,7 @@ function loadAllImages() {
                 return am - bm;
             });
 
-            refreshPixelated();
-            refreshScaleBar();
-
-            displayCtx.clearRect(0, 0, displayCanvas.width, displayCanvas.height);
+            ctx.clearRect(0, 0, target.width, target.height);
 
             for (const key of keysToRender) {
                 const settings = imageSettings[key];
@@ -2158,7 +2132,6 @@ function loadAllImages() {
                 if (!vr && (!sourceImg || !sourceImg.complete || sourceImg.naturalWidth === 0)) continue;
 
                 const isMsiLayer = /^MSI/i.test(key);
-                const isHeLike   = /HE_STAIN|IF_STAIN/i.test(key);
                 if (isMsiLayer && valueDisplay.mode === 'normalized' && !valueRasters[key]) continue;
 
                 let tempCanvas;
@@ -2229,73 +2202,52 @@ function loadAllImages() {
                 tempCtx.putImageData(imageData, 0, 0);
                 }
 
-                displayCtx.globalAlpha = settings.applyOpacity === false ? 1.0 : settings.opacity;
+                ctx.globalAlpha = settings.applyOpacity === false ? 1.0 : settings.opacity;
                 // MSI は加算合成 (lighter)。信号のある所だけが光り、無い所は
                 // 下の HE がそのまま見える。複数分子なら色が混ざって共局在が読める。
-                displayCtx.globalCompositeOperation = isMsiLayer ? 'lighter' : 'source-over';
+                ctx.globalCompositeOperation = isMsiLayer ? 'lighter' : 'source-over';
                 // MSI は測定点そのものなので拡大しても補間しない (Share_Test と同じ)。
                 // HE は縮小がかかるので補間を残す (切るとザラつく)。
-                displayCtx.imageSmoothingEnabled = !isMsiLayer;
+                ctx.imageSmoothingEnabled = !isMsiLayer;
 
-                // HE-only rotation surrounds its alignment transform. MSI-only
-                // rotation is included in the shared MSI/ROI affine below.
-                const layerRot = isHeLike ? rotationState.he : 0;
-                const needLayerRot = Number.isFinite(layerRot) && layerRot !== 0;
-                if (needLayerRot) {
-                    displayCtx.save();
-                    displayCtx.translate(displayCanvas.width / 2, displayCanvas.height / 2);
-                    displayCtx.rotate(layerRot * Math.PI / 180);
-                    displayCtx.translate(-displayCanvas.width / 2, -displayCanvas.height / 2);
-                }
-
-                const T = atlasData.world_coords && atlasData.world_coords.T_he_to_msi;
-                const isPortrait = sourceImg ? sourceImg.naturalHeight > sourceImg.naturalWidth
-                                             : tempCanvas.height > tempCanvas.width;
-                const msiRef = getMsiRefSize();
-
-                // ★ 以前は portrait の HE にしか T を適用していなかったが、それだと
-                //   横長の HE を登録して重ね合わせを実行しても、保存はされるのに
-                //   画面が一切変わらない (landscape フォールバックで引き伸ばされる)。
-                //   T があるなら向きに関係なく適用する。
-                if (T && isHeLike && msiRef && msiRef.w > 0 && msiRef.h > 0) {
-                    // HE/IF を T_he_to_msi で MSI 座標系へ変換してから CCW90° でキャンバスに描画
-                    displayCtx.save();
-                    displayCtx.translate(0, displayCanvas.height);
-                    displayCtx.rotate(-Math.PI / 2);
-                    // 現在の local frame は MSI ピクセル空間。キャンバス内部解像度に合わせてスケール
-                    displayCtx.scale(displayCanvas.height / msiRef.w, displayCanvas.width / msiRef.h);
-                    // T_he_to_msi を適用:local frame が HE ピクセル空間になる
-                    displayCtx.transform(T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]);
-                    displayCtx.drawImage(tempCanvas, 0, 0);
-                    displayCtx.restore();
-                } else if (isMsiLayer) {
-                    // The same affine is used for ROI outlines and inverse picking.
-                    displayCtx.save();
-                    displayCtx.transform(...msiCanvasTransform(displayCanvas.width, displayCanvas.height));
-                    displayCtx.drawImage(tempCanvas, 0, 0, msiRef.w, msiRef.h);
-                    displayCtx.restore();
-                } else {
-                    // フォールバック(test1 互換): 従来の landscape/portrait 自動判定
-                    const isLandscape = !isPortrait;
-                    if (isLandscape) {
-                        displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.width, displayCanvas.height);
-                    } else {
-                        displayCtx.save();
-                        displayCtx.translate(0, displayCanvas.height);
-                        displayCtx.rotate(-Math.PI / 2);
-                        displayCtx.drawImage(tempCanvas, 0, 0, displayCanvas.height, displayCanvas.width);
-                        displayCtx.restore();
-                    }
-                }
-                if (needLayerRot) displayCtx.restore();
+                const matrix = geometry.layerMatrices[key];
+                if (!matrix) continue;
+                ctx.save();
+                ctx.transform(...matrix);
+                if (isMsiLayer) ctx.drawImage(tempCanvas, 0, 0, geometry.msiSize.w, geometry.msiSize.h);
+                else ctx.drawImage(tempCanvas, 0, 0);
+                ctx.restore();
             }
 
-            displayCtx.globalCompositeOperation = 'source-over';
-            displayCtx.globalAlpha = 1.0;
-            displayCtx.imageSmoothingEnabled = true;
-            } finally {
-                isRendering = false;
-            }
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 1.0;
+            ctx.imageSmoothingEnabled = true;
+        }
+
+        // Same pixels and display-only transforms as the saved Viewer. This
+        // callback does not touch currentProject, live canvases, visibility or T.
+        function createAlignedDisplayPreview(T) {
+            const geometry = computeViewerDisplayGeometry(T);
+            if (!geometry) throw new Error('表示する画像がありません。');
+            const composite = document.createElement('canvas');
+            composite.width = geometry.width; composite.height = geometry.height;
+            paintViewerComposite(composite, geometry);
+            return rotateViewerCanvas(composite);
+        }
+
+        function rotateViewerCanvas(source, overlay) {
+            const degrees = (Number(rotationState.all) || 0) - 90 + nativeOrientationOffset();
+            const bounds = ViewerDisplayGeometry.rotatedSize(source.width, source.height, degrees);
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.ceil(bounds.w - 1e-9));
+            canvas.height = Math.max(1, Math.ceil(bounds.h - 1e-9));
+            const ctx = canvas.getContext('2d');
+            ctx.imageSmoothingEnabled = false;
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.rotate(degrees * Math.PI / 180);
+            ctx.drawImage(source, -source.width / 2, -source.height / 2);
+            if (overlay) ctx.drawImage(overlay, -source.width / 2, -source.height / 2);
+            return canvas;
         }
 
         /**
@@ -3043,12 +2995,9 @@ function loadAllImages() {
 
         // Raw MSI coordinates stay immutable. Only their presentation is rotated.
         // DOM offsetX/Y already exclude the outer CSS pan/zoom/whole-view rotation.
-        function msiCanvasTransform(width = roiCanvas.width, height = roiCanvas.height) {
-            const msiRef = getMsiRefSize();
-            const sx = height / msiRef.w, sy = width / msiRef.h;
-            const rad = (Number(rotationState.msi) || 0) * Math.PI / 180;
-            const c = Math.cos(rad), s = Math.sin(rad), cx = width / 2, cy = height / 2;
-            return [s * sx, -c * sx, c * sy, s * sy, cx - c * cx - s * cy, cy - s * cx + c * cy];
+        function msiCanvasTransform() {
+            if (!viewerDisplayGeometry) updateViewerDisplayGeometry();
+            return viewerDisplayGeometry?.msiMatrix || [1, 0, 0, 1, 0, 0];
         }
         function msiToCanvas(mx, my) {
             const [a, b, c, d, e, f] = msiCanvasTransform();
@@ -3544,6 +3493,7 @@ function loadAllImages() {
         // 変換前のローカル座標で届き、canvasToMsi() 以下は無改造で動く。
         // =======================================================================
         function applyViewTransform() {
+            fitViewerDisplay();
             const rot = document.getElementById('image-viewer-rot');
             if (rot) {
                 rot.style.setProperty('--vt-tx', viewTransform.tx + 'px');
@@ -3920,6 +3870,7 @@ function loadAllImages() {
         project: currentProject || atlasData,
         saved: atlasData.alignment?.[heKey], worldCoords: atlasData.world_coords, msiPitch,
         formatName: formatDisplayName,
+        renderFinalPreview: createAlignedDisplayPreview,
         save: async (T, alignment) => {
           if (viewerContextRevision !== contextRevision || currentProject?.id !== projectId) {
             throw new Error('保存対象が切り替わりました。再読み込みしてください。');

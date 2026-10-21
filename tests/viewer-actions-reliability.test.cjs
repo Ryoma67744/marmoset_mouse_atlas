@@ -219,10 +219,17 @@ test('MSI rotation shares image, ROI, preview and picking coordinates without ch
       const rawBefore = Object.fromEntries(Object.entries(valueRasters).map(([key, r]) => [key, Array.from(new Uint32Array(r.values.buffer))]));
       const roiBefore = JSON.stringify(atlasData.roi), statsBefore = calcStats(extractRoiPixels('MSI_5-HT', 'all'));
       const expected = (mx, my, angle) => {
-        const { w, h } = getMsiRefSize(), W = roiCanvas.width, H = roiCanvas.height;
-        const x = my * W / h - W / 2, y = H / 2 - mx * H / w;
-        const rad = angle * Math.PI / 180;
-        return [W / 2 + x * Math.cos(rad) - y * Math.sin(rad), H / 2 + x * Math.sin(rad) + y * Math.cos(rad)];
+        // This fixture has only MSI, with a display resolution scale of one.
+        // Rotate in the original MSI frame; expanded canvas dimensions must
+        // never rescale the scientific coordinates or move their pivot.
+        const { w, h } = getMsiRefSize(), rad = angle * Math.PI / 180;
+        const c = Math.cos(rad), s = Math.sin(rad);
+        const rotate = (x, y) => [h / 2 + (y - h / 2) * c - (w / 2 - x) * s,
+          w / 2 + (y - h / 2) * s + (w / 2 - x) * c];
+        const corners = [[0, 0], [w, 0], [w, h], [0, h]].map(p => rotate(...p));
+        const rotated = rotate(mx, my);
+        return [rotated[0] - Math.min(...corners.map(p => p[0])),
+          rotated[1] - Math.min(...corners.map(p => p[1]))];
       };
       const samples = [];
       for (const angle of [0, 90, -90, 180, 37]) {
