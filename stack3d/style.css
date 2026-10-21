@@ -8,9 +8,10 @@
 .toggle-label input{width:16px;height:16px;accent-color:#9cbbe4;margin:0}
 .roi-selection{min-width:0;border:0;padding:0;margin:15px 0 0}
 .roi-selection legend{font-size:12px;color:#c1cddd;margin-bottom:9px}
-.roi-unrestricted{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;cursor:pointer}
-.roi-unrestricted small{display:block;font-size:10px;color:var(--muted);margin-top:2px}
-.roi-unrestricted input{flex:0 0 16px}
+.roi-unassigned{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;cursor:pointer}
+.roi-unassigned small{display:block;font-size:10px;color:var(--muted);margin-top:2px}
+.roi-unassigned input{flex:0 0 16px}
+.roi-source-visibility{display:block;font-size:10px;color:var(--muted);margin-top:2px}
 .roi-selection-actions{display:flex;gap:6px;margin:10px 0 7px}
 .roi-selection-actions button{flex:1;min-width:0;padding:5px 7px;font-size:11px}
 .roi-region-list{max-height:190px;overflow-y:auto;scrollbar-width:thin;border:1px solid var(--line);border-radius:6px;background:#0d1521}

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>3D Atlas — Marmoset / Mouse Atlas</title>
-  <link rel="stylesheet" href="style.css?v=2.35.0">
+  <link rel="stylesheet" href="style.css?v=2.38.0">
   <link rel="stylesheet" href="analysis.css">
   <link rel="stylesheet" href="../lib/section-gallery.css?v=2.37.1">
 </head>
@@ -40,12 +40,12 @@
         <label class="toggle-label" for="roi-labels"><span>領域名（選択切片）</span><input id="roi-labels" type="checkbox" checked></label>
         <fieldset class="roi-selection" aria-describedby="roi-selection-help">
           <legend>表示する領域</legend>
-          <label class="toggle-label roi-unrestricted"><span>領域制限なし<small>ROI外も含めて表示</small></span><input id="roi-unrestricted" type="checkbox" checked></label>
+          <label class="toggle-label roi-unassigned"><span>ROI未付与部分<small>どの登録ROIにも含まれない測定部分</small></span><input id="roi-unassigned" type="checkbox" checked></label>
           <div class="roi-selection-actions"><button id="roi-select-all" type="button">全選択</button><button id="roi-clear-all" type="button">全消し</button></div>
           <div id="roi-region-list" class="roi-region-list"></div>
           <p id="roi-selection-status" class="hint" role="status" aria-live="polite"></p>
         </fieldset>
-        <p id="roi-selection-help" class="hint">チェックした領域内のMSIをまとめて表示します。全選択は全ROI、全消しはMSIとROIを非表示にします。色範囲は変わりません。</p>
+        <p id="roi-selection-help" class="hint">MSIを表示する部分を選びます。全選択はROI未付与部分も含む全測定範囲、全消しはすべて非表示です。登録ROIの輪郭が非表示でも、そのROI内のMSIを選択できます。色範囲・集計値は変わりません。</p>
       </div>
       <div class="control-block brain-controls"><label for="brain-visible" class="toggle-label"><span>脳のイラストを重ねる</span><input id="brain-visible" type="checkbox"></label><label for="brain-opacity">イラストの濃さ <output id="brain-opacity-value">12%</output></label><input id="brain-opacity" type="range" min="0.02" max="0.35" step="0.01" value="0.12" disabled><p id="brain-help" class="hint">マーモセット脳の模式図です。実際の脳への位置合わせは行っていません。</p></div>
       <div class="control-block"><label for="threshold">低信号の透過 <output id="threshold-value">0%</output></label><input id="threshold" type="range" min="0" max="0.95" step="0.01" value="0"><p class="hint">表示のみを調整します。測定値は変わりません。</p></div>
@@ -123,7 +123,7 @@
   <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
   <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-  <script src="../lib/version.js?v=2.37.2"></script>
+  <script src="../lib/version.js?v=2.38.0"></script>
   <script src="../lib/storage.js"></script>
   <script src="../lib/otsu.js"></script>
   <script src="../lib/align.js"></script>
@@ -139,7 +139,7 @@
   <script src="../lib/project-sync.js"></script>
   <script src="../lib/section-display.js"></script>
   <script src="../lib/section-edge-mask.js"></script>
-  <script src="../lib/stack3d.js?v=2.35.0"></script>
+  <script src="../lib/stack3d.js?v=2.38.0"></script>
   <script src="../lib/section-outline.js"></script>
   <script src="../lib/section-navigation.js"></script>
   <script src="../lib/section-gallery-data.js?v=2.37.1"></script>
@@ -161,6 +161,6 @@
   <script src="analysis-worker-client.js"></script>
   <script src="analysis-resize.js"></script>
   <script src="analysis.js?v=2.35.0"></script>
-  <script src="app.js?v=2.37.1"></script>
+  <script src="app.js?v=2.38.0"></script>
 </body>
 </html>
