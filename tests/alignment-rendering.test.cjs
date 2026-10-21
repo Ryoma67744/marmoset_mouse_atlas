@@ -46,6 +46,18 @@ test('saved affine reaches Viewer and both Stack3D HE renderers intact in each o
       CanvasRenderingContext2D.prototype.transform = function (...args) {
         const before = this.getTransform();
         original.apply(this, args);
+        if (phase?.endsWith(':viewer') && this.canvas === displayCanvas &&
+            args.every((v, i) => v === viewerDisplayGeometry.layerMatrices.HE_Stain[i])) {
+          // Viewer now composes the original T with a display-only expansion.
+          // Strip that presentation transform to inspect the scientific T.
+          const G = ViewerDisplayGeometry, D = viewerDisplayGeometry.displayTransform;
+          const prefix = G.multiply(D, G.multiply(G.rotation(11, 24, 32), [0, -1, 1, 0, 0, 64]));
+          const recovered = G.multiply(G.inverse(prefix), args);
+          records.push({ phase, args: recovered, before: prefix, width: this.canvas.width, height: this.canvas.height,
+            renderScale: viewerDisplayGeometry.renderScale,
+            basis: [[0, 0], [1, 0], [0, 1], [63, 41]].map(([x, y]) => G.point(recovered, x, y)) });
+          return;
+        }
         // Record only the HE-specific affine call, not the MSI orientation.
         if (args.every((v, i) => v === [T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]][i])) {
           const after = this.getTransform();
@@ -78,7 +90,8 @@ test('saved affine reaches Viewer and both Stack3D HE renderers intact in each o
     assert.equal(results.records.length, 6, 'every HE renderer must apply the authoritative matrix once in each mode');
     const expectedArgs = [T[0][0], T[1][0], T[0][1], T[1][1], T[0][2], T[1][2]];
     for (const r of results.records) {
-      assert.deepEqual(r.args, expectedArgs, r.phase + ' must keep full saved coefficients');
+      if (r.phase.endsWith(':viewer')) r.args.forEach((v, i) => near(v, expectedArgs[i], 1e-10));
+      else assert.deepEqual(r.args, expectedArgs, r.phase + ' must keep full saved coefficients');
       [[0, 0], [1, 0], [0, 1], [63, 41]].forEach(([x, y], i) => {
         // Browser canvas CTMs may round to float32 internally. Exact source
         // coefficients are checked above; basis positions use subpixel tolerance.
@@ -90,8 +103,8 @@ test('saved affine reaches Viewer and both Stack3D HE renderers intact in each o
         near(a, r.width / 64); near(d, r.height / 48); near(b, 0); near(c, 0);
       } else if (r.phase.endsWith(':viewer')) {
         const angle = (11 - 90) * Math.PI / 180;
-        near(a, Math.cos(angle) * r.height / 64); near(b, Math.sin(angle) * r.height / 64);
-        near(c, -Math.sin(angle) * r.width / 48); near(d, Math.cos(angle) * r.width / 48);
+        near(a, Math.cos(angle) * r.renderScale); near(b, Math.sin(angle) * r.renderScale);
+        near(c, -Math.sin(angle) * r.renderScale); near(d, Math.cos(angle) * r.renderScale);
       } else {
         const pixel = r.phase.startsWith('pixel:');
         const angle = (17 + 11 - (pixel ? 0 : 180)) * Math.PI / 180;
