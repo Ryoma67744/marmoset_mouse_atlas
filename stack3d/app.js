@@ -1024,5 +1024,9 @@
     get hiddenSectionIds() { return [...hiddenSectionIds]; },
     get analysis() { return analysisUI; },
     get renderer() { return renderer; }, get sourceChanged() { return sourceChanged; }, options, selectSection };
+  global.SectionGallery?.create({ getContext: () => ({
+    currentProject: sections[selected] && Stack3D.seriesOf(sections[selected]).id === activeSeries ? sections[selected].project : null,
+    seriesId: activeSeries
+  }), viewerPath: '../viewer/index.html' });
   load();
 })(window);

@@ -11,7 +11,7 @@
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
-    <script src="../lib/version.js"></script>
+    <script src="../lib/version.js?v=2.37.0"></script>
     <script src="../lib/storage.js"></script>
     <script src="../lib/otsu.js"></script>
     <script src="../lib/align.js"></script>
@@ -35,6 +35,12 @@
     <script src="../lib/section-navigation.js"></script>
     <script src="./section-navigation.js"></script>
     <link rel="stylesheet" href="./section-navigation.css">
+    <script src="../lib/section-display.js"></script>
+    <script src="../lib/section-edge-mask.js"></script>
+    <script src="../lib/stack3d.js?v=2.35.0"></script>
+    <script src="../lib/section-gallery-data.js?v=2.37.0"></script>
+    <script src="../lib/section-gallery.js?v=2.37.0"></script>
+    <link rel="stylesheet" href="../lib/section-gallery.css?v=2.37.0">
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -4243,6 +4249,8 @@ function loadAllImages() {
         setupViewerRefresh();
         setupStack3DReturn(params, projectId);
         setupViewerSectionNavigation();
+        window.SectionGallery?.create({ getContext: () => ({ currentProject,
+          seriesId: currentProject?.atlas?.seriesId || 'legacy_marmoset' }), viewerPath: '../viewer/index.html' });
         // 「クラウドに保存」の表示は、開いたデータが決まってからでないと出せない
         if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
       } catch (e) {

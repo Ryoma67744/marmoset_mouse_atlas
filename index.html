@@ -7,6 +7,7 @@
     <meta http-equiv="Pragma" content="no-cache">
     <meta http-equiv="Expires" content="0">
     <title>Marmoset / Mouse Brain Atlas — Master</title>
+    <link rel="stylesheet" href="lib/section-gallery.css?v=2.37.0">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
@@ -224,7 +225,7 @@
         </footer>
     </div>
 
-    <script src="lib/version.js"></script>
+    <script src="lib/version.js?v=2.37.0"></script>
     <script src="lib/storage.js"></script>
     <script src="lib/series-import.js"></script>
     <script src="lib/otsu.js"></script>
@@ -241,6 +242,12 @@
     <script src="lib/cloud-config.js"></script>
     <script src="lib/cloud.js"></script>
     <script src="lib/project-sync.js"></script>
+    <script src="lib/section-navigation.js"></script>
+    <script src="lib/section-display.js"></script>
+    <script src="lib/section-edge-mask.js"></script>
+    <script src="lib/stack3d.js?v=2.35.0"></script>
+    <script src="lib/section-gallery-data.js?v=2.37.0"></script>
+    <script src="lib/section-gallery.js?v=2.37.0"></script>
     <script>
     (function () {
         'use strict';
@@ -983,6 +990,7 @@
         const SERIES_KEY = 'atlas-master-series';
         const masterParams = new URLSearchParams(location.search);
         let currentSeriesId = masterParams.get('series') || '';
+        let sectionGalleryInitialized = false;
         let pendingSeriesNavigation = masterParams.has('series');
         try {
             if (!pendingSeriesNavigation) currentSeriesId = sessionStorage.getItem(SERIES_KEY) || '';
@@ -1180,6 +1188,10 @@
             } else render();
             paintCloudChip();
             updateStorageNote();
+            if (!sectionGalleryInitialized && window.SectionGallery) {
+                SectionGallery.create({ getContext: () => ({ seriesId: currentSeriesId }), viewerPath: 'viewer/index.html' });
+                sectionGalleryInitialized = true;
+            }
             // フォルダを動かしたぶんをクラウドへ反映する (ずれが無ければ何も送らない)
             reconcileFolderPaths().catch(e => showError('フォルダー同期が未完了です: ' + e.message));
         }
