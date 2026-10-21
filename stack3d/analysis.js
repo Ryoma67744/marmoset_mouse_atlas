@@ -218,7 +218,7 @@
       $('analysis-value-badge').textContent = opts.valueMode === 'normalized' ? (wholeMeasured() ? '5-HT-d4補正（相対比）' : '補正値') : '原値';
       $('analysis-pooling-note').textContent = wholeMeasured() ? '全測定画素を切片ごとに比較' : state.mode === 'pooled' ? '全有効画素を統合（画素数による重み）' : state.mode === 'by-section' ? '同じ領域を切片ごとに比較' : '選択中の切片にある領域を比較';
       $('analysis-sample-scope').hidden = !wholeMeasured();
-      $('analysis-sample-scope').textContent = `全${ids.length}切片 · 全測定画素（測定された背景・ゼロを含む）。3Dの表示切片・閾値・分子のチェックとは独立して集計します。`;
+      $('analysis-sample-scope').textContent = `全${ids.length}切片 · 全測定画素（測定された背景・ゼロを含む）。3Dの表示切片・閾値・分子のチェックとは独立して集計します。${options.getOptions()?.outerEdgeWidth === 2 ? '3Dで非表示にした外側2画素も集計に含みます。' : ''}`;
       root.querySelector('.analysis-footnote').textContent = wholeMeasured()
         ? 'n＝対象分子の有限値の画素数（ゼロを含む）。SD＝画素間の母標準偏差。ROIや3D表示による絞り込みは行いません。補正値は同一画素の Serotonin-d4-DPP に対する相対比で、補正不能な画素は除外します。濃度・面積・体積への換算は行っていません。'
         : 'n＝有限値の画素数。SD＝画素間の母標準偏差。統計量は元のROIの全有効画素から算出し、3Dの透過・表示範囲には依存しません。分子ごとに軸と単位が異なります。';

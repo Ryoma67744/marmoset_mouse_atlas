@@ -91,9 +91,6 @@ async function ready(page, { series = SERIES, count = 48, mode, valueMode } = {}
   }, { series, count, mode, valueMode });
   await paint(page);
 }
-async function switchMode(page, valueMode) {
-  await page.locator('#value-mode').selectOption(valueMode); await ready(page, { valueMode });
-}
 async function currentResult(page) { return page.evaluate(() => Atlas3D.analysis.getState().result); }
 async function installCanvasAudit(page) {
   await page.addInitScript(() => {
@@ -124,7 +121,7 @@ async function rankedPlot(page) {
   });
 }
 
-test('mouse whole-pixel charts use exact full distributions for all 48 sections and six raw / five corrected molecules', { timeout: 120000 }, async () => {
+test('fixed mouse atlas charts use full measured distributions for all 48 sections and five corrected molecules', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), { page } = h;
   try {
     await seedMouseAnalysis(h); const original = await scientificSnapshot(page);
@@ -135,9 +132,11 @@ test('mouse whole-pixel charts use exact full distributions for all 48 sections 
     assert.equal(initial.mode, 'by-section'); assert.equal(initial.scope, 'all'); assert.equal(initial.sampleScope, 'all-measured');
     assert.match(await page.locator('#analysis-sample-scope').innerText(), /全測定画素/);
     assert.equal(await page.locator('#analysis-range').isVisible(), false);
-    for (const valueMode of ['raw', 'normalized']) {
-      await switchMode(page, valueMode);
-      const result = await currentResult(page), expectedChannels = valueMode === 'raw' ? ANALYTES : ANALYTES.slice(0, 5);
+    assert.equal(await page.locator('#value-mode').isVisible(), false);
+    {
+      const valueMode = 'normalized';
+      const result = await currentResult(page), expectedChannels = ANALYTES.slice(0, 5);
+      assert.equal(result.valueMode, valueMode);
       assert.deepEqual(result.channels.map(channel => channel.key), expectedChannels);
       assert.deepEqual(result.selection.sectionIds, Array.from({ length: 48 }, (_, index) => sectionId(index + 1)));
       for (const channel of result.channels) {
@@ -174,7 +173,7 @@ test('mouse graphs retain all 48 targets independently of 3D visibility and use 
   const h = await startBrowserHarness(), { page } = h;
   try {
     await seedMouseAnalysis(h); await installCanvasAudit(page);
-    await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES); await ready(page); await switchMode(page, 'raw');
+    await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES); await ready(page, { valueMode: 'normalized' });
     await page.locator('[data-analysis-molecule="Histamine-DPP"]').click(); await paint(page);
     const initial = await currentResult(page);
     for (const input of await page.locator('input[name="channel"]:enabled').all()) await input.uncheck();
@@ -212,10 +211,10 @@ test('mouse analysis restores series-specific display state and cancels obsolete
   const h = await startBrowserHarness(), { page } = h;
   try {
     await seedMouseAnalysis(h);
-    await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES); await ready(page); await switchMode(page, 'raw');
-    await page.locator('[data-analysis-molecule="' + STANDARD + '"]').click(); await paint(page);
-    assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), STANDARD);
-    await switchMode(page, 'normalized');
+    await page.evaluate(standard => sessionStorage.setItem('atlas-stack3d-analysis-v1:mouse_tissue_1set', JSON.stringify({
+      mode: 'by-section', activeMolecule: standard, scope: 'all'
+    })), STANDARD);
+    await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES); await ready(page, { valueMode: 'normalized' });
     assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), 'Serotonin-DPP');
     assert.match(await page.locator('#analysis-channel-note').innerText(), /原値|内部標準|QC/);
     assert.ok(!(await currentResult(page)).channels.some(channel => channel.key === STANDARD));
@@ -255,21 +254,25 @@ test('mouse analysis restores series-specific display state and cancels obsolete
     assert.equal(finalLegacy.activeMolecule, 'NE'); assert.equal(finalLegacy.sampleScope, 'roi');
     assert.deepEqual(finalLegacy.result.channels.map(channel => channel.key), ['DA', 'NE', '5-HT']);
     assert.ok(finalLegacy.result.selection.sectionIds.every(id => id.startsWith('analysis-section-')));
-    // Switching from another series' normalized view must not prematurely
-    // discard the mouse raw-QC selection while its saved raw mode is loading.
+    // A legacy raw-QC selection is migrated even when returning from a
+    // different series' normalized view. Marmoset's saved mode is unaffected.
     await page.locator('#value-mode').selectOption('normalized');
     await ready(page, { series: 'legacy_marmoset', count: 3, mode: 'pooled', valueMode: 'normalized' });
-    await page.locator('#series-select').selectOption(SERIES); await ready(page);
-    await switchMode(page, 'raw');
-    await page.locator('#analysis-molecule-select').selectOption(STANDARD); await paint(page);
-    assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), STANDARD);
-    await page.locator('#series-select').selectOption('legacy_marmoset');
-    await ready(page, { series: 'legacy_marmoset', count: 3, mode: 'pooled', valueMode: 'normalized' });
-    await page.locator('#series-select').selectOption(SERIES); await ready(page, { valueMode: 'raw' });
-    assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), STANDARD);
-    assert.equal((await page.evaluate(() => Atlas3D.analysis.getState())).activeMolecule, STANDARD);
-    await page.reload(); await ready(page, { valueMode: 'raw' });
-    assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), STANDARD);
+    await page.evaluate(standard => {
+      const viewKey = 'atlas-stack3d-view-v1:mouse_tissue_1set';
+      const view = JSON.parse(sessionStorage.getItem(viewKey));
+      view.options.mode = 'raw'; view.options.channels = [standard];
+      sessionStorage.setItem(viewKey, JSON.stringify(view));
+      const analysisKey = 'atlas-stack3d-analysis-v1:mouse_tissue_1set';
+      const analysis = JSON.parse(sessionStorage.getItem(analysisKey)); analysis.activeMolecule = standard;
+      sessionStorage.setItem(analysisKey, JSON.stringify(analysis));
+    }, STANDARD);
+    await page.locator('#series-select').selectOption(SERIES); await ready(page, { valueMode: 'normalized' });
+    assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), 'Serotonin-DPP');
+    assert.equal((await page.evaluate(() => Atlas3D.analysis.getState())).activeMolecule, 'Serotonin-DPP');
+    assert.ok(!(await currentResult(page)).channels.some(channel => channel.key === STANDARD));
+    await page.reload(); await ready(page, { valueMode: 'normalized' });
+    assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), 'Serotonin-DPP');
     assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
@@ -278,7 +281,7 @@ test('mouse molecule with no measured values remains an unavailable last box and
   const h = await startBrowserHarness(), { page } = h;
   try {
     await seedMouseAnalysis(h, { emptyChannelSection: 7 });
-    await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES); await ready(page); await switchMode(page, 'raw');
+    await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES); await ready(page, { valueMode: 'normalized' });
     await page.locator('[data-analysis-molecule="Histamine-DPP"]').click(); await paint(page);
     const result = await currentResult(page), channel = result.channels.find(channel => channel.key === 'Histamine-DPP');
     const missing = channel.groups.find(group => group.sectionId === sectionId(7));

@@ -28,6 +28,7 @@
   const MOUSE_STANDARD = 'Serotonin-d4-DPP', MOUSE_RATIO_DISPLAY_VERSION = 1;
   const mouseRatioSeries = () => activeSeriesInfo().species === 'mouse' && sections.length > 0 &&
     sections.every(section => section.project?.normalization?.mode === 'pixel_ratio');
+  const fixedMouseDisplay = () => activeSeries === 'mouse_tissue_1set' && pixelSeries() && mouseRatioSeries();
   const mouseRatioMode = () => mouseRatioSeries() && $('value-mode').value === 'normalized';
   const valueModeLabel = () => $('value-mode').value === 'raw' ? '原値' : mouseRatioSeries() ? '5-HT-d4補正・相対比' : '補正値';
   const defaultSpacing = () => pixelSeries() ? finite(sections[0]?.project?.atlas?.displaySpacing, 2) : DEFAULT_SPACING;
@@ -144,9 +145,10 @@
     if (!persistent) noticeTimer = setTimeout(() => { $('notice').hidden = true; }, 6500);
   }
   function options() {
-    return { mode: $('value-mode').value, rangeMode: 'common', roiRegions: roiRegions === null ? null : [...roiRegions],
+    return { mode: fixedMouseDisplay() ? 'normalized' : $('value-mode').value, outerEdgeWidth: fixedMouseDisplay() ? 2 : 0,
+      rangeMode: 'common', roiRegions: roiRegions === null ? null : [...roiRegions],
       channels: Array.from(document.querySelectorAll('input[name=channel]:checked'), input => input.value)
-        .filter(name => !mouseRatioMode() || name !== MOUSE_STANDARD), threshold: finite($('threshold').value, 0) };
+        .filter(name => !(fixedMouseDisplay() || mouseRatioMode()) || name !== MOUSE_STANDARD), threshold: finite($('threshold').value, 0) };
   }
   function saveView() {
     // A queued repaint may finish after a series switch has started. Never
@@ -170,9 +172,14 @@
     }
     if (!view || !Array.isArray(view.ids) || view.ids.join('\n') !== sections.map(section => section.id).join('\n')) return;
     const saved = view.options || {};
-    $('value-mode').value = mouseRatioSeries() && view.mouseRatioDisplayVersion !== MOUSE_RATIO_DISPLAY_VERSION
+    $('value-mode').value = fixedMouseDisplay() || mouseRatioSeries() && view.mouseRatioDisplayVersion !== MOUSE_RATIO_DISPLAY_VERSION
       ? 'normalized' : saved.mode === 'normalized' ? 'normalized' : 'raw';
     if (Array.isArray(saved.channels)) for (const input of document.querySelectorAll('input[name=channel]')) input.checked = saved.channels.includes(input.value);
+    // A former raw d4-only QC view has no analyte in this fixed display.
+    // Migrate that view to the five analytes, while preserving deliberate empty selections.
+    if (fixedMouseDisplay() && saved.channels?.length === 1 && saved.channels[0] === MOUSE_STANDARD) {
+      for (const input of document.querySelectorAll('input[name=channel]')) input.checked = input.value !== MOUSE_STANDARD;
+    }
     $('threshold').value = Math.max(0, Math.min(0.95, finite(saved.threshold, 0)));
     $('opacity').value = Math.max(0.05, Math.min(1, finite(view.opacity, 0.55)));
     const savedSpacing = finite(view.spacing, defaultSpacing());
@@ -273,17 +280,26 @@
     buildChannels(); syncSeriesRestrictions(); syncRatioControls();
   }
   function syncRatioControls() {
+    const fixed = fixedMouseDisplay();
+    if (fixed) $('value-mode').value = 'normalized';
+    $('value-mode').hidden = fixed; $('value-mode').disabled = busy || !sections.length || fixed;
+    $('value-mode-fixed').hidden = !fixed;
+    $('value-mode-label').htmlFor = fixed ? '' : 'value-mode';
     const ratioSeries = mouseRatioSeries(), ratio = mouseRatioMode();
     const standard = [...document.querySelectorAll('input[name=channel]')].find(input => input.value === MOUSE_STANDARD);
     if (standard) {
       if (ratio) standard.checked = false;
       standard.disabled = busy || !sections.length || ratio;
+      standard.closest('label').hidden = fixed;
       standard.closest('label').title = ratio ? '内部標準のQC画像は「原値」に切り替えて表示できます。' : '';
     }
     const help = $('value-mode-help'); help.hidden = !ratioSeries;
-    help.textContent = ratio
+    help.textContent = fixed
+      ? '各分子の原値 ÷ 同じ画素の Serotonin-d4-DPP（5-HT-d4）の原値。d4 > 0で計算する相対比で、濃度ではありません。測定範囲の外側2画素はMSI表示だけを非表示にします。内部の欠測穴は外周として扱いません。補正値・色の基準・箱ひげ図の集計対象は保持します。外周の信号を偽のピークと判断したものではありません。'
+      : ratio
       ? '5分子を同じ画素の5-HT-d4信号で割った相対比です。濃度ではありません。d4 > 0で計算し、0・欠損は算出不可。P10による低値除外はしていません。内部標準自体のQCは「原値」で表示できます。'
       : '保存された原値を表示しています。Serotonin-d4-DPPは噴霧した内部標準のQC信号です。';
+    $('open-section').firstChild.textContent = fixed ? '全画素の個別ビューを開く ' : 'この断面を開く ';
   }
   function syncSeriesRestrictions() {
     const pixel = pixelSeries();
@@ -611,6 +627,7 @@
     if (hiddenSectionIds.size === sections.length) return '全切片がOFFです。切片一覧から表示をONにしてください。';
     if (msiPreviewMessage()) return off + msiPreviewMessage();
     const text = [valueModeLabel() + 'を表示'];
+    if (fixedMouseDisplay()) text.push(`外側2画素を非表示（${status.edgeHiddenPixels ?? 0}画素）`);
     if (status.code === 'UNAVAILABLE') text[0] = status.message || '表示できる値がありません。分子・表示値を確認してください。'; else if (status.message) text.push(status.message);
     if (status.unavailableChannels?.length && status.code !== 'UNAVAILABLE') text.push(`表示不可：${status.unavailableChannels.join('・')}`);
     if (options().mode === 'normalized' && status.code === 'PROVISIONAL') text.push('保存された暫定補正を使用');
