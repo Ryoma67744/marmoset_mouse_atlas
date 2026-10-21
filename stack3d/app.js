@@ -173,16 +173,16 @@
       ? '登録データが更新されています。再読込してAtlas配置との対応を確認してください。'
       : !standardAtlasPrepared?.available
         ? `${standardAtlasPrepared?.reason || 'Atlas配置との対応を確認中です。'} 従来配置を表示します。`
-        : active ? 'BMA2023に基づく推定配置です。個体の実測位置ではありません。従来配置と切り替えて比較できます。'
+        : active ? 'Atlas推定配置・等間隔です。向きと平面内の位置はBMA2023に基づく推定です。個体の実測位置ではありません。'
           : '保存済みの3D配置を表示しています。「Atlas推定配置」で標準Atlasに基づく配置と比較できます。';
     $('standard-atlas-scene-note').hidden = !active;
-    $('standard-atlas-scene-note').textContent = standardAtlasNeedsReload ? 'Atlas推定配置 · 元データ更新あり／再読込が必要' : 'Atlas推定配置 · 個体の実測位置ではありません';
+    $('standard-atlas-scene-note').textContent = standardAtlasNeedsReload ? 'Atlas推定配置・等間隔 · 元データ更新あり／再読込が必要' : 'Atlas推定配置・等間隔 · 実測距離ではありません';
     $('standard-atlas-edit-note').hidden = !active;
-    $('spacing').disabled = busy || !sections.length || active;
+    $('spacing').disabled = busy || !sections.length;
     $('spacing-help').textContent = active
-      ? '標準Atlasの断面番号sに対応する50 µm間隔で配置します。試料の実測切片間隔ではありません。'
+      ? '前後方向は切片順の表示用等間隔です。スライダーで全切片の間隔を一緒に調整できます。実測距離ではありません。'
       : pixelSeries() ? '画像pixelを基準にした等間隔の表示です。実際の切片間隔ではありません。' : '前後方向は切片順です。間隔は表示上の距離です。';
-    $('coordinate-note').textContent = active ? 'XY：保存された画素サイズを保持 · Z：標準Atlasの相対位置'
+    $('coordinate-note').textContent = active ? 'XY：Atlas推定配置・画素サイズを保持 · 前後：切片順の表示用等間隔（実測距離ではない）'
       : pixelSeries() ? 'XY：画像pixel · Z：確定番号順。実寸は不明。' : 'XY：保存された画素サイズ · 前後：欠番を詰めた切片順';
     const pose = sections[selected]?.standardAtlasPose;
     $('standard-atlas-section-note').hidden = !active || !pose;
@@ -192,15 +192,15 @@
       const slice = Number(pose.atlasSlice).toLocaleString('en-US', { maximumFractionDigits: 3 });
       const warningLabels = { 'reference-url-duplicate': '参照URLの重複あり', 'reference-image-duplicate': '参照画像の重複あり',
         'reference-s-duplicate': '参照断面番号の重複あり',
-        'reference-s-reversal': '参照断面番号の逆転あり', 'reference-depth-interpolated': '前後位置も補間推定',
+        'reference-s-reversal': '参照断面番号の逆転あり', 'reference-depth-interpolated': '参照Atlas断面番号は補間推定',
         'placement-interpolated': '切片ごとの対応点による位置確認は未実施',
         'placement-outside-anchor-range': '代表切片の範囲外への推定', 'he-multiple-components': 'HEに離れた組織片あり',
         'he-fov-clipping': 'HE組織の一部がMSI測定範囲外', 'low-envelope-overlap': '輪郭対応を要確認',
         'he-envelope-outside-reference': '参照輪郭の外に出るHE領域あり', 'pilot-correspondences-provisional': '代表切片の対応点は暫定' };
       const warnings = [...new Set((Array.isArray(pose.qc?.flags) ? pose.qc.flags : []).map(flag => warningLabels[flag]).filter(Boolean))];
-      if ((pose.atlasSliceSource === 'interpolated-reference' || pose.qc?.atlasSliceInterpolated) && !warnings.includes('前後位置も補間推定')) warnings.push('前後位置も補間推定');
+      if ((pose.atlasSliceSource === 'interpolated-reference' || pose.qc?.atlasSliceInterpolated) && !warnings.includes('参照Atlas断面番号は補間推定')) warnings.push('参照Atlas断面番号は補間推定');
       const review = pose.qc?.requiresIndividualReview ? 'この切片は個別の位置確認が必要です。' : '代表切片の採用は解剖学的な精度の保証を意味しません。';
-      $('standard-atlas-section-note').textContent = `Atlas s = ${slice} · ${label}\n${review}\n個体差・切片の変形を含む推定です。` + (warnings.length ? '\n注意：' + warnings.join('／') : '');
+      $('standard-atlas-section-note').textContent = `参照Atlas s = ${slice} · ${label}\nsは参照画像の断面番号です。3Dの前後位置は切片順の等間隔です。\n${review}\n個体差・切片の変形を含む推定です。` + (warnings.length ? '\n注意：' + warnings.join('／') : '');
     }
   }
   function changePlacementMode() {
@@ -215,6 +215,7 @@
       Stack3DStandardAtlas.apply(sections, standardAtlasPrepared, requested);
       placementMode = requested; session.set(PLACEMENT_MODE_KEY, requested);
       renderer?.refreshPlacements(sections);
+      renderer?.setSpacing(finite($('spacing').value, defaultSpacing()));
       syncSeriesRestrictions(); syncAlignmentControls(); updateLabels();
       if (sections[selected]) $('placement-status').textContent = placementStatus(sections[selected]);
       saveView();
@@ -498,7 +499,7 @@
     syncRatioControls();
     $('opacity-value').textContent = Math.round(finite($('opacity').value, 0.55) * 100) + '%';
     $('threshold-value').textContent = Math.round(finite($('threshold').value, 0) * 100) + '%';
-    $('spacing-value').textContent = atlasMode() ? '50 µm × Δs（固定）' : pixelSeries() ? `${finite($('spacing').value, 2).toFixed(1)} px` : (finite($('spacing').value, DEFAULT_SPACING) / 0.35).toFixed(1) + '×';
+    $('spacing-value').textContent = pixelSeries() ? `${finite($('spacing').value, 2).toFixed(1)} px` : (finite($('spacing').value, DEFAULT_SPACING) / 0.35).toFixed(1) + '×' + (atlasMode() ? '（等間隔）' : '');
     $('brain-opacity-value').textContent = Math.round(finite($('brain-opacity').value, 0.12) * 100) + '%';
     $('brain-opacity').disabled = busy || !sections.length || pixelSeries() || !$('brain-visible').checked;
     $('brain-context-note').hidden = !$('brain-visible').checked || !sections.length || !renderer;
@@ -1016,7 +1017,7 @@
   for (const [id, event] of [['section-outline-visible', 'change'], ['section-outline-color', 'input'], ['section-outline-opacity', 'input']]) {
     $(id).addEventListener(event, () => { renderer?.setSectionOutlines(sectionOutlineOptions()); syncSectionOutlineControls(); saveView(); });
   }
-  $('spacing').addEventListener('input', () => { if (atlasMode()) return; renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
+  $('spacing').addEventListener('input', () => { if (busy || !sections.length) return; renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
   for (const id of ['range-start', 'range-end']) $(id).addEventListener('change', setRange);
   $('show-all').addEventListener('click', () => { $('range-start').value = 1; $('range-end').value = sections.length; setRange(); });
   $('enable-all-sections').addEventListener('click', () => { if (busy) return; hiddenSectionIds.clear(); visibilityChanged(); });

@@ -26,14 +26,15 @@ function fixture(c, { id = 'saved-1', name = 'Cor_1_2', atlasSlice = 46, theta =
 }
 function dataset(rows) { return { schemaVersion: 1, id: 'marmoset-bma2023-v1', reference: { name: 'BMA2023' }, sections: rows }; }
 
-test('Atlas physical pose maps every raw MSI corner exactly, with fixed depth and one pose for HE/MSI', () => {
+test('Atlas physical pose maps every raw MSI corner exactly, with one pose for HE/MSI and reference depth kept as metadata', () => {
   const c = app(), f = fixture(c), source = copy(f.section.project), d = dataset([f.row]);
   const legacy = copy(c.Stack3D.scenePlacement(f.section)), prepared = c.Stack3DStandardAtlas.prepare([f.section], d);
   assert.equal(prepared.available, true); assert.equal(prepared.matched, 1);
   c.Stack3DStandardAtlas.apply([f.section], prepared, 'atlas');
   const p = c.Stack3D.scenePlacement(f.section), M = f.row.rawMSIToAtlas;
   assert.deepEqual(copy(c.Stack3D.scenePlacement(f.section, true)), copy(p));
-  near(p.zMm, (46 - 314) * 0.05); near(p.angleDeg, -17);
+  near(p.ordinalZ, 0); near(f.section.standardAtlasPose.atlasZMm, (46 - 314) * 0.05); near(p.angleDeg, -17);
+  assert.equal(Object.hasOwn(p, 'zMm'), false);
   for (const u of [0, 0.5, 4]) for (const v of [0, 0.5, 3]) {
     const x = (u - 2) * 0.1, y = (1.5 - v) * 0.15, angle = p.angleDeg * Math.PI / 180;
     const scene = [p.x + x * Math.cos(angle) - y * Math.sin(angle), p.y + x * Math.sin(angle) + y * Math.cos(angle)];
@@ -69,7 +70,9 @@ test('source matching requires IDs, exact names, grid, rotation and HE warp; all
   const subset = c.Stack3DStandardAtlas.prepare([b.section], d);
   assert.equal(subset.available, true);
   c.Stack3DStandardAtlas.apply([b.section], subset, 'atlas');
-  near(b.section.standardAtlasPose.zMm, (165 - 314) * 0.05, 1e-9);
+  near(b.section.standardAtlasPose.ordinalZ, 0.5);
+  assert.equal(b.section.standardAtlasPose.displayIndex, 1); assert.equal(b.section.standardAtlasPose.displayCount, 2);
+  near(b.section.standardAtlasPose.atlasZMm, (165 - 314) * 0.05, 1e-9);
   assert.equal(c.Stack3DStandardAtlas.prepare([], d).available, false);
 });
 
@@ -113,7 +116,39 @@ test('prepared poses are immutable, recheck source at switch time, and do not ch
   f.section.project.world_coords.T_he_to_msi[0][2] += 1;
   assert.throws(() => c.Stack3DStandardAtlas.apply([f.section], p, 'atlas'), /一致/);
   assert.equal(Object.hasOwn(f.section, 'standardAtlasPose'), false);
-  assert.throws(() => c.Stack3D.scenePlacement({ ...f.section, standardAtlasPose: { x: 0, y: 0, angleDeg: 0, zMm: NaN } }), /不正/);
+  assert.throws(() => c.Stack3D.scenePlacement({ ...f.section, standardAtlasPose: { x: 0, y: 0, angleDeg: 0, ordinalZ: NaN } }), /不正/);
+});
+
+test('uniform depth follows full natural sample order despite duplicate, reversed, or widely separated Atlas slices', () => {
+  const c = app(), names = ['Cor_1_2', 'Cor_1_10', 'Cor_2_1', 'Cor_9_4', 'Cor_10_1'];
+  const slices = [300, 300, 299, 710, 10];
+  const fixtures = names.map((name, i) => fixture(c, { id: 'order-' + i, name, atlasSlice: slices[i], theta: i * 7 - 13 }));
+  const sections = fixtures.map(f => f.section), rows = fixtures.map(f => f.row);
+  const shuffled = dataset([rows[3], rows[1], rows[4], rows[0], rows[2]]), source = copy(shuffled);
+  const prepared = c.Stack3DStandardAtlas.prepare([...sections].reverse(), shuffled);
+  assert.equal(prepared.available, true);
+  c.Stack3DStandardAtlas.apply(sections, prepared, 'atlas');
+  const poses = sections.map(s => copy(s.standardAtlasPose));
+  for (const [i, pose] of poses.entries()) {
+    assert.equal(pose.displayIndex, i); assert.equal(pose.displayCount, 5); near(pose.ordinalZ, i - 2);
+    near(pose.atlasZMm, (slices[i] - 314) * 0.05);
+    for (const spacing of [0.595, 1.2]) if (i) near((pose.ordinalZ - poses[i - 1].ordinalZ) * spacing, spacing);
+  }
+  // Neither input order, a subset, nor a different reference s changes XY,
+  // orientation, or the full-stack display rank assigned to each specimen.
+  const subset = c.Stack3DStandardAtlas.prepare([sections[4], sections[1]], dataset([...rows].reverse()));
+  assert.equal(subset.available, true);
+  c.Stack3DStandardAtlas.apply([sections[4], sections[1]], subset, 'atlas');
+  assert.deepEqual(copy(sections[4].standardAtlasPose), poses[4]);
+  assert.deepEqual(copy(sections[1].standardAtlasPose), poses[1]);
+  const otherReferences = copy(shuffled); otherReferences.sections.forEach((r, i) => { r.atlasSlice = 100 + i; });
+  const otherPrepared = c.Stack3DStandardAtlas.prepare(sections, otherReferences);
+  c.Stack3DStandardAtlas.apply(sections, otherPrepared, 'atlas');
+  sections.forEach((section, i) => {
+    const pose = section.standardAtlasPose;
+    for (const key of ['x', 'y', 'angleDeg', 'ordinalZ']) near(pose[key], poses[i][key]);
+  });
+  assert.deepEqual(shuffled, source, 'preset source matrices and metadata remain unchanged');
 });
 
 test('provided raw fingerprints invalidate replacement measurements but allow display/normalization metadata changes', () => {
