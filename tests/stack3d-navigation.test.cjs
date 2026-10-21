@@ -156,7 +156,7 @@ test('3D ROI contours labels and regional MSI filtering follow visibility withou
     assert.equal(await page.evaluate(() => Atlas3D.renderer.getStats().roi[1].contours), 0);
     await page.locator('input.section-visible[data-section-id="stack-second"]').check();
     await page.reload(); await ready(page, 3);
-    assert.equal(await page.locator('#roi-unrestricted').isChecked(), false);
+    assert.equal(await page.locator('#roi-unassigned').isChecked(), false);
     assert.deepEqual(await page.evaluate(() => Atlas3D.options().roiRegions), ['領域A']);
     assert.equal(await page.locator('input[name="roi-region"][value="領域A"]').isChecked(), true);
     await page.locator('input[name="roi-region"][value="領域B"]').check();
@@ -186,8 +186,11 @@ test('3D ROI contours labels and regional MSI filtering follow visibility withou
     await page.locator('#roi-select-all').click();
     await page.waitForFunction(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(2,0,1,1).data[3] > 0);
     assert.equal(await page.locator('input[name="roi-region"]:checked').count(), await page.locator('input[name="roi-region"]').count());
-    assert.equal(await page.evaluate(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(3,0,1,1).data[3]), 0, 'select all still excludes pixels outside every ROI');
-    await page.locator('#roi-unrestricted').check();
+    await page.waitForFunction(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(3,0,1,1).data[3] > 0);
+    assert.equal(await page.locator('#roi-unassigned').isChecked(), true, 'select all restores unassigned measured pixels too');
+    await page.locator('#roi-unassigned').uncheck();
+    await page.waitForFunction(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(3,0,1,1).data[3] === 0);
+    await page.locator('#roi-unassigned').check();
     await page.waitForFunction(() => Atlas3D.rendered[1].canvas.getContext('2d').getImageData(3,0,1,1).data[3] > 0);
     await page.locator('[data-preview="HE_Stain"]').click();
     await page.waitForFunction(() => document.querySelector('#section-preview canvas')?.width >= 128 && document.getElementById('section-preview').dataset.previewKind === 'HE_Stain');
@@ -230,7 +233,7 @@ test('legacy single-region sessions migrate while explicit empty and unrestricte
       await page.evaluate(({ ids, options }) => sessionStorage.setItem('atlas-stack3d-view-v1', JSON.stringify({ ids, options })), { ids: IDS, options });
       await page.goto(h.baseURL + '/stack3d/index.html'); await ready(page, 3);
       assert.deepEqual(await page.evaluate(() => Atlas3D.options().roiRegions), expected);
-      assert.equal(await page.locator('#roi-unrestricted').isChecked(), expected === null);
+      assert.equal(await page.locator('#roi-unassigned').isChecked(), expected === null);
       if (expected) assert.equal(await page.locator('input[name="roi-region"]:checked').count(), expected.length);
     }
     assert.deepEqual(h.errors, []);
