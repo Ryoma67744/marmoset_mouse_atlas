@@ -32,6 +32,9 @@
     <script src="../lib/cloud.js"></script>
     <script src="../lib/project-sync.js"></script>
     <script src="./notes.js"></script>
+    <script src="../lib/section-navigation.js"></script>
+    <script src="./section-navigation.js"></script>
+    <link rel="stylesheet" href="./section-navigation.css">
     <style>
         html, body { margin: 0; padding: 0; overflow: hidden; height: 100vh; }
         body { font-family: 'Inter', sans-serif; background-color: #f4f4f5; }
@@ -242,12 +245,18 @@
 
     <div class="h-screen flex flex-col overflow-hidden">
         <!-- Header (compact) -->
-        <header class="flex items-center justify-between px-4 py-1 bg-white border-b shrink-0">
-            <div class="flex items-baseline gap-2 min-w-0">
+        <header class="viewer-header flex items-center justify-between px-4 py-1 bg-white border-b shrink-0">
+            <div class="viewer-heading flex items-baseline gap-2 min-w-0">
                 <h1 id="atlas-title" class="text-lg font-bold text-gray-900 truncate">Marmoset Brain Atlas</h1>
                 <!-- 数字は lib/version.js が入れる。#atlas-title は開いたデータ名で
                      textContent ごと差し替わるので、外に分けて置く -->
                 <span class="app-version text-xs text-gray-400 shrink-0" title="アプリのバージョン"></span>
+                <nav id="section-navigation" aria-label="切片の移動">
+                    <button id="section-previous" type="button" disabled>◀ 前の切片</button>
+                    <span id="section-position" aria-live="polite">確認中</span>
+                    <button id="section-next" type="button" disabled>次の切片 ▶</button>
+                </nav>
+                <span id="section-navigation-status" role="status" aria-live="polite"></span>
             </div>
             <div class="flex items-center gap-2">
                 <!-- 表示の回転。角度はデータごとに保存され、次に開いたときも同じ向きで出る -->
@@ -501,6 +510,12 @@
         let notesPendingSave = false;
         let notesNavigationPending = false;
         let viewerNavigationCommitted = false;
+        let sectionNavigation = null;
+        let sectionNavigationEditRevision = 0;
+        // Navigation carries only a temporary view, never another section's geometry
+        // or saved preferences. Explicit user changes resume normal persistence.
+        let navigationModeOverride = null;
+        let navigationLayerOverride = null;
         const viewerEditableFields = ['valueDisplay', 'visibleLayers', 'viewerTransform', 'rotation', 'otsu',
             'roi', 'world_coords', 'alignment', 'layerDisplay', 'notes'];
         const sameViewerField = (left, right) => JSON.stringify(left) === JSON.stringify(right);
@@ -659,6 +674,9 @@
             displayRangeProject = { ...normalizationProjectForEvaluation(), valueDisplay: structuredClone(currentProject.valueDisplay || {}),
                 layerDisplay: structuredClone(currentProject.layerDisplay || {}) };
             valueDisplay = { ...DisplayRange.prepareProject(displayRangeProject) };
+            if (navigationModeOverride && (navigationModeOverride === 'raw' || currentProject.normalization && !isNormalizationSkipped())) {
+                valueDisplay.mode = navigationModeOverride;
+            }
         }
         function rangeModeForKey(key) { return displayRaster(key)?.derived ? 'normalized' : 'raw'; }
         function rangeStrategyLabel(strategy) {
@@ -805,7 +823,6 @@
         }
         function saveValueDisplay() {
             if (!currentProject) return;
-            currentProject.valueDisplay = { ...valueDisplay };
             persistLayerDisplay();
         }
         async function changeValueMode(mode) {
@@ -815,7 +832,8 @@
             const before = valueDisplay.mode;
             const previousSettings = structuredClone(imageSettings);
             try {
-                rememberModeRanges(); valueDisplay.mode = mode; useModeRanges(); redrawValueViews(); saveValueDisplay();
+                rememberModeRanges(); valueDisplay.mode = mode; useModeRanges(); redrawValueViews();
+                navigationModeOverride = null; saveValueDisplay();
             } catch (error) {
                 valueDisplay.mode = before; imageSettings = previousSettings; redrawValueViews();
                 alert('表示を切り替えられませんでした: ' + error.message);
@@ -1223,7 +1241,7 @@
         async function initializeViewer() {
             normalizationEvaluation = window.Normalization && currentProject ? Normalization.evaluate(normalizationProjectForEvaluation(), valueRasters) : null;
             viewerEvaluatedProfile = JSON.stringify(currentProject?.normalization || null);
-            const savedMode = currentProject?.valueDisplay?.mode;
+            const savedMode = navigationModeOverride || currentProject?.valueDisplay?.mode;
             prepareViewerDisplayRanges();
             valueDisplay.mode = !currentProject?.normalization || isNormalizationSkipped() ? 'raw' : ['normalized', 'raw'].includes(savedMode) ? savedMode
                 : normalizationEvaluation && ['VALID', 'PROVISIONAL', 'PARTIAL'].includes(normalizationEvaluation.status) ? 'normalized' : 'raw';
@@ -1655,10 +1673,8 @@ function loadAllImages() {
             //   ここに出すと合成側にも流れてしまう。
             const imageKeys = (atlasData.images ? Object.keys(atlasData.images) : [])
                 .filter(k => !isRefKey(k));
-            const visible = new Set(
-                (currentProject && Array.isArray(currentProject.visibleLayers) && currentProject.visibleLayers.length)
-                    ? currentProject.visibleLayers
-                    : []);
+            const explicitVisibility = Array.isArray(navigationLayerOverride) || currentProject?.visibleLayers?.length > 0;
+            const visible = new Set(navigationLayerOverride || currentProject?.visibleLayers || []);
 
             imageKeys.forEach((key, index) => {
                 if (!atlasData.images[key] || !imageSettings[key]) return;
@@ -1673,7 +1689,7 @@ function loadAllImages() {
                 checkbox.type = 'checkbox';
                 checkbox.value = key;
                 checkbox.className = 'layer-check h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer';
-                checkbox.checked = visible.size ? visible.has(key) : index === 0;
+                checkbox.checked = explicitVisibility ? visible.has(key) : index === 0;
                 checkbox.title = 'このレイヤを表示する';
 
                 const name = document.createElement('span');
@@ -1822,12 +1838,18 @@ function loadAllImages() {
         // 表示状態をプロジェクトに書き戻す (静的データセットのときは何もしない)
         function persistVisibleLayers() {
             if (!currentProject) return;
+            navigationLayerOverride = null;
             currentProject.visibleLayers = checkedLayerKeys();
             queueSaveProject();
         }
         function serializeViewerLayerDisplay() {
             rememberModeRanges();
+            const savedMode = currentProject.valueDisplay?.mode;
             currentProject.valueDisplay = { ...valueDisplay };
+            if (navigationModeOverride) {
+                if (savedMode === undefined) delete currentProject.valueDisplay.mode;
+                else currentProject.valueDisplay.mode = savedMode;
+            }
             currentProject.layerDisplay = currentProject.layerDisplay || {};
             for (const [key, s] of Object.entries(imageSettings)) {
                 const record = { ...(currentProject.layerDisplay[key] || {}),
@@ -2076,6 +2098,7 @@ function loadAllImages() {
         }
 
         function queueSaveProject() {
+            sectionNavigationEditRevision++;
             if (!currentProject || viewerSaveConflict) { refreshNotesStatus(); return; }
             if (saveTimer) clearTimeout(saveTimer);
             if (notesPanel?.composing) { saveTimer = 0; refreshNotesStatus(); return; }
@@ -3239,7 +3262,7 @@ function loadAllImages() {
         function syncProjectFromViewer() {
             if (!currentProject) return;
             serializeViewerLayerDisplay();
-            currentProject.visibleLayers = checkedLayerKeys();
+            if (!navigationLayerOverride) currentProject.visibleLayers = checkedLayerKeys();
             currentProject.viewerTransform = Object.assign({}, viewTransform);
             currentProject.rotation = {
                 all: rotationState.all, he: rotationState.he, msi: rotationState.msi,
@@ -3309,6 +3332,7 @@ function loadAllImages() {
 
         function viewerActionReason(action) {
             if (!currentProject) return 'データの読み込みを待ってください。';
+            if (sectionNavigation?.pending) return '切片の移動準備が完了するまでお待ちください。';
             if (notesPanel?.composing && action !== 'png') return 'メモの日本語入力を確定してから操作してください。';
             if (viewerActions[action]) return action === 'cloud' ? 'クラウドに保存中です。' : '処理中です。';
             if (viewerSaveConflict && action !== 'png') return '保存と Export・Import を停止しています。編集中の内容はこの画面に保持しています。再読み込みすると未保存の編集が失われるため、内容を確認してください。';
@@ -3321,6 +3345,7 @@ function loadAllImages() {
         }
         function refreshViewerActionControls() {
             refreshNotesStatus();
+            sectionNavigation?.update();
             const cloudVisible = !!(currentProject?.cloudUpdatedAt && window.Cloud?.configured());
             const status = document.getElementById('viewer-action-status');
             const local = cloudVisible ? ProjectSync.localStatus(currentProject, { cloud: Cloud }) : null;
@@ -3973,7 +3998,7 @@ function loadAllImages() {
         drawingMode || drawingVertices.length || document.querySelector('.modal-backdrop') || otsuPending || otsuDraft);
     }
     function refreshViewerProject({ remote = false } = {}) {
-      if (!viewerReady || !currentProject || viewerRefreshTask) return viewerRefreshTask;
+      if (!viewerReady || !currentProject || viewerRefreshTask || sectionNavigation?.pending) return viewerRefreshTask;
       viewerRefreshTask = (async () => {
         if (viewerHasPendingEdits()) {
           viewerRefreshNotice = '更新の確認を保留しています。編集中のメモ・ROI・位置合わせを保持しています。編集を保存し、入力欄から離れて画面に戻ると確認できます。';
@@ -3997,7 +4022,7 @@ function loadAllImages() {
       })().catch(error => {
         viewerRefreshNotice = '最新設定を確認できませんでした。現在のデータと編集は保持しています。' + (error?.message ? ' ' + error.message : '');
         refreshValueDisplayUi();
-      }).finally(() => { viewerRefreshTask = null; });
+      }).finally(() => { viewerRefreshTask = null; sectionNavigation?.update(); });
       return viewerRefreshTask;
     }
     function setupViewerRefresh() {
@@ -4114,6 +4139,66 @@ function loadAllImages() {
     // =====================================================================
     // ブートストラップ
     // =====================================================================
+    function navigationLayerIdentity(key, project = currentProject) {
+      const molecule = project?.molecules?.find(item => item.key === key);
+      return { key, analyteId: molecule?.analyteId || null, name: molecule?.name || null };
+    }
+    function consumeSectionNavigationView() {
+      try {
+        const key = 'atlas-viewer-navigation-view';
+        const record = JSON.parse(sessionStorage.getItem(key) || 'null');
+        sessionStorage.removeItem(key);
+        if (!record || record.targetId !== currentProject.id || record.sourceSeries !== SectionNavigation.seriesOf(currentProject).id ||
+            !Number.isFinite(record.createdAt) || Date.now() - record.createdAt < 0 || Date.now() - record.createdAt > 3600000) return;
+        const view = record.view;
+        if (!view || !['raw', 'normalized'].includes(view.mode) || !Array.isArray(view.layers)) return;
+        navigationModeOverride = view.mode;
+        const keys = Object.keys(atlasData.images || {}).filter(key => !isRefKey(key));
+        navigationLayerOverride = keys.filter(key => view.layers.some(layer => {
+          const identity = navigationLayerIdentity(key);
+          if (layer.analyteId) return identity.analyteId === layer.analyteId;
+          if (layer.name) return identity.name === layer.name;
+          return identity.key === layer.key;
+        }));
+        if (view.mode === 'normalized' && (!currentProject.normalization || isNormalizationSkipped())) {
+          navigationModeOverride = null;
+          viewerRefreshNotice = 'この切片には適用できる補正設定がないため、原値を表示しています。';
+        }
+      } catch (error) {
+        // Blocked session storage must not prevent opening the section itself.
+        console.warn('[section navigation] 表示条件を引き継げませんでした', error);
+      }
+    }
+    function sectionNavigationBlockingReason() {
+      if (!viewerReady || !currentProject) return '切片の読み込みを待ってください。';
+      if (viewerSaveConflict) return '保存できない編集があるため、現在の切片を保持しています。';
+      if (notesPanel?.composing) return '日本語入力を確定してから切片を移動してください。';
+      if (drawingMode || drawingVertices.length) return 'ROIの描画を完了または取り消してから切片を移動してください。';
+      if (document.querySelector('.modal-backdrop')) return '開いているダイアログを完了または閉じてください。';
+      if (otsuControlsLocked || otsuPending || otsuDraft) return '表示マスクを確定または取り消してください。';
+      if (Object.values(viewerActions).some(Boolean)) return '保存・書き出し・読み込みが完了するまでお待ちください。';
+      if (viewerRefreshTask) return '最新設定の確認が完了するまでお待ちください。';
+      return '';
+    }
+    function setupViewerSectionNavigation() {
+      // A gesture made during target preparation must keep this screen, even if
+      // its debounced save happens to finish before the network request returns.
+      for (const event of ['input', 'change']) document.addEventListener(event, () => { sectionNavigationEditRevision++; }, true);
+      sectionNavigation = ViewerSectionNavigation.create({
+        getProject: () => currentProject,
+        getReady: () => viewerReady,
+        getBlockingReason: sectionNavigationBlockingReason,
+        flush: flushViewerEdits,
+        hasUnsavedChanges: () => !!(saveTimer || viewerSaving || notesWorkPending() || Object.keys(viewerChanges()).length),
+        getRevision: () => [viewerContextRevision, notesEditRevision, sectionNavigationEditRevision].join(':'),
+        getViewState: () => ({ mode: valueDisplay.mode, layers: checkedLayerKeys().map(key => navigationLayerIdentity(key)) }),
+        storage: ProjectStorage, cloud: Cloud, zip: ZipIO,
+        onMessage: message => { viewerRefreshNotice = message; refreshValueDisplayUi(); },
+        onCommit: committed => { viewerNavigationCommitted = committed; },
+        onPendingChange: () => refreshViewerActionControls(),
+      });
+      sectionNavigation.refresh();
+    }
     function setupStack3DReturn(params, projectId) {
       if (params.get('from') !== 'stack3d' || params.get('newtab') === '1') return;
       const link = document.getElementById('back-stack3d');
@@ -4151,11 +4236,13 @@ function loadAllImages() {
         }
         await loadProject(projectId);
         await domReady;
+        consumeSectionNavigationView();
         await initializeViewer();
         document.getElementById('back-master').href = '../index.html?series=' +
           encodeURIComponent(currentProject.atlas?.seriesId || 'legacy_marmoset');
         setupViewerRefresh();
         setupStack3DReturn(params, projectId);
+        setupViewerSectionNavigation();
         // 「クラウドに保存」の表示は、開いたデータが決まってからでないと出せない
         if (typeof refreshCloudSaveState === 'function') refreshCloudSaveState();
       } catch (e) {
