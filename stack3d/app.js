@@ -5,6 +5,7 @@
   const $ = id => document.getElementById(id);
   const SELECTION_KEY = 'atlas-stack3d-selection', VIEW_KEY = 'atlas-stack3d-view-v1';
   const DEFAULT_SPACING = 0.595, SPACING_DEFAULTS_VERSION = 1;
+  const PLACEMENT_MODE_KEY = 'atlas-stack3d-standard-atlas-mode-v1';
   const SOURCE_FIELDS = ['displayName', 'atlas', 'grid', 'molecules', 'images', 'rotation', 'world_coords', 'roi', 'stack3d', 'folderId',
     'normalization', 'normalizationBinding', 'layerDisplay', 'valueDisplay'];
   const sourceFingerprint = project => JSON.stringify(SOURCE_FIELDS.map(key => project?.[key] ?? null));
@@ -41,6 +42,8 @@
   let alignmentProposal = null, alignmentWorking = false, alignmentGeneration = 0;
   const alignmentSaveGuards = new Map();
   let batchAlignmentUI = null, analysisUI = null;
+  let standardAtlasPrepared = null, placementMode = 'legacy', standardAtlasNeedsReload = false;
+  const atlasMode = () => activeSeries === 'legacy_marmoset' && placementMode === 'atlas';
   const dirtyPlacements = new Set(), commonRanges = new Map(), hePlanes = new Map(), hiddenSectionIds = new Set();
   const staleSections = new Map(), pendingSourceIds = new Set();
   let pendingFolderChange = false, sourceChangeWorker = null, syncWarningGeneration = 0, loadedFolderFingerprint = '[]';
@@ -72,7 +75,7 @@
     syncWarning(messages);
   }
   function placementStatus(section) {
-    return staleSections.get(section.id) || (pixelSeries() ? '保存済みの剛体配置を表示中です。単位は画像pixelです。' : batchAlignmentUI?.active
+    return staleSections.get(section.id) || (atlasMode() ? 'Atlas推定配置を表示中です。従来配置の編集内容は保持しています。' : pixelSeries() ? '保存済みの剛体配置を表示中です。単位は画像pixelです。' : batchAlignmentUI?.active
       ? '一括操作中です。上の一括操作で採用・保存してください。' : dirtyPlacements.has(section.id)
         ? '配置に未保存の変更があります。' : '保存済みの向きに、3D用の配置を加えます。');
   }
@@ -120,6 +123,7 @@
           }
         }
         if (changed.length) {
+          if (activeSeries === 'legacy_marmoset') standardAtlasNeedsReload = true;
           analysisUI?.markStale(changed);
           batchAlignmentUI?.sourceChanged(changed, { preserveMessage: preserveNotice });
           if (alignmentWorking || alignmentProposal?.references.some(reference => changed.includes(reference.id))) {
@@ -137,6 +141,84 @@
       if ((pendingSourceIds.size || pendingFolderChange) && !saving && !busy && !batchAlignmentUI?.saving) flushSourceChanges();
     });
     return sourceChangeWorker;
+  }
+
+  async function prepareStandardAtlas(generation) {
+    standardAtlasPrepared = null; placementMode = 'legacy'; standardAtlasNeedsReload = false;
+    if (activeSeries !== 'legacy_marmoset' || !sections.length) return;
+    try {
+      if (!global.Stack3DStandardAtlas) throw new Error('配置機能を読み込めませんでした。');
+      const response = await fetch('../data/marmoset-bma2023-placement.json', { cache: 'no-store' });
+      if (!response.ok) throw new Error('Atlas配置データを取得できませんでした。');
+      const dataset = await response.json();
+      if (generation !== loadGeneration) return;
+      standardAtlasPrepared = Stack3DStandardAtlas.prepare(sections, dataset);
+      if (standardAtlasPrepared.available && session.get(PLACEMENT_MODE_KEY) !== 'legacy') {
+        Stack3DStandardAtlas.apply(sections, standardAtlasPrepared, 'atlas'); placementMode = 'atlas';
+      }
+    } catch (error) {
+      if (generation !== loadGeneration) return;
+      standardAtlasPrepared = { available: false, reason: error.message };
+      global.Stack3DStandardAtlas?.apply(sections, standardAtlasPrepared, 'legacy'); placementMode = 'legacy';
+    }
+  }
+  function syncStandardAtlasControls() {
+    const legacySeries = activeSeries === 'legacy_marmoset', active = atlasMode();
+    const select = $('placement-mode'), locked = busy || saving || !!batchAlignmentUI?.active || !!batchAlignmentUI?.working || !!batchAlignmentUI?.saving;
+    $('standard-atlas-control').hidden = !legacySeries;
+    select.value = placementMode;
+    select.disabled = !legacySeries || locked || !sections.length;
+    select.querySelector('[value="atlas"]').disabled = !standardAtlasPrepared?.available || standardAtlasNeedsReload;
+    $('placement-mode-help').textContent = standardAtlasNeedsReload
+      ? '登録データが更新されています。再読込してAtlas配置との対応を確認してください。'
+      : !standardAtlasPrepared?.available
+        ? `${standardAtlasPrepared?.reason || 'Atlas配置との対応を確認中です。'} 従来配置を表示します。`
+        : active ? 'BMA2023に基づく推定配置です。個体の実測位置ではありません。従来配置と切り替えて比較できます。'
+          : '保存済みの3D配置を表示しています。「Atlas推定配置」で標準Atlasに基づく配置と比較できます。';
+    $('standard-atlas-scene-note').hidden = !active;
+    $('standard-atlas-scene-note').textContent = standardAtlasNeedsReload ? 'Atlas推定配置 · 元データ更新あり／再読込が必要' : 'Atlas推定配置 · 個体の実測位置ではありません';
+    $('standard-atlas-edit-note').hidden = !active;
+    $('spacing').disabled = busy || !sections.length || active;
+    $('spacing-help').textContent = active
+      ? '標準Atlasの断面番号sに対応する50 µm間隔で配置します。試料の実測切片間隔ではありません。'
+      : pixelSeries() ? '画像pixelを基準にした等間隔の表示です。実際の切片間隔ではありません。' : '前後方向は切片順です。間隔は表示上の距離です。';
+    $('coordinate-note').textContent = active ? 'XY：保存された画素サイズを保持 · Z：標準Atlasの相対位置'
+      : pixelSeries() ? 'XY：画像pixel · Z：確定番号順。実寸は不明。' : 'XY：保存された画素サイズ · 前後：欠番を詰めた切片順';
+    const pose = sections[selected]?.standardAtlasPose;
+    $('standard-atlas-section-note').hidden = !active || !pose;
+    if (active && pose) {
+      const method = typeof pose.method === 'string' ? pose.method : pose.method?.type || pose.method?.kind || '';
+      const label = method === 'accepted-pilot' ? '採用済み代表切片' : method === 'interpolated-estimate' ? '代表切片からの推定' : '標準Atlasに基づく推定';
+      const slice = Number(pose.atlasSlice).toLocaleString('en-US', { maximumFractionDigits: 3 });
+      const warningLabels = { 'reference-url-duplicate': '参照URLの重複あり', 'reference-image-duplicate': '参照画像の重複あり',
+        'reference-s-duplicate': '参照断面番号の重複あり',
+        'reference-s-reversal': '参照断面番号の逆転あり', 'reference-depth-interpolated': '前後位置も補間推定',
+        'placement-interpolated': '切片ごとの対応点による位置確認は未実施',
+        'placement-outside-anchor-range': '代表切片の範囲外への推定', 'he-multiple-components': 'HEに離れた組織片あり',
+        'he-fov-clipping': 'HE組織の一部がMSI測定範囲外', 'low-envelope-overlap': '輪郭対応を要確認',
+        'he-envelope-outside-reference': '参照輪郭の外に出るHE領域あり', 'pilot-correspondences-provisional': '代表切片の対応点は暫定' };
+      const warnings = [...new Set((Array.isArray(pose.qc?.flags) ? pose.qc.flags : []).map(flag => warningLabels[flag]).filter(Boolean))];
+      if ((pose.atlasSliceSource === 'interpolated-reference' || pose.qc?.atlasSliceInterpolated) && !warnings.includes('前後位置も補間推定')) warnings.push('前後位置も補間推定');
+      const review = pose.qc?.requiresIndividualReview ? 'この切片は個別の位置確認が必要です。' : '代表切片の採用は解剖学的な精度の保証を意味しません。';
+      $('standard-atlas-section-note').textContent = `Atlas s = ${slice} · ${label}\n${review}\n個体差・切片の変形を含む推定です。` + (warnings.length ? '\n注意：' + warnings.join('／') : '');
+    }
+  }
+  function changePlacementMode() {
+    const requested = $('placement-mode').value;
+    if (activeSeries !== 'legacy_marmoset' || busy || saving || batchAlignmentUI?.active || batchAlignmentUI?.working || batchAlignmentUI?.saving ||
+        !['atlas', 'legacy'].includes(requested) || requested === placementMode) { syncStandardAtlasControls(); return; }
+    if (requested === 'atlas' && (!standardAtlasPrepared?.available || standardAtlasNeedsReload)) { syncStandardAtlasControls(); return; }
+    // Cancel only the unadopted alignment preview. Its pre-existing manual
+    // draft, all other drafts, and every saved project remain untouched.
+    cancelAlignment();
+    try {
+      Stack3DStandardAtlas.apply(sections, standardAtlasPrepared, requested);
+      placementMode = requested; session.set(PLACEMENT_MODE_KEY, requested);
+      renderer?.refreshPlacements(sections);
+      syncSeriesRestrictions(); syncAlignmentControls(); updateLabels();
+      if (sections[selected]) $('placement-status').textContent = placementStatus(sections[selected]);
+      saveView();
+    } catch (error) { notice(error.message, true); syncStandardAtlasControls(); }
   }
 
   function notice(message, persistent = false) {
@@ -295,6 +377,7 @@
     $('brain-opacity').disabled = busy || !sections.length || pixel || !$('brain-visible').checked;
     syncSectionOutlineControls();
     syncRatioControls();
+    syncStandardAtlasControls();
   }
   async function sourceProjects(progress) {
     let locals = await ProjectStorage.listProjects();
@@ -372,6 +455,7 @@
       hePlanes.forEach(canvas => { if (canvas) { canvas.width = 0; canvas.height = 0; } }); hePlanes.clear();
       sections.forEach(Stack3D.releaseSection); rendered.forEach(releaseRender);
       sections = loaded; rendered = []; commonRanges.clear(); hiddenSectionIds.clear(); dirtyPlacements.clear(); alignmentSaveGuards.clear(); staleSections.clear(); sourceChanged = false; selected = 0;
+      standardAtlasPrepared = null; placementMode = 'legacy'; standardAtlasNeedsReload = false;
       configureSeriesView();
       loadedFolderFingerprint = JSON.stringify(source.folders);
       if (!sections.length) {
@@ -385,6 +469,8 @@
       $('range-start').value = 1; $('range-end').value = sections.length;
       for (const id of ['range-start', 'range-end']) $(id).max = sections.length;
       $('section-slider').max = sections.length - 1; buildRoiList(); restoreView();
+      await prepareStandardAtlas(generation);
+      if (generation !== loadGeneration) return;
       const queryId = new URLSearchParams(location.search).get('project'), queryIndex = sections.findIndex(section => section.id === queryId);
       if (queryIndex >= 0) selected = queryIndex;
       $('dataset-count').textContent = `${sections.length} sections`;
@@ -412,11 +498,12 @@
     syncRatioControls();
     $('opacity-value').textContent = Math.round(finite($('opacity').value, 0.55) * 100) + '%';
     $('threshold-value').textContent = Math.round(finite($('threshold').value, 0) * 100) + '%';
-    $('spacing-value').textContent = pixelSeries() ? `${finite($('spacing').value, 2).toFixed(1)} px` : (finite($('spacing').value, DEFAULT_SPACING) / 0.35).toFixed(1) + '×';
+    $('spacing-value').textContent = atlasMode() ? '50 µm × Δs（固定）' : pixelSeries() ? `${finite($('spacing').value, 2).toFixed(1)} px` : (finite($('spacing').value, DEFAULT_SPACING) / 0.35).toFixed(1) + '×';
     $('brain-opacity-value').textContent = Math.round(finite($('brain-opacity').value, 0.12) * 100) + '%';
     $('brain-opacity').disabled = busy || !sections.length || pixelSeries() || !$('brain-visible').checked;
     $('brain-context-note').hidden = !$('brain-visible').checked || !sections.length || !renderer;
     syncSectionOutlineControls();
+    syncStandardAtlasControls();
     for (const button of document.querySelectorAll('[data-preview]')) button.setAttribute('aria-pressed', String(button.dataset.preview === previewKind));
   }
   function brainOptions() { return { visible: !pixelSeries() && $('brain-visible').checked, opacity: finite($('brain-opacity').value, 0.12) }; }
@@ -681,7 +768,7 @@
   }
   function syncAlignmentControls() {
     const batchLocked = batchAlignmentUI?.active || batchAlignmentUI?.working;
-    const unavailable = pixelSeries() || busy || saving || alignmentWorking || batchLocked || !sections.length || staleSections.has(sections[selected]?.id);
+    const unavailable = pixelSeries() || atlasMode() || busy || saving || alignmentWorking || batchLocked || !sections.length || staleSections.has(sections[selected]?.id);
     const proposal = alignmentProposal;
     $('alignment-calculate').disabled = unavailable;
     $('alignment-preview').disabled = unavailable || !proposal?.fit;
@@ -695,6 +782,7 @@
     $('reload').disabled = busy || saving || !!batchAlignmentUI?.saving;
     $('open-section').disabled = busy || saving || !!batchAlignmentUI?.saving || !sections.length;
     batchAlignmentUI?.sync();
+    syncStandardAtlasControls();
   }
   function applyPlacement(section, placement) {
     Object.assign(section, placement); renderer?.setPlacement(section.id, placement);
@@ -748,6 +836,7 @@
     $('alignment-summary').textContent = `${rows.length}領域 · ROI重心の差（RMS）\n${proposal.fit.rmsBeforeMm.toFixed(3)} → ${Math.sqrt(squared / rows.length).toFixed(3)} mm\n配置の変更量：X ${(draft.offsetXUm - base.offsetXUm).toFixed(1)} µm / Y ${(draft.offsetYUm - base.offsetYUm).toFixed(1)} µm / 回転 ${(draft.rotationDeg - base.rotationDeg).toFixed(2)}°`;
   }
   function refitAlignment() {
+    if (atlasMode()) return;
     const proposal = alignmentProposal; if (!proposal) return;
     const names = Array.from($('alignment-rois').querySelectorAll('input:checked'), input => input.value);
     try {
@@ -767,7 +856,7 @@
     syncAlignmentControls();
   }
   async function calculateAlignment() {
-    if (pixelSeries() || busy || saving || alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || !sections[selected] || staleSections.has(sections[selected].id)) return;
+    if (pixelSeries() || atlasMode() || busy || saving || alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || !sections[selected] || staleSections.has(sections[selected].id)) return;
     cancelAlignment();
     const section = sections[selected], neighbors = [sections[selected - 1], section, sections[selected + 1]];
     if (neighbors.some(item => !item)) { $('alignment-message').textContent = '前後両方の切片が必要です。端の切片は計算しません。'; return; }
@@ -800,7 +889,7 @@
     }
   }
   async function previewAlignment() {
-    const proposal = alignmentProposal; if (!proposal?.fit || busy || saving || alignmentWorking) return;
+    const proposal = alignmentProposal; if (atlasMode() || !proposal?.fit || busy || saving || alignmentWorking) return;
     if (proposal.previewing) {
       applyPlacement(sections[selected], proposal.basePlacement); proposal.previewing = false;
       $('placement-status').textContent = '元の配置を比較表示中です。候補はまだ採用していません。'; syncAlignmentControls(); return;
@@ -815,7 +904,7 @@
     finally { if (alignmentProposal === proposal) { alignmentWorking = false; syncAlignmentControls(); } }
   }
   async function adoptAlignment() {
-    const proposal = alignmentProposal; if (!proposal?.fit || !proposal.previewing || busy || saving || alignmentWorking) return;
+    const proposal = alignmentProposal; if (atlasMode() || !proposal?.fit || !proposal.previewing || busy || saving || alignmentWorking) return;
     alignmentWorking = true; syncAlignmentControls();
     try {
       await checkAlignmentReferences(proposal);
@@ -829,7 +918,7 @@
     finally { if (alignmentProposal === proposal) { alignmentWorking = false; syncAlignmentControls(); } }
   }
   function updatePlacement() {
-    const section = sections[selected]; if (!section || pixelSeries() || busy || saving) return;
+    const section = sections[selected]; if (!section || pixelSeries() || atlasMode() || busy || saving) return;
     if (staleSections.has(section.id)) { notice(staleSections.get(section.id), true); return; }
     if (alignmentWorking || batchAlignmentUI?.active || batchAlignmentUI?.working || (alignmentProposal && !alignmentProposal.previewing)) return;
     const fields = [$('offset-x').value, $('offset-y').value, $('rotation').value];
@@ -845,7 +934,7 @@
   }
   function samePlacement(a, b) { return JSON.stringify(a || null) === JSON.stringify(b || null); }
   async function savePlacement() {
-    const section = sections[selected]; if (!section || pixelSeries() || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
+    const section = sections[selected]; if (!section || pixelSeries() || atlasMode() || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
     if (staleSections.has(section.id)) { notice(staleSections.get(section.id), true); return; }
     saving = true; syncAlignmentControls();
     try {
@@ -869,7 +958,7 @@
     finally { saving = false; await flushSourceChanges({ preserveNotice: true }); syncAlignmentControls(); }
   }
   async function saveCloud() {
-    const section = sections[selected]; if (!section || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
+    const section = sections[selected]; if (!section || atlasMode() || saving || busy || alignmentWorking || alignmentProposal || batchAlignmentUI?.active || batchAlignmentUI?.working) return;
     if (staleSections.has(section.id)) { notice(staleSections.get(section.id), true); return; }
     if (dirtyPlacements.has(section.id)) { notice('先に「配置を保存」を押してください。'); return; }
     saving = true; syncAlignmentControls();
@@ -902,6 +991,7 @@
     requestRepaint(); analysisUI?.valueModeChanged();
   });
   $('value-mode').addEventListener('change', () => { requestRepaint(); analysisUI?.valueModeChanged(); });
+  $('placement-mode').addEventListener('change', changePlacementMode);
   $('series-select').addEventListener('change', () => {
     if (busy || saving || $('series-select').value === activeSeries) return;
     if (dirtyPlacements.size && !global.confirm('未保存の3D配置を破棄して系列を切り替えますか？')) { $('series-select').value = activeSeries; return; }
@@ -926,7 +1016,7 @@
   for (const [id, event] of [['section-outline-visible', 'change'], ['section-outline-color', 'input'], ['section-outline-opacity', 'input']]) {
     $(id).addEventListener(event, () => { renderer?.setSectionOutlines(sectionOutlineOptions()); syncSectionOutlineControls(); saveView(); });
   }
-  $('spacing').addEventListener('input', () => { renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
+  $('spacing').addEventListener('input', () => { if (atlasMode()) return; renderer?.setSpacing(Number($('spacing').value)); updateLabels(); saveView(); });
   for (const id of ['range-start', 'range-end']) $(id).addEventListener('change', setRange);
   $('show-all').addEventListener('click', () => { $('range-start').value = 1; $('range-end').value = sections.length; setRange(); });
   $('enable-all-sections').addEventListener('click', () => { if (busy) return; hiddenSectionIds.clear(); visibilityChanged(); });
@@ -941,7 +1031,7 @@
   document.addEventListener('keydown', event => { if (event.key === 'Escape') { $('sync-details').hidden = true; $('sync-warning').setAttribute('aria-expanded', 'false'); } });
   $('reset-view').addEventListener('click', () => { renderer?.resetView(); saveView(); });
   for (const id of ['offset-x', 'offset-y', 'rotation']) $(id).addEventListener('change', updatePlacement);
-  $('reset-placement').addEventListener('click', () => { for (const id of ['offset-x', 'offset-y', 'rotation']) $(id).value = 0; updatePlacement(); });
+  $('reset-placement').addEventListener('click', () => { if (atlasMode()) return; for (const id of ['offset-x', 'offset-y', 'rotation']) $(id).value = 0; updatePlacement(); });
   $('alignment-calculate').addEventListener('click', calculateAlignment);
   $('alignment-preview').addEventListener('click', previewAlignment);
   $('alignment-adopt').addEventListener('click', adoptAlignment);
@@ -977,7 +1067,7 @@
   });
   batchAlignmentUI = Stack3DBatchUI.create({
     getSections: () => sections, getSelected: () => selected,
-    isLocked: () => pixelSeries() || busy || saving || alignmentWorking,
+    isLocked: () => pixelSeries() || atlasMode() || busy || saving || alignmentWorking,
     hasStaleSources: () => staleSections.size > 0, isSourceStale: id => staleSections.has(id),
     placementOf, applyPlacement, getDirtyIds: () => new Set(dirtyPlacements),
     setDirty: (id, value) => { if (value) dirtyPlacements.add(id); else dirtyPlacements.delete(id); },
@@ -1004,6 +1094,7 @@
   });
   global.Atlas3D = { get sections() { return sections; }, get selected() { return selected; }, get rendered() { return rendered; },
     get seriesId() { return activeSeries; }, get availableSeries() { return availableSeries.slice(); },
+    get placementMode() { return placementMode; },
     get hiddenSectionIds() { return [...hiddenSectionIds]; },
     get analysis() { return analysisUI; },
     get renderer() { return renderer; }, get sourceChanged() { return sourceChanged; }, options, selectSection };

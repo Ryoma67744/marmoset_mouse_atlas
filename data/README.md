@@ -1,0 +1,11 @@
+# Marmoset standard Atlas placement
+
+`marmoset-bma2023-placement.json` contains display transforms for 69 existing right-hemisphere MSI sections, referenced to the [Brain/MINDS BMA2023 viewer](https://dataportal.brainminds.jp/ZAViewer_BMA_2023/). It does not contain or replace source images or intensity rasters.
+
+The preset preserves the eight pilot transforms accepted by the user. The other 61 transforms interpolate residual orientation and HE-envelope centroid offsets between those anchors while using each native Atlas slice's own envelope centroid. They do not have newly verified anatomical landmarks. Beyond the last anchor, the offset and residual angle are held constant while the native reference shape changes. HE centroid estimation retains the largest connected component and components at least 10% of its size. Envelope overlap is a QC indicator, not anatomical registration accuracy.
+
+Native images are 720 x 720 at 50 micrometres per pixel. Their screen-left hemisphere is the specimen's right hemisphere. `rawMSIToAtlas` maps raw MSI image coordinates into that native image. Physical MSI pixel pitch is retained; there is no additional scaling, reflection, shear, or nonrigid warp. Rendering uses x=(u-360)*0.05, y=(360-v)*0.05, z=(s-314)*0.05 mm. These are relative standard Atlas coordinates, not measured specimen spacing or Bregma coordinates.
+
+The reference s values are retained for 68 sections. Only Cor_13_7 lacks a saved reference depth and uses the explicit midpoint estimate s=545. Cor_1-1 and Cor_1_2 share s=46 and occupy the same reference plane. The s reversal between Cor_8_1 and Cor_8_2 and the duplicate saved reference image for Cor_13_2/Cor_13_3 remain flagged. Cor_1-1, Cor_7_5, and Cor_11_5 have low envelope overlap and require individual review; low-contrast HE segmentation can contribute to that flag.
+
+The JSON records source snapshot, reference provenance, source geometry, original HE transform, raw raster fingerprint, per-section method, and QC flags. The application applies it only if **every loaded section** matches its source record. Missing data, changed registration, or a changed raw fingerprint fall back to legacy placement. Switching placement never writes project or raster data. See `STACK3D_GUIDE.md` for user controls.
