@@ -68,7 +68,7 @@
     function position(entry) {
       const d = entry.descriptor, placement = global.Stack3D.scenePlacement(d);
       entry.mesh.rotation.z = placement.angleDeg * RAD;
-      entry.mesh.position.set(placement.x, placement.y, (entry.zIndex - zCenter) * spacing);
+      entry.mesh.position.set(placement.x, placement.y, Number.isFinite(placement.zMm) ? placement.zMm : (entry.zIndex - zCenter) * spacing);
       entry.mesh.updateMatrixWorld();
       if (entry.roi) { entry.roi.group.position.copy(entry.mesh.position); entry.roi.group.rotation.copy(entry.mesh.rotation); }
       if (entry.sectionOutline) {
@@ -165,6 +165,10 @@
       if (new Set(checked.map(d => d.coordinateMode === 'pixel' ? 'pixel' : 'physical')).size > 1) {
         throw new Error('画素単位と実寸単位の切片を同じ3Dには表示できません。');
       }
+      if (checked.some(d => d.standardAtlasPose) && checked.some(d => !d.standardAtlasPose)) {
+        throw new Error('標準Atlas配置と従来配置を同時に表示できません。');
+      }
+      checked.forEach(d => global.Stack3D.scenePlacement(d));
       if (entries.length && checked.length && global.Stack3D.seriesOf(entries[0].descriptor).id !== global.Stack3D.seriesOf(checked[0]).id) viewSet = false;
       const selectedId = entries[selected]?.descriptor.id, previous = byId; byId = new Map();
       entries = checked.map((d, index) => {
@@ -188,6 +192,7 @@
             he: { mesh: heMesh, texture: null, alphaPixels: null } };
           scene.add(heMesh, mesh);
         }
+        entry.sourceDescriptor = descriptors[index];
         entry.zIndex = (d.project?.atlas || d.atlas) && Number.isFinite(d.zIndex) ? d.zIndex : index;
         if (entry.roi) { scene.remove(entry.roi.group); entry.roi.dispose(); }
         entry.roi = global.Stack3DRoi.create(T, doc, d); scene.add(entry.roi.group);
@@ -281,6 +286,27 @@
       for (const key of keys) if (Object.hasOwn(values, key)) entry.descriptor[key] = finite(values[key], entry.descriptor[key]);
       position(entry); syncBrainContext(); updateOutline(); scheduleRender();
     }
+    function refreshPlacements(descriptors) {
+      if (disposed) return;
+      const sources = descriptors === undefined ? null : new Map(descriptors.map(d => [String(d.id), d]));
+      const changes = entries.map(entry => {
+        const source = sources ? sources.get(entry.descriptor.id) : entry.sourceDescriptor;
+        if (!source) throw new Error('配置を更新する切片が見つかりません。');
+        const next = { ...entry.descriptor };
+        if (source.standardAtlasPose) next.standardAtlasPose = source.standardAtlasPose;
+        else delete next.standardAtlasPose;
+        global.Stack3D.scenePlacement(next); // Validate all poses before changing any mesh.
+        return { entry, source, next };
+      });
+      if (changes.some(change => change.next.standardAtlasPose) && changes.some(change => !change.next.standardAtlasPose)) {
+        throw new Error('標準Atlas配置と従来配置を同時に表示できません。');
+      }
+      for (const { entry, source, next } of changes) {
+        entry.sourceDescriptor = source; entry.descriptor = next; position(entry);
+      }
+      // No texture/overlay rebuilding, camera reset, or range/selection change.
+      syncBrainContext(); updateOutline(); scheduleRender();
+    }
     function bounds() {
       const box = new T.Box3();
       for (const entry of entries) {
@@ -363,22 +389,30 @@
       if (disposed || contextLost) throw new Error('3D描画を利用できないため画像を保存できません。');
       render();
       const pixelMode = entries.some(entry => entry.descriptor.coordinateMode === 'pixel');
-      if (!pixelMode && (!brainVisible || brainOpacity <= 0 || !brainContext)) return canvas.toDataURL('image/png');
-      // The DOM badge is not part of the WebGL canvas. Bake the schematic
-      // qualification into exported images so it survives sharing/cropping
+      const atlasMode = entries.length > 0 && entries.every(entry => entry.descriptor.standardAtlasPose);
+      const schematicVisible = brainVisible && brainOpacity > 0 && !!brainContext;
+      if (!pixelMode && !atlasMode && !schematicVisible) return canvas.toDataURL('image/png');
+      // DOM notices are not part of the WebGL canvas. Bake placement and
+      // schematic qualifications into exports so they survive sharing/cropping
       // of the surrounding application controls.
       const output = doc.createElement('canvas'); output.width = canvas.width; output.height = canvas.height;
       const context = output.getContext('2d');
       if (!context) throw new Error('画像保存用の描画を開始できません。');
       context.drawImage(canvas, 0, 0);
-      const fontSize = Math.max(12, Math.round(Math.min(output.width, output.height) / 48));
-      const padding = Math.round(fontSize * 0.7), label = pixelMode
-        ? 'PIXEL COORDINATES / PHYSICAL SPACING UNKNOWN' : 'SCHEMATIC / NOT REGISTERED';
+      const labels = atlasMode ? ['BMA2023 ESTIMATED PLACEMENT', 'RIGHT HEMISPHERE / ATLAS RELATIVE SPACING'] : [];
+      if (pixelMode) labels.push('PIXEL COORDINATES / PHYSICAL SPACING UNKNOWN');
+      if (schematicVisible) labels.push('SCHEMATIC / NOT REGISTERED');
+      let fontSize = Math.max(12, Math.round(Math.min(output.width, output.height) / 48));
+      const padding = Math.round(fontSize * 0.7);
       context.font = `600 ${fontSize}px sans-serif`;
-      const width = Math.ceil(context.measureText(label).width) + padding * 2, height = fontSize + padding * 2;
+      while (fontSize > 8 && Math.max(...labels.map(label => context.measureText(label).width)) > output.width - padding * 4) {
+        context.font = `600 ${--fontSize}px sans-serif`;
+      }
+      const lineHeight = fontSize * 1.35, width = Math.ceil(Math.max(...labels.map(label => context.measureText(label).width))) + padding * 2;
+      const height = fontSize + lineHeight * (labels.length - 1) + padding * 2;
       context.fillStyle = 'rgba(11, 20, 32, 0.88)'; context.fillRect(padding, output.height - height - padding, width, height);
       context.fillStyle = '#c8d8e5'; context.textBaseline = 'middle';
-      context.fillText(label, padding * 2, output.height - height / 2 - padding);
+      labels.forEach((label, index) => context.fillText(label, padding * 2, output.height - height + fontSize / 2 + index * lineHeight));
       return output.toDataURL('image/png');
     }
     function setOpacity(value) { opacity = Math.max(0, Math.min(1, finite(value, opacity))); for (const entry of entries) entry.mesh.material.opacity = opacity; scheduleRender(); }
@@ -391,6 +425,7 @@
           visibleCount: sectionOutlines.filter(s => s.visible).length, sections: sectionOutlines },
         textureCount: entries.filter(e => e.texture).length, selectedIndex: selected, spacing, range: [...range], opacity,
         coordinateMode: entries[0]?.descriptor.coordinateMode || 'physical',
+        placementMode: entries.length && entries.every(e => e.descriptor.standardAtlasPose) ? 'atlas' : 'legacy',
         placements: entries.map(e => ({ id: e.descriptor.id, position: e.mesh.position.toArray(),
           rotationDeg: e.mesh.rotation.z / RAD, width: e.descriptor.sceneWidth, height: e.descriptor.sceneHeight })),
         heVisible, heOpacity, heTextureCount: entries.filter(e => e.he.texture).length,
@@ -418,7 +453,7 @@
       entries.forEach(release); entries = []; byId.clear(); hiddenSectionIds.clear(); releaseBrainContext(); outlineGeometry.dispose(); outlineMaterial.dispose();
       renderer.dispose(); renderer.forceContextLoss(); canvas.remove();
     }
-    return { setRoiOverlay, setSectionOutlines, setSections, updateTextures, updateHeTextures, setHeOverlay, setBrainContext, setSpacing, setRange, setHiddenSections, select, setPlacement, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
+    return { setRoiOverlay, setSectionOutlines, setSections, updateTextures, updateHeTextures, setHeOverlay, setBrainContext, setSpacing, setRange, setHiddenSections, select, setPlacement, refreshPlacements, resetView, getView, setView, capturePNG, setOpacity, dispose, getStats };
   }
   global.Stack3DRenderer = { createRenderer };
 })(window);
