@@ -125,8 +125,3 @@
   .sidebar-collapsed .sidebar-toggle{margin-bottom:0}
   .section-panel.sidebar-collapsed h2,.section-panel.sidebar-collapsed #section-metadata{display:none}
 }
-
-/* Standard Atlas estimates remain labelled when the side panels are collapsed. */
-.standard-atlas-scene-note{position:absolute;bottom:12px;left:16px;max-width:calc(100% - 32px);padding:5px 8px;border:1px solid #526783;border-radius:5px;background:#111c2de8;color:#bad2f5;font-size:11px;pointer-events:none;z-index:2}
-#standard-atlas-section-note{white-space:pre-line;overflow-wrap:anywhere}
-#standard-atlas-control select{width:100%}
