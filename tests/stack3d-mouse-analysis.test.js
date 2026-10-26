@@ -45,6 +45,95 @@ function request(changes = {}) {
   return { mode: 'by-section', sampleScope: 'all-measured', channels: ['GABA-DPP'], valueMode: 'raw', ...changes };
 }
 const first = result => result.channels[0].groups[0];
+const close = (actual, expected) => assert.ok(Math.abs(actual - expected) < 1e-10, `${actual} != ${expected}`);
+function annotate(source, regions) {
+  for (const [name, left, right] of regions) {
+    source.project.roi.roi_names[name] = name;
+    source.project.roi.roi_items[name] = [{ poly_msi: [
+      [left - .5, -.5], [right + .5, -.5], [right + .5, .5], [left - .5, .5]
+    ] }];
+  }
+  return source;
+}
+function annotatedEntries(c) {
+  return [
+    annotate(entry(c, 1, [0, 4, 12, 900, 50, 60, 70], [2, 2, 4, 1, 0, -1, NaN]),
+      [['Region A', 0, 2], ['Region B', 3, 6], ['Invalid standard', 4, 6]]),
+    annotate(entry(c, 2, [20, 1000], [2, 1], { keyPrefix: 'other' }), [['Region A', 0, 0], ['Region B', 1, 1]]),
+    annotate(entry(c, 3, [999, 888], [3, 2]), [['Region B', 0, 1]])
+  ];
+}
+
+test('selected mouse ROI distributions exclude other regions and apply the internal standard at each pixel', async () => {
+  const c = app(), source = annotatedEntries(c), loaded = sections(c, source);
+  const roiNames = ['Region A', 'Region B', 'Invalid standard'];
+  const raw = await c.Stack3DAnalysis.analyze(loaded, request({
+    mode: 'selected', sampleScope: 'roi', sectionIds: ['mouse-1'], roiNames, channels: ANALYTES
+  }));
+  assert.deepEqual(plain(raw.selection.sectionIds), ['mouse-1']);
+  assert.equal(raw.channels.length, 6);
+  for (const [index, channel] of raw.channels.slice(0, 5).entries()) {
+    assert.deepEqual(plain(channel.groups.map(group => group.roiName)), roiNames);
+    const [a, b] = channel.groups;
+    assert.equal(a.sectionId, 'mouse-1'); assert.equal(a.statistics.n, 3);
+    close(a.statistics.mean, 16 * (index + 1) / 3);
+    assert.equal(a.distribution.median, 4 * (index + 1));
+    assert.equal(b.statistics.n, 4); assert.equal(b.distribution.median, 65 * (index + 1));
+  }
+  // The standard remains a raw QC channel, including its nonpositive measurements.
+  assert.equal(raw.channels[5].groups[1].statistics.n, 3);
+  assert.equal(raw.channels[5].groups[1].distribution.median, 0);
+  const corrected = await c.Stack3DAnalysis.analyze(loaded, request({
+    mode: 'selected', sampleScope: 'roi', sectionIds: ['mouse-1'], roiNames,
+    channels: ANALYTES.slice(0, 5), valueMode: 'normalized'
+  }));
+  for (const [index, channel] of corrected.channels.entries()) {
+    const [a, b, invalid] = channel.groups;
+    assert.equal(channel.unit, ANALYTES[index] + ' / Serotonin-d4-DPP ratio');
+    assert.equal(a.statistics.n, 3); close(a.statistics.mean, 5 * (index + 1) / 3);
+    assert.equal(a.distribution.min, 0); assert.equal(a.distribution.median, 2 * (index + 1));
+    assert.equal(a.distribution.max, 3 * (index + 1));
+    assert.equal(b.counts.nMeasured, 4); assert.equal(b.counts.nValid, 1);
+    assert.equal(b.statistics.n, 1); assert.equal(b.statistics.mean, 900 * (index + 1));
+    assert.equal(invalid.counts.nMeasured, 3); assert.equal(invalid.counts.nIncluded, 0);
+    assert.equal(invalid.distribution, null); assert.equal(invalid.statistics.mean, null);
+    assert.ok(invalid.exclusions.some(row => row.code === 'NORMALIZATION_UNAVAILABLE'));
+  }
+});
+
+test('mouse ROI comparisons preserve section identity and missing ROIs while pooled values use pixel weighting', async () => {
+  const c = app(), source = annotatedEntries(c), loaded = sections(c, source);
+  // Neither 3D visibility nor registration transforms change the ROI samples.
+  source[0].project.roi.roi_show_flags = { 'Region A': false };
+  loaded[0].offsetXPx = 100; loaded[0].rotationDeg = 180;
+  const projectsBefore = JSON.stringify(source.map(item => item.project));
+  const rawBefore = source.map(item => Object.values(item.rasters).map(raster => bits(raster.values)));
+  for (const valueMode of ['raw', 'normalized']) {
+    const opts = request({ sampleScope: 'roi', roiNames: ['Region A'], valueMode,
+      sectionIds: ['mouse-3', 'mouse-2', 'mouse-1'] });
+    const comparison = await c.Stack3DAnalysis.analyze(loaded, opts);
+    const [a, b, absent] = comparison.channels[0].groups;
+    assert.deepEqual(plain(comparison.selection.sectionIds), ['mouse-1', 'mouse-2', 'mouse-3']);
+    assert.deepEqual(plain(comparison.channels[0].groups.map(group => group.sectionId)), ['mouse-1', 'mouse-2', 'mouse-3']);
+    assert.equal(a.statistics.n, 3); assert.equal(b.statistics.n, 1);
+    close(a.statistics.mean, valueMode === 'raw' ? 16 / 3 : 5 / 3);
+    assert.equal(b.statistics.mean, valueMode === 'raw' ? 20 : 10);
+    assert.equal(absent.statistics.mean, null); assert.equal(absent.distribution, null);
+    assert.equal(absent.counts.targetSections, 1); assert.equal(absent.counts.roiSections, 0);
+    assert.equal(absent.exclusions[0].code, 'ROI_MISSING');
+    const pooled = first(await c.Stack3DAnalysis.analyze(loaded, { ...opts, mode: 'pooled' }));
+    assert.equal(pooled.statistics.n, 4); assert.equal(pooled.counts.targetSections, 3);
+    assert.equal(pooled.counts.roiSections, 2); assert.equal(pooled.counts.includedSections, 2);
+    assert.equal(pooled.statistics.mean, valueMode === 'raw' ? 9 : 3.75);
+    close(pooled.statistics.sd, Math.sqrt(valueMode === 'raw' ? 59 : 14.1875));
+    assert.equal(pooled.distribution.median, valueMode === 'raw' ? 8 : 2.5);
+    assert.notEqual(pooled.statistics.mean, (a.statistics.mean + b.statistics.mean) / 2);
+    assert.equal(pooled.status, 'PARTIAL'); assert.ok(pooled.warnings.includes('PIXEL_WEIGHTED'));
+    assert.equal(pooled.exclusions[0].sectionId, 'mouse-3'); assert.equal(pooled.exclusions[0].code, 'ROI_MISSING');
+  }
+  assert.equal(JSON.stringify(source.map(item => item.project)), projectsBefore);
+  assert.deepEqual(source.map(item => Object.values(item.rasters).map(raster => bits(raster.values))), rawBefore);
+});
 
 test('48 unannotated mouse sections expose all six distinct channels and preserve stable section IDs', async () => {
   const c = app(), source = Array.from({ length: 48 }, (_, i) => entry(c, i + 1)), loaded = sections(c, source);
