@@ -144,6 +144,57 @@ async function rankedPlot(page) {
   });
 }
 
+test('mouse mean ranking uses corrected ROI values, keeps unavailable sections last and section-number ties stable', { timeout: 120000 }, async () => {
+  const h = await startBrowserHarness(), { page } = h;
+  try {
+    await seedMouseAnalysis(h, { emptyChannelSection: 6 }); await installCanvasAudit(page);
+    const original = await scientificSnapshot(page);
+    await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES + '&project=' + sectionId(1));
+    await ready(page, { valueMode: 'normalized', selectedNumber: 1 });
+    await page.locator('#analysis-sort-order').selectOption('mean');
+    for (const mode of ['selected', 'pooled']) {
+      if (mode === 'pooled') {
+        await page.locator('[data-analysis-mode="pooled"]').click(); await ready(page, { mode, count: 48 });
+      }
+      const numbers = mode === 'selected' ? [1] : Array.from({ length: 48 }, (_, index) => index + 1);
+      const expected = ROIS.map((roi, index) => ({ roi, index, mean: oracle(numbers, 4, roi).mean }))
+        .sort((a, b) => b.mean - a.mean || a.index - b.index).map(row => row.roi);
+      const current = await rankedPlot(page);
+      assert.deepEqual(current.labels.map(row => row.name), expected);
+      assert.deepEqual(current.keys, current.tableKeys);
+    }
+    await page.locator('[data-analysis-mode="by-section"]').click(); await ready(page, { mode: 'by-section', count: 48 });
+    await page.locator('[data-analysis-molecule="Histamine-DPP"]').click(); await paint(page);
+    const expected = Array.from({ length: 48 }, (_, index) => {
+      const number = index + 1, stats = oracle([number], 1, ROIS[0]);
+      return { number, valid: number !== 6 && stats.n > 0, mean: stats.mean };
+    }).sort((a, b) => a.valid !== b.valid ? a.valid ? -1 : 1 :
+      a.valid && a.mean !== b.mean ? b.mean - a.mean : a.number - b.number).map(row => sectionId(row.number));
+    let current = await rankedPlot(page);
+    assert.deepEqual(current.labels.map(row => row.sectionId), expected);
+    assert.deepEqual(current.keys, current.tableKeys);
+    assert.deepEqual(current.labels.slice(-2).map(row => row.sectionId), [6, 48].map(sectionId));
+    const before = await page.evaluate(() => ({ result: JSON.stringify(Atlas3D.analysis.getState().result), generation: Atlas3D.analysis.getState().generation }));
+    await page.locator('#analysis-sort-order').selectOption('median'); await paint(page);
+    const medianIds = (await rankedPlot(page)).labels.map(row => row.sectionId);
+    assert.notDeepEqual(medianIds, expected, 'this fixture distinguishes median and mean ranks');
+    await page.locator('#analysis-sort-order').selectOption('mean'); await paint(page);
+    assert.deepEqual(await page.evaluate(() => ({ result: JSON.stringify(Atlas3D.analysis.getState().result), generation: Atlas3D.analysis.getState().generation })), before);
+    await page.locator('#analysis-conditions-summary').click();
+    await page.locator('#analysis-single-roi').selectOption(ROIS[2]);
+    await page.waitForFunction(roi => Atlas3D.analysis.getState().result?.roiNames[0] === roi, ROIS[2]);
+    // All valid Zero ROI means are zero. An intentionally reversed loaded
+    // collection must still use confirmed section numbers to break ties.
+    await page.evaluate(() => { Atlas3D.sections.reverse(); Atlas3D.analysis.setSections(); });
+    await ready(page, { mode: 'by-section', count: 48 });
+    current = await rankedPlot(page);
+    const tied = Array.from({ length: 47 }, (_, index) => index + 1).filter(number => number !== 6).concat([6, 48]).map(sectionId);
+    assert.deepEqual(current.labels.map(row => row.sectionId), tied);
+    assert.deepEqual(current.keys, current.tableKeys);
+    assert.deepEqual(await scientificSnapshot(page), original); assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
+
 test('mouse selected and pooled graphs quantify each ROI with corrected pixels and pixel-weighted ranges', { timeout: 120000 }, async () => {
   const h = await startBrowserHarness(), { page } = h;
   try {
@@ -282,12 +333,14 @@ test('mouse ROI analysis migrates old whole-measured settings and restores ROI r
     await page.goto(h.baseURL + '/stack3d/index.html?series=' + SERIES); await ready(page, { valueMode: 'normalized' });
     const migrated = await page.evaluate(() => Atlas3D.analysis.getState());
     assert.equal(migrated.mode, 'selected'); assert.equal(migrated.sampleScope, 'roi');
+    assert.equal(migrated.sortOrder, 'median', 'older saved sessions retain their display order');
     assert.deepEqual(migrated.result.roiNames, ROIS, 'old settings without sampleScope cannot restore the removed whole-measured mode');
     assert.equal(await page.locator('.analysis-molecule:visible').getAttribute('data-channel'), 'Serotonin-DPP');
     assert.match(await page.locator('#analysis-channel-note').innerText(), /原値|内部標準|QC/);
     assert.ok(!(await currentResult(page)).channels.some(channel => channel.key === STANDARD));
     await page.locator('[data-analysis-molecule="Norepinephrine-DPP"]').click();
     await page.locator('#analysis-axis-mode').selectOption('full');
+    await page.locator('#analysis-sort-order').selectOption('mean');
     await page.locator('button[data-analysis-mode="by-section"]').click(); await ready(page, { mode: 'by-section', count: 48 });
     await page.locator('#analysis-conditions-summary').click();
     await page.locator('#analysis-single-roi').selectOption(ROIS[1]);
@@ -298,10 +351,12 @@ test('mouse ROI analysis migrates old whole-measured settings and restores ROI r
     const legacy = await page.evaluate(() => Atlas3D.analysis.getState());
     assert.equal(legacy.mode, 'selected'); assert.equal(legacy.activeMolecule, 'DA'); assert.equal(legacy.sampleScope, 'roi');
     assert.equal(legacy.toolbarMinimized, false); assert.equal(legacy.axisMode, 'auto');
+    assert.equal(legacy.sortOrder, 'median', 'each series starts with its own default ranking');
     await page.locator('button[data-analysis-mode="pooled"]').click(); await ready(page, { series: 'legacy_marmoset', count: 3, mode: 'pooled' });
     await page.locator('[data-analysis-molecule="NE"]').click();
     await page.locator('#series-select').selectOption(SERIES); await ready(page, { count: 4, mode: 'by-section' });
     let mouse = await page.evaluate(() => Atlas3D.analysis.getState());
+    assert.equal(mouse.sortOrder, 'mean'); assert.equal(await page.locator('#analysis-mini-sort-order').inputValue(), 'mean');
     assert.equal(mouse.activeMolecule, 'Norepinephrine-DPP'); assert.equal(mouse.axisMode, 'full'); assert.equal(mouse.toolbarMinimized, true);
     assert.equal(mouse.mode, 'by-section'); assert.equal(mouse.result.selection.count, 4);
     assert.equal(mouse.sampleScope, 'roi'); assert.equal(mouse.singleRoi, ROIS[1]);
@@ -309,6 +364,7 @@ test('mouse ROI analysis migrates old whole-measured settings and restores ROI r
     assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('atlas-stack3d-analysis-v1:mouse_tissue_1set')).sampleScope), 'roi');
     await page.reload(); await ready(page, { count: 4, mode: 'by-section' });
     mouse = await page.evaluate(() => Atlas3D.analysis.getState());
+    assert.equal(mouse.sortOrder, 'mean');
     assert.equal(mouse.activeMolecule, 'Norepinephrine-DPP'); assert.equal(mouse.axisMode, 'full'); assert.equal(mouse.toolbarMinimized, true);
     assert.equal(mouse.singleRoi, ROIS[1]); assert.deepEqual(mouse.result.selection.sectionIds, [2, 3, 4, 8].map(sectionId));
     await page.evaluate(() => {
@@ -328,6 +384,7 @@ test('mouse ROI analysis migrates old whole-measured settings and restores ROI r
     });
     await ready(page, { series: 'legacy_marmoset', count: 3, mode: 'pooled' });
     const finalLegacy = await page.evaluate(() => Atlas3D.analysis.getState());
+    assert.equal(finalLegacy.sortOrder, 'median');
     assert.equal(finalLegacy.activeMolecule, 'NE'); assert.equal(finalLegacy.sampleScope, 'roi');
     assert.deepEqual(finalLegacy.result.channels.map(channel => channel.key), ['DA', 'NE', '5-HT']);
     assert.ok(finalLegacy.result.selection.sectionIds.every(id => id.startsWith('analysis-section-')));

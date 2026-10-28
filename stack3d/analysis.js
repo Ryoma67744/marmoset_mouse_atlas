@@ -7,6 +7,7 @@
   const CHANNEL_NAMES = { DA: 'Dopamine', NE: 'Norepinephrine', '5-HT': 'Serotonin' };
   const MOUSE_STANDARD = 'Serotonin-d4-DPP';
   const MOUSE_DEFAULT = 'Serotonin-DPP';
+  const ORDER_LABELS = { median: '中央値の高い順', mean: '平均値の高い順' };
   const fmt = value => Number.isFinite(value) ? Number(value.toPrecision(5)).toLocaleString('en-US', { maximumSignificantDigits: 5 }) : '—';
   const count = value => Number.isFinite(value) ? value.toLocaleString('en-US') : '—';
   function element(tag, className, text) {
@@ -23,19 +24,17 @@
     return result.join(', ');
   }
   // Presentation order only: keep scientific results, stable keys and ties intact.
-  function sortGroupsByMedian(groups) {
-    return groups.map((group, index) => ({ group, index })).sort((a, b) => {
-      const am = a.group.distribution?.median, bm = b.group.distribution?.median;
-      const av = a.group.distribution?.n > 0 && Number.isFinite(am);
-      const bv = b.group.distribution?.n > 0 && Number.isFinite(bm);
-      if (av !== bv) return av ? -1 : 1;
-      if (av && am !== bm) return am > bm ? -1 : 1;
-      return a.index - b.index;
-    }).map(item => item.group);
+  function sortGroups(groups, order = 'median') {
+    return global.IntensityOrder.sortByValue(groups, group => {
+      const statistics = order === 'mean' ? group.statistics : group.distribution;
+      return statistics?.n > 0 ? statistics[order === 'mean' ? 'mean' : 'median'] : null;
+    });
   }
+  function sortGroupsByMedian(groups) { return sortGroups(groups, 'median'); }
+  function sortGroupsByMean(groups) { return sortGroups(groups, 'mean'); }
   function create(options) {
     const root = options.root, core = global.Stack3DAnalysis;
-    if (!root || !core || !global.IntensityBoxPlot) throw new Error('3D分析の描画機能を読み込めませんでした。');
+    if (!root || !core || !global.IntensityBoxPlot || !global.IntensityOrder) throw new Error('3D分析の描画機能を読み込めませんでした。');
     const state = { mode: 'selected', scope: 'all', sectionIds: [], roiNames: [], allRois: true, singleRoi: '',
       activeMolecule: 'DA', axisMode: 'auto', toolbarMinimized: false, loading: true, result: null };
     let sections = [], availableNames = [], initialized = false, disposed = false, generation = 0;
@@ -52,7 +51,7 @@
     function restore() {
       Object.assign(state, { mode: 'selected', scope: 'all', sectionIds: [],
         roiNames: [], allRois: true, singleRoi: '', activeMolecule: isMouse() ? MOUSE_DEFAULT : 'DA',
-        axisMode: 'auto', toolbarMinimized: false, seriesId: series.id, sampleScope: 'roi' });
+        axisMode: 'auto', sortOrder: 'median', toolbarMinimized: false, seriesId: series.id, sampleScope: 'roi' });
       try {
         const saved = JSON.parse(sessionStorage.getItem(KEY + ':' + series.id) ||
           (series.id === 'legacy_marmoset' ? sessionStorage.getItem(KEY) : null));
@@ -68,6 +67,7 @@
           const choices = isMouse() ? global.Stack3D?.MOUSE_ANALYTES || [] : CHANNELS;
           if (choices.includes(saved.activeMolecule)) state.activeMolecule = saved.activeMolecule;
           state.axisMode = saved.axisMode === 'full' ? 'full' : 'auto'; state.toolbarMinimized = saved.toolbarMinimized === true;
+          state.sortOrder = saved.sortOrder === 'mean' ? 'mean' : 'median';
         }
       } catch (_) {}
       channelNotice = ''; selectionNotice = '';
@@ -81,8 +81,8 @@
     root.classList.add('analysis-panel');
     root.innerHTML = '<div id="analysis-resizer" role="separator" tabindex="0" aria-label="グラフ領域の高さ" aria-orientation="horizontal" aria-controls="analysis-panel" title="ドラッグまたは上下矢印キーで高さを変更。ダブルクリックで元に戻す"></div>' +
       '<div class="analysis-header"><strong id="analysis-title">INTENSITY BOX PLOT</strong><span id="analysis-value-badge"></span><button id="analysis-layout-toggle" type="button">上下配置へ</button><button id="analysis-focus" type="button" aria-pressed="false">解析を広く表示</button><button id="analysis-expand" type="button" aria-pressed="false">拡大</button><button id="analysis-collapse" type="button" aria-expanded="true" aria-controls="analysis-body">折りたたむ</button><button id="analysis-toolbar-toggle" type="button" aria-expanded="true" aria-controls="analysis-toolbar">操作部を最小化</button></div>' +
-      '<div class="analysis-minibar" aria-label="最小化したグラフ操作部"><label class="analysis-mini-molecule"><span>分子</span><select id="analysis-molecule-select" aria-label="グラフに表示する分子"></select></label><span id="analysis-mini-summary"></span><span id="analysis-mini-axis"></span><button id="analysis-mini-layout-toggle" type="button">上下配置へ</button><button id="analysis-mini-focus" type="button" aria-pressed="false">解析を広く表示</button><button id="analysis-toolbar-expand" type="button" aria-expanded="false" aria-controls="analysis-toolbar">操作部を表示</button></div>' +
-      '<div id="analysis-body" class="analysis-body"><p id="analysis-sample-scope" hidden></p><p id="analysis-channel-note" role="status" hidden></p><div id="analysis-toolbar"><div class="analysis-molecule-tabs" role="group" aria-label="グラフに表示する分子"><span class="analysis-molecule-label">表示する分子</span></div><div class="analysis-mode-row"><div class="analysis-modes" role="group" aria-label="グラフのまとめ方"><button type="button" data-analysis-mode="selected">選択切片</button><button type="button" data-analysis-mode="by-section">切片ごとに比較</button><button type="button" data-analysis-mode="pooled">同名領域を統合</button></div><label class="analysis-axis-control">縦軸<select id="analysis-axis-mode"><option value="auto">自動（P99基準）</option><option value="full">全範囲</option></select></label><span id="analysis-pooling-note"></span></div><details class="analysis-controls"><summary id="analysis-conditions-summary">集計条件を変更</summary>' +
+      '<div class="analysis-minibar" aria-label="最小化したグラフ操作部"><label class="analysis-mini-molecule"><span>分子</span><select id="analysis-molecule-select" aria-label="グラフに表示する分子"></select></label><label class="analysis-mini-sort"><span>並び順</span><select id="analysis-mini-sort-order" aria-label="グラフと統計表の並び順"><option value="median">中央値の高い順</option><option value="mean">平均値の高い順</option></select></label><span id="analysis-mini-summary"></span><span id="analysis-mini-axis"></span><button id="analysis-mini-layout-toggle" type="button">上下配置へ</button><button id="analysis-mini-focus" type="button" aria-pressed="false">解析を広く表示</button><button id="analysis-toolbar-expand" type="button" aria-expanded="false" aria-controls="analysis-toolbar">操作部を表示</button></div>' +
+      '<div id="analysis-body" class="analysis-body"><p id="analysis-sample-scope" hidden></p><p id="analysis-channel-note" role="status" hidden></p><div id="analysis-toolbar"><div class="analysis-molecule-tabs" role="group" aria-label="グラフに表示する分子"><span class="analysis-molecule-label">表示する分子</span></div><div class="analysis-mode-row"><div class="analysis-modes" role="group" aria-label="グラフのまとめ方"><button type="button" data-analysis-mode="selected">選択切片</button><button type="button" data-analysis-mode="by-section">切片ごとに比較</button><button type="button" data-analysis-mode="pooled">同名領域を統合</button></div><label class="analysis-axis-control">縦軸<select id="analysis-axis-mode"><option value="auto">自動（P99基準）</option><option value="full">全範囲</option></select></label><label class="analysis-sort-control">並び順<select id="analysis-sort-order" aria-label="グラフと統計表の並び順"><option value="median">中央値の高い順</option><option value="mean">平均値の高い順</option></select></label><span id="analysis-pooling-note"></span></div><details class="analysis-controls"><summary id="analysis-conditions-summary">集計条件を変更</summary>' +
       '<div class="analysis-target"><span id="analysis-target-detail"></span><details id="analysis-target-list"><summary>対象切片一覧</summary><ul></ul></details></div><div class="analysis-range-controls"><label for="analysis-range">集計する切片（一覧番号）</label><input id="analysis-range" type="text" placeholder="5-20,24,30-35" autocomplete="off" aria-describedby="analysis-range-error"><button id="analysis-apply-range" type="button">適用</button><button id="analysis-all-sections" type="button">全切片</button><button id="analysis-use-display" type="button">3D表示範囲を取り込む</button></div>' +
       '<p id="analysis-range-error" role="alert" hidden></p><p id="analysis-selection-note" hidden></p><div class="analysis-roi-controls"><span>グラフの領域</span><div id="analysis-roi-checks"></div><select id="analysis-single-roi" aria-label="切片ごとに比較する領域"></select></div></details>' +
       '<div class="analysis-legend"><span>箱 P25–P75・中央値 ｜ ひげ P0–P99</span><span><i class="analysis-blue-dot"></i>≤ P99</span><span><i class="analysis-red-dot"></i>&gt; P99（集計に含む）</span><span>↑ 表示上限を超える画素（統計に含む）</span></div></div><p id="analysis-stale" role="status" hidden></p><p id="analysis-status" role="status" aria-live="polite"></p><div id="analysis-charts"></div>' +
@@ -114,7 +114,7 @@
       if (!initialized) return;
       try { sessionStorage.setItem(KEY + ':' + series.id, JSON.stringify({ mode: state.mode, scope: state.scope, sectionIds: state.sectionIds,
         roiNames: state.roiNames, allRois: state.allRois, singleRoi: state.singleRoi, activeMolecule: state.activeMolecule,
-        axisMode: state.axisMode, toolbarMinimized: state.toolbarMinimized, sampleScope: state.sampleScope })); } catch (_) {}
+        axisMode: state.axisMode, sortOrder: state.sortOrder, toolbarMinimized: state.toolbarMinimized, sampleScope: state.sampleScope })); } catch (_) {}
     }
     function selectedSection() {
       const selected = options.getSelected();
@@ -153,6 +153,8 @@
       $('analysis-molecule-select').disabled = state.loading || !available.length;
       $('analysis-molecule-select').value = state.activeMolecule;
       $('analysis-axis-mode').value = state.axisMode;
+      $('analysis-sort-order').value = state.sortOrder;
+      $('analysis-mini-sort-order').value = state.sortOrder;
       $('analysis-mini-axis').textContent = state.axisMode === 'auto' ? '自動軸' : '全範囲';
       root.classList.toggle('analysis-toolbar-minimized', state.toolbarMinimized);
       $('analysis-toolbar-toggle').setAttribute('aria-expanded', String(!state.toolbarMinimized));
@@ -179,6 +181,13 @@
     }
     function setAxisMode(value) {
       state.axisMode = value === 'full' ? 'full' : 'auto'; updateDisplay(); save(); requestRedraw();
+    }
+    function setSortOrder(value) {
+      const next = value === 'mean' ? 'mean' : 'median';
+      if (next === state.sortOrder) return;
+      state.sortOrder = next; updateDisplay(); save();
+      // Reuse the completed statistics; sorting must never trigger analysis.
+      if (state.result) renderResults();
     }
     function updateRois() {
       const wanted = new Set(targetIds());
@@ -308,12 +317,12 @@
       return Math.max(340, Math.min(640, Math.floor(body.clientHeight - preceding - 70)));
     }
     function displayGroups(groups) {
-      if (!isMouse() || state.mode !== 'by-section') return sortGroupsByMedian(groups);
+      if (!isMouse() || state.mode !== 'by-section') return sortGroups(groups, state.sortOrder);
       const sectionMap = new Map(sections.map(section => [section.id, section]));
       const number = group => Number(sectionMap.get(group.sectionId)?.project?.atlas?.sectionNumber) || Infinity;
       // Confirmed numbers resolve ties and absent values even after a reordered load.
       const ordered = groups.slice().sort((a, b) => number(a) === number(b) ? 0 : number(a) < number(b) ? -1 : 1);
-      return sortGroupsByMedian(ordered).map(group => {
+      return sortGroups(ordered, state.sortOrder).map(group => {
         const atlas = sectionMap.get(group.sectionId)?.project?.atlas;
         const name = atlas?.sectionNumber ? `${atlas.sectionNumber} · ${atlas.sourceCandidateId || group.name}` : group.name;
         return { ...group, name };
@@ -347,10 +356,10 @@
             const row = element('div', 'analysis-plot-row');
             row.append(element('p', 'analysis-row-label'));
             plot = element('div', 'analysis-plot'); plot.tabIndex = 0;
-            plot.setAttribute('role', 'region'); plot.setAttribute('aria-label', (channel.name || channel.key) + ' 箱ひげ図。中央値の高い順。左右にスクロールできます。');
+            plot.setAttribute('role', 'region'); plot.setAttribute('aria-label', (channel.name || channel.key) + ' 箱ひげ図。' + ORDER_LABELS[state.sortOrder] + '。左右にスクロールできます。');
             plot.append(document.createElement('canvas')); row.append(plot); pages.append(row);
           }
-          pages.querySelector('.analysis-row-label').textContent = `中央値の高い順 · ${rois.length}${state.mode === 'by-section' ? '切片' : '領域'}${width > availableWidth ? ' · 横にスクロールして全体を表示' : ''}`;
+          pages.querySelector('.analysis-row-label').textContent = `${ORDER_LABELS[state.sortOrder]} · ${rois.length}${state.mode === 'by-section' ? '切片' : '領域'}${width > availableWidth ? ' · 横にスクロールして全体を表示' : ''}`;
           const scrollLeft = plotScroll.has(channel.key) ? plotScroll.get(channel.key) : plot.scrollLeft;
           plotScroll.delete(channel.key);
           const canvas = plot.querySelector('canvas');
@@ -425,6 +434,8 @@
     });
     listen($('analysis-molecule-select'), 'change', event => setActiveMolecule(event.target.value));
     listen($('analysis-axis-mode'), 'change', event => setAxisMode(event.target.value));
+    listen($('analysis-sort-order'), 'change', event => setSortOrder(event.target.value));
+    listen($('analysis-mini-sort-order'), 'change', event => setSortOrder(event.target.value));
     listen($('analysis-toolbar-toggle'), 'click', () => { setToolbarMinimized(true); $('analysis-toolbar-expand').focus({ preventScroll: true }); });
     listen($('analysis-toolbar-expand'), 'click', () => { setToolbarMinimized(false); $('analysis-toolbar-toggle').focus({ preventScroll: true }); });
     listen(root.querySelector('.analysis-controls'), 'toggle', requestRedraw);
@@ -485,9 +496,9 @@
         if (state.result) $('analysis-status').textContent += $('analysis-status').textContent.includes('更新前') ? '' : ' · 更新前の読込データ';
       },
       getState() { return { ...state, sectionIds: state.sectionIds.slice(), roiNames: state.roiNames.slice(), targetIds: targetIds(), stale, failure, generation, layout: layout?.getState() }; },
-      setActiveMolecule, setToolbarMinimized, setAxisMode,
+      setActiveMolecule, setToolbarMinimized, setAxisMode, setSortOrder,
       dispose() { cancel(); disposed = true; save(); observer?.disconnect(); layout?.dispose(); worker?.dispose(); core.clearCache(); sections = []; cancelAnimationFrame(resizeFrame); for (const [target, event, handler] of listeners) target.removeEventListener(event, handler); drawCallbacks = []; state.result = null; }
     };
   }
-  global.Stack3DAnalysisUI = { create, sortGroupsByMedian };
+  global.Stack3DAnalysisUI = { create, sortGroupsByMedian, sortGroupsByMean };
 })(window);

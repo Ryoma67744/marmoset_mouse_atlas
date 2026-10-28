@@ -78,6 +78,14 @@ pixel counts remain in the statistics table. The shared 2D renderer keeps its
 existing labels and count display by default. Regression coverage checks
 scientific-result immutability and correct stable-ID selection after sorting.
 
+The v2.41 graph-order controls switch each molecular plot and its statistics
+table between descending full-population median and mean. The 2D viewer also
+retains registration order as its default; 3D keeps median order by default.
+Tests use distributions whose mean and median rankings disagree, preserve
+ties and unavailable values, check raw/normalized ordering and stable-ID
+selection, and restore the preference per tab (per series in 3D). Sorting
+reuses existing statistics without changing scientific data or the 3D layout.
+
 The v2.29 mouse analysis compares every loaded section using all measured image
 positions, without requiring an anatomical ROI or physical pixel pitch. Each
 molecule contributes its own finite values (including measured zeros); grid

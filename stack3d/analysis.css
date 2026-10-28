@@ -39,14 +39,16 @@ body.resizing-analysis-side,body.resizing-analysis-side *{cursor:col-resize!impo
 #analysis-panel #analysis-sample-scope{color:#b2cfff}
 #analysis-panel #analysis-channel-note{color:#efd297;border-left:2px solid #b99751;padding-left:8px}
 #analysis-panel #analysis-sample-scope[hidden],#analysis-panel #analysis-channel-note[hidden]{display:none}
-#analysis-panel .analysis-axis-control{display:flex;align-items:center;gap:8px;margin:0 14px 7px;color:#b2cfff;font-size:12px}
-#analysis-panel .analysis-axis-control select{min-width:150px;padding:4px 7px}
+#analysis-panel .analysis-axis-control,#analysis-panel .analysis-sort-control{display:flex;align-items:center;gap:8px;margin:0 14px 7px;color:#b2cfff;font-size:12px}
+#analysis-panel .analysis-axis-control select,#analysis-panel .analysis-sort-control select{min-width:150px;padding:4px 7px}
 #analysis-panel .analysis-minibar{display:none}
 #analysis-panel.analysis-toolbar-minimized:not(.analysis-collapsed)>.analysis-header,
 #analysis-panel.analysis-toolbar-minimized #analysis-toolbar{display:none}
 #analysis-panel.analysis-collapsed #analysis-focus,#analysis-panel.analysis-collapsed #analysis-expand,#analysis-panel.analysis-collapsed #analysis-toolbar-toggle,#analysis-panel.analysis-collapsed #analysis-layout-toggle{display:none}
 #analysis-panel.analysis-toolbar-minimized:not(.analysis-collapsed)>.analysis-minibar{display:flex;flex-wrap:wrap;align-items:center;gap:7px 10px;min-height:43px;flex:0 0 auto;box-sizing:border-box;padding:5px 14px;border-bottom:1px solid #344357;background:#142032;min-width:0}
 #analysis-panel .analysis-mini-molecule{display:flex;align-items:center;gap:8px;flex:0 0 auto;color:#a8bbd5;font-size:12px}
+#analysis-panel .analysis-mini-sort{display:flex;align-items:center;gap:6px;color:#a8bbd5;font-size:12px;min-width:0}
+#analysis-panel #analysis-mini-sort-order{min-width:0;width:145px;padding:3px 7px}
 #analysis-panel #analysis-molecule-select{min-width:77px;width:77px;height:29px;padding:3px 7px;background:#b2cfff;border-color:#b2cfff;color:#102139;font-weight:700}
 #analysis-panel.analysis-mouse .analysis-mini-molecule{min-width:0}
 #analysis-panel.analysis-mouse #analysis-molecule-select{min-width:0;width:220px;max-width:100%}
