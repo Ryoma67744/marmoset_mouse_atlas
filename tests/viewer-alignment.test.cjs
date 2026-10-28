@@ -108,11 +108,16 @@ async function saveDraft(page) {
 }
 
 async function openDetails(page, selector) {
-  await page.locator(selector).evaluate(el => {
+  // A scheduled render can replace the residual table between locator resolution
+  // and evaluation. Resolve the current element and its ancestors in one task.
+  await page.waitForFunction(selector => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
     for (let ancestor = el.parentElement; ancestor; ancestor = ancestor.parentElement) {
       if (ancestor.tagName === 'DETAILS') ancestor.open = true;
     }
-  });
+    return true;
+  }, selector);
 }
 
 function assertMatrix(actual, expected, epsilon = 1e-8) {
