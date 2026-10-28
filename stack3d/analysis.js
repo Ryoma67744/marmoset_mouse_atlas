@@ -38,7 +38,7 @@
     const state = { mode: 'selected', scope: 'all', sectionIds: [], roiNames: [], allRois: true, singleRoi: '',
       activeMolecule: 'DA', axisMode: 'auto', toolbarMinimized: false, loading: true, result: null };
     let sections = [], availableNames = [], initialized = false, disposed = false, generation = 0;
-    let controller = null, frame = 0, resizeFrame = 0, drawCallbacks = [], lastSize = '';
+    let controller = null, frame = 0, resizeFrame = 0, drawCallbacks = [], lastSize = '', calculationPending = false, exporting = false;
     let selectionNotice = '', failure = '', stale = false, staleIds = new Set(), lastOptions = '';
     let series = readSeries(), channelNotice = '', channelIds = [], moleculeButtons = [];
     const listeners = [], worker = global.Stack3DAnalysisWorker?.create();
@@ -81,11 +81,11 @@
     root.classList.add('analysis-panel');
     root.innerHTML = '<div id="analysis-resizer" role="separator" tabindex="0" aria-label="グラフ領域の高さ" aria-orientation="horizontal" aria-controls="analysis-panel" title="ドラッグまたは上下矢印キーで高さを変更。ダブルクリックで元に戻す"></div>' +
       '<div class="analysis-header"><strong id="analysis-title">INTENSITY BOX PLOT</strong><span id="analysis-value-badge"></span><button id="analysis-layout-toggle" type="button">上下配置へ</button><button id="analysis-focus" type="button" aria-pressed="false">解析を広く表示</button><button id="analysis-expand" type="button" aria-pressed="false">拡大</button><button id="analysis-collapse" type="button" aria-expanded="true" aria-controls="analysis-body">折りたたむ</button><button id="analysis-toolbar-toggle" type="button" aria-expanded="true" aria-controls="analysis-toolbar">操作部を最小化</button></div>' +
-      '<div class="analysis-minibar" aria-label="最小化したグラフ操作部"><label class="analysis-mini-molecule"><span>分子</span><select id="analysis-molecule-select" aria-label="グラフに表示する分子"></select></label><label class="analysis-mini-sort"><span>並び順</span><select id="analysis-mini-sort-order" aria-label="グラフと統計表の並び順"><option value="median">中央値の高い順</option><option value="mean">平均値の高い順</option></select></label><span id="analysis-mini-summary"></span><span id="analysis-mini-axis"></span><button id="analysis-mini-layout-toggle" type="button">上下配置へ</button><button id="analysis-mini-focus" type="button" aria-pressed="false">解析を広く表示</button><button id="analysis-toolbar-expand" type="button" aria-expanded="false" aria-controls="analysis-toolbar">操作部を表示</button></div>' +
-      '<div id="analysis-body" class="analysis-body"><p id="analysis-sample-scope" hidden></p><p id="analysis-channel-note" role="status" hidden></p><div id="analysis-toolbar"><div class="analysis-molecule-tabs" role="group" aria-label="グラフに表示する分子"><span class="analysis-molecule-label">表示する分子</span></div><div class="analysis-mode-row"><div class="analysis-modes" role="group" aria-label="グラフのまとめ方"><button type="button" data-analysis-mode="selected">選択切片</button><button type="button" data-analysis-mode="by-section">切片ごとに比較</button><button type="button" data-analysis-mode="pooled">同名領域を統合</button></div><label class="analysis-axis-control">縦軸<select id="analysis-axis-mode"><option value="auto">自動（P99基準）</option><option value="full">全範囲</option></select></label><label class="analysis-sort-control">並び順<select id="analysis-sort-order" aria-label="グラフと統計表の並び順"><option value="median">中央値の高い順</option><option value="mean">平均値の高い順</option></select></label><span id="analysis-pooling-note"></span></div><details class="analysis-controls"><summary id="analysis-conditions-summary">集計条件を変更</summary>' +
+      '<div class="analysis-minibar" aria-label="最小化したグラフ操作部"><label class="analysis-mini-molecule"><span>分子</span><select id="analysis-molecule-select" aria-label="グラフに表示する分子"></select></label><label class="analysis-mini-sort"><span>並び順</span><select id="analysis-mini-sort-order" aria-label="グラフと統計表の並び順"><option value="median">中央値の高い順</option><option value="mean">平均値の高い順</option></select></label><span id="analysis-mini-summary"></span><span id="analysis-mini-axis"></span><button id="analysis-mini-export-excel" type="button" aria-describedby="analysis-export-status" disabled>表示中の分子をExcel出力</button><button id="analysis-mini-layout-toggle" type="button">上下配置へ</button><button id="analysis-mini-focus" type="button" aria-pressed="false">解析を広く表示</button><button id="analysis-toolbar-expand" type="button" aria-expanded="false" aria-controls="analysis-toolbar">操作部を表示</button></div>' +
+      '<div id="analysis-body" class="analysis-body"><p id="analysis-sample-scope" hidden></p><p id="analysis-channel-note" role="status" hidden></p><div id="analysis-toolbar"><div class="analysis-molecule-tabs" role="group" aria-label="グラフに表示する分子"><span class="analysis-molecule-label">表示する分子</span></div><div class="analysis-mode-row"><div class="analysis-modes" role="group" aria-label="グラフのまとめ方"><button type="button" data-analysis-mode="selected">選択切片</button><button type="button" data-analysis-mode="by-section">切片ごとに比較</button><button type="button" data-analysis-mode="pooled">同名領域を統合</button></div><label class="analysis-axis-control">縦軸<select id="analysis-axis-mode"><option value="auto">自動（P99基準）</option><option value="full">全範囲</option></select></label><label class="analysis-sort-control">並び順<select id="analysis-sort-order" aria-label="グラフと統計表の並び順"><option value="median">中央値の高い順</option><option value="mean">平均値の高い順</option></select></label><button id="analysis-export-excel" type="button" aria-describedby="analysis-export-status" disabled>表示中の分子をExcel出力</button><span id="analysis-pooling-note"></span></div><details class="analysis-controls"><summary id="analysis-conditions-summary">集計条件を変更</summary>' +
       '<div class="analysis-target"><span id="analysis-target-detail"></span><details id="analysis-target-list"><summary>対象切片一覧</summary><ul></ul></details></div><div class="analysis-range-controls"><label for="analysis-range">集計する切片（一覧番号）</label><input id="analysis-range" type="text" placeholder="5-20,24,30-35" autocomplete="off" aria-describedby="analysis-range-error"><button id="analysis-apply-range" type="button">適用</button><button id="analysis-all-sections" type="button">全切片</button><button id="analysis-use-display" type="button">3D表示範囲を取り込む</button></div>' +
       '<p id="analysis-range-error" role="alert" hidden></p><p id="analysis-selection-note" hidden></p><div class="analysis-roi-controls"><span>グラフの領域</span><div id="analysis-roi-checks"></div><select id="analysis-single-roi" aria-label="切片ごとに比較する領域"></select></div></details>' +
-      '<div class="analysis-legend"><span>箱 P25–P75・中央値 ｜ ひげ P0–P99</span><span><i class="analysis-blue-dot"></i>≤ P99</span><span><i class="analysis-red-dot"></i>&gt; P99（集計に含む）</span><span>↑ 表示上限を超える画素（統計に含む）</span></div></div><p id="analysis-stale" role="status" hidden></p><p id="analysis-status" role="status" aria-live="polite"></p><div id="analysis-charts"></div>' +
+      '<div class="analysis-legend"><span>箱 P25–P75・中央値 ｜ ひげ P0–P99</span><span><i class="analysis-blue-dot"></i>≤ P99</span><span><i class="analysis-red-dot"></i>&gt; P99（集計に含む）</span><span>↑ 表示上限を超える画素（統計に含む）</span></div></div><p id="analysis-stale" role="status" hidden></p><p id="analysis-status" role="status" aria-live="polite"></p><p id="analysis-export-status" role="status" aria-live="polite" hidden></p><div id="analysis-charts"></div>' +
       '<p class="analysis-footnote">n＝有限値の画素数。SD＝画素間の母標準偏差。統計量は元のROIの全有効画素から算出し、3Dの透過・表示範囲には依存しません。分子ごとに軸と単位が異なります。</p></div>';
     const $ = id => root.querySelector('#' + id);
     const modeButtons = [...root.querySelectorAll('[data-analysis-mode]')];
@@ -170,6 +170,76 @@
       const target = state.mode === 'selected' ? selectedSection()?.name || '対象なし' : numbers.length ? `一覧 ${rangeText(numbers)} · ${numbers.length}切片` : '対象なし';
       const summary = `${mode} · ${target} · ${currentOptions().valueMode === 'normalized' ? '補正値' : '原値'}`;
       $('analysis-mini-summary').textContent = summary; $('analysis-mini-summary').title = summary;
+      updateExportControls();
+    }
+    function exportChannel() {
+      return state.result?.channels.find(channel => channel.key === state.activeMolecule);
+    }
+    function exportBlockReason() {
+      if (disposed || !initialized || state.loading || calculationPending || controller || frame) return '読込・集計が完了してからExcel出力できます。';
+      if (stale) return '登録データが更新されています。「再読込」後にExcel出力してください。';
+      if (!exportChannel()?.groups.length) return '表示中の分子の集計結果がありません。';
+      if (!global.ExcelIO?.buildGraphStatsXlsx || !global.XLSX?.utils) return 'Excel出力機能を読み込めませんでした。再読込してください。';
+      if (exporting) return 'Excelを作成しています。';
+      return '';
+    }
+    function updateExportControls() {
+      const reason = exportBlockReason();
+      for (const id of ['analysis-export-excel', 'analysis-mini-export-excel']) {
+        $(id).disabled = !!reason; $(id).title = reason || '表示中の分子のグラフ統計と集計条件をExcelに保存します。';
+      }
+    }
+    function exportGraphExcel() {
+      if (exportBlockReason()) return false;
+      const result = state.result, channel = exportChannel(), groups = displayGroups(channel.groups);
+      const names = new Map(result.selection.sectionIds.map((id, index) => [id, result.selection.names[index] || id]));
+      const finite = value => Number.isFinite(value) ? value : null;
+      const groupReasons = group => [...(group.reasonCodes || []), ...(group.warnings || []), ...(group.compatibility?.reasonCodes || []),
+        ...(group.exclusions || []).flatMap(item => [item.code, ...(item.reasonCodes || [])])].filter(Boolean);
+      const rows = groups.map((group, index) => {
+        const d = group.distribution, stats = group.statistics || {}, counts = group.counts || {};
+        return { roiKey: group.roiName || group.key, roiName: group.roiName || group.name, channelKey: channel.key, moleculeName: channel.name || channel.key,
+          sectionId: group.sectionId || '', sectionName: group.sectionId ? result.mode === 'by-section' ? group.name : names.get(group.sectionId) || group.sectionId : '',
+          valueMode: result.valueMode, unit: group.unit || channel.unit || '',
+          median: finite(d?.median), mean: d ? finite(stats.mean) : null, sd: d ? finite(stats.sd) : null,
+          q1: finite(d?.q1), q3: finite(d?.q3), min: finite(d?.min), p99: finite(d?.whiskerHigh), max: finite(d?.max),
+          n: finite(counts.nIncluded), nValid: finite(counts.nValid), nMeasured: finite(counts.nMeasured), nGeometry: finite(counts.nGeometry),
+          targetSections: finite(counts.targetSections), roiSections: finite(counts.roiSections), includedSections: finite(counts.includedSections),
+          mode: result.mode, order: index + 1, sortOrder: state.sortOrder, status: group.status || channel.status || '', reason: reasons(groupReasons(group)) };
+      });
+      const sectionRows = groups.flatMap(group => (group.sectionIds || result.selection.sectionIds).map(sectionId => {
+        const excluded = (group.exclusions || []).filter(item => item.sectionId === sectionId);
+        const included = !excluded.length && !!group.distribution;
+        return { sectionId, sectionName: names.get(sectionId) || sectionId, roiKey: group.roiName || group.key, channelKey: channel.key,
+          status: included ? 'INCLUDED' : 'EXCLUDED',
+          reason: reasons(excluded.length ? excluded.flatMap(item => [item.code, ...(item.reasonCodes || [])]).filter(Boolean)
+            : included ? [] : groupReasons(group)) };
+      }));
+      exporting = true; updateExportControls();
+      const status = $('analysis-export-status'); status.hidden = false; status.textContent = 'Excelを作成しています…';
+      try {
+        const exported = global.ExcelIO.buildGraphStatsXlsx({ rows, sections: sectionRows, metadata: {
+          surface: '3D', seriesId: series.id, species: series.species, moleculeName: channel.name || channel.key, channelKey: channel.key,
+          mode: result.mode, valueMode: result.valueMode, sampleScope: result.sampleScope, sortOrder: state.sortOrder,
+          sortOrderLabel: ORDER_LABELS[state.sortOrder], axisMode: state.axisMode, targetSectionCount: result.selection.count,
+          targetSectionList: 'Sections シート参照', roiList: 'Statistics シート参照',
+          roiKeyDefinition: '3Dでは同名ROIをまとめた名称を識別子として使用',
+          pooling: result.mode === 'pooled' ? '全有効画素を統合（画素数による重み）' : '',
+          statisticsSource: 'グラフの集計結果。表示用の間引き点群からは再計算しません。',
+          sdConvention: '画素間の母標準偏差', stale: false
+        } });
+        const name = global.ExcelIO.sanitizeFileComponent(`${series.id}_${channel.name || channel.key}_${result.mode}`);
+        const filename = `graph_${name}_${exported.exportedAt.replace(/\D/g, '').slice(0, 14)}.xlsx`;
+        const url = URL.createObjectURL(new Blob([exported.bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+        const link = document.createElement('a'); link.href = url; link.download = filename;
+        document.body.append(link); link.click();
+        setTimeout(() => { URL.revokeObjectURL(url); link.remove(); }, 1000);
+        status.textContent = `${channel.name || channel.key} · ${exported.rowCount}行のグラフ統計をExcel出力しました。`;
+        return true;
+      } catch (error) {
+        status.textContent = 'Excelを作成できませんでした：' + (error?.message || String(error));
+        return false;
+      } finally { exporting = false; updateExportControls(); }
     }
     function setActiveMolecule(channel) {
       if (!currentOptions().channels.includes(channel)) return false;
@@ -252,7 +322,7 @@
     }
     function setError(message) { $('analysis-range-error').textContent = message; $('analysis-range-error').hidden = !message; $('analysis-range').setAttribute('aria-invalid', String(!!message)); }
     function cancel() {
-      generation++; controller?.abort(); controller = null; cancelAnimationFrame(frame); frame = 0;
+      generation++; controller?.abort(); controller = null; cancelAnimationFrame(frame); frame = 0; calculationPending = false;
     }
     function clearResults(message) {
       state.result = null; drawCallbacks = []; $('analysis-charts').replaceChildren(); $('analysis-status').textContent = message || '';
@@ -261,6 +331,7 @@
     }
     function reasons(codes) {
       const local = { ROI_MISSING: '対象ROIなし', CHANNEL_MISSING: '分子データなし', NO_VALUES: '有効画素なし', NO_VALID_PIXELS: '有効画素なし', RAW_QC: '内部標準は原値のQC専用です',
+        PIXEL_WEIGHTED: '全有効画素を統合（画素数による重み）', MIXED_PIXEL_SIZE: '画素サイズが異なる切片を含みます。面積・体積ではなく各画素を同じ重みで集計しています',
         UNIT_MISMATCH: '補正値の単位が一致しません', NORMALIZATION_GROUP_MISMATCH: '補正グループが一致しません', NORMALIZATION_REFERENCE_MISMATCH: '補正基準が一致しません',
         NORMALIZATION_UNAVAILABLE: '補正値を算出できません', NORMALIZATION_SCOPE_UNVERIFIED: '補正基準グループが未確認です',
         NORMALIZATION_SCOPE_INCOMPATIBLE: '補正グループの状態が一致しません',
@@ -398,6 +469,7 @@
       updateControls(); const ids = targetIds(), opts = currentOptions();
       const names = state.mode === 'by-section' ? [state.singleRoi].filter(Boolean) : state.roiNames.filter(name => availableNames.includes(name));
       if (!ids.length || !names.length || !opts.channels.length) {
+        calculationPending = false;
         clearResults(!ids.length ? '集計対象の切片がありません。範囲を指定してください。'
           : !names.length ? (availableNames.length ? 'グラフに表示する領域を選択してください。' : '対象切片にROIが登録されていません。ROIのある切片を選択するか、個別ビューでROIを登録してください。')
           : isMouse() ? '集計できる分子データがありません。' : '左側で表示する分子を選択してください。'); return;
@@ -414,10 +486,10 @@
       } catch (error) {
         if (token !== generation || disposed || error?.name === 'AbortError') return;
         clearResults('集計できませんでした：' + error.message);
-      } finally { if (token === generation && !disposed) { root.setAttribute('aria-busy', 'false'); controller = null; } }
+      } finally { if (token === generation && !disposed) { root.setAttribute('aria-busy', 'false'); controller = null; calculationPending = false; updateExportControls(); } }
     }
     function schedule() {
-      if (disposed) return; cancel(); updateControls(); save();
+      if (disposed) return; cancel(); calculationPending = true; $('analysis-export-status').hidden = true; updateControls(); save();
       if (!state.loading) { const token = generation; frame = requestAnimationFrame(() => calculate(token)); }
     }
     function applyRange() {
@@ -436,6 +508,8 @@
     listen($('analysis-axis-mode'), 'change', event => setAxisMode(event.target.value));
     listen($('analysis-sort-order'), 'change', event => setSortOrder(event.target.value));
     listen($('analysis-mini-sort-order'), 'change', event => setSortOrder(event.target.value));
+    listen($('analysis-export-excel'), 'click', exportGraphExcel);
+    listen($('analysis-mini-export-excel'), 'click', exportGraphExcel);
     listen($('analysis-toolbar-toggle'), 'click', () => { setToolbarMinimized(true); $('analysis-toolbar-expand').focus({ preventScroll: true }); });
     listen($('analysis-toolbar-expand'), 'click', () => { setToolbarMinimized(false); $('analysis-toolbar-toggle').focus({ preventScroll: true }); });
     listen(root.querySelector('.analysis-controls'), 'toggle', requestRedraw);
@@ -496,7 +570,7 @@
         if (state.result) $('analysis-status').textContent += $('analysis-status').textContent.includes('更新前') ? '' : ' · 更新前の読込データ';
       },
       getState() { return { ...state, sectionIds: state.sectionIds.slice(), roiNames: state.roiNames.slice(), targetIds: targetIds(), stale, failure, generation, layout: layout?.getState() }; },
-      setActiveMolecule, setToolbarMinimized, setAxisMode, setSortOrder,
+      setActiveMolecule, setToolbarMinimized, setAxisMode, setSortOrder, exportGraphExcel,
       dispose() { cancel(); disposed = true; save(); observer?.disconnect(); layout?.dispose(); worker?.dispose(); core.clearCache(); sections = []; cancelAnimationFrame(resizeFrame); for (const [target, event, handler] of listeners) target.removeEventListener(event, handler); drawCallbacks = []; state.result = null; }
     };
   }

@@ -86,6 +86,14 @@ ties and unavailable values, check raw/normalized ordering and stable-ID
 selection, and restore the preference per tab (per series in 3D). Sorting
 reuses existing statistics without changing scientific data or the 3D layout.
 
+The v2.42 graph Excel export writes the completed, displayed statistical rows
+without parsing formatted table text or recomputing from sampled points. Real
+SheetJS round trips check numeric cell types, precision, zeroes, negatives,
+missing values, independent SD/units/reasons, text identifiers, and worksheet
+splitting. Browser downloads verify 2D visible channels/ROIs and the active 3D
+molecule, display order, raw/corrected values, section aggregation, and pending
+or stale-result guards. Conditions and section membership retain export scope.
+
 The v2.29 mouse analysis compares every loaded section using all measured image
 positions, without requiring an anatomical ROI or physical pixel pitch. Each
 molecule contributes its own finite values (including measured zeros); grid
