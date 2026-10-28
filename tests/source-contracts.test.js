@@ -27,9 +27,10 @@ test('all production scripts and inline scripts parse without executing', () => 
   }
 });
 
-test('new normalization configuration remains project metadata without a DB migration', () => {
+test('normalization configuration remains project metadata', () => {
   const storage = fs.readFileSync(path.join(root,'lib/storage.js'),'utf8');
-  assert.match(storage, /const DB_VERSION = 2;/);
+  // Hosted v2 and the separate offline v3 database are checked against real
+  // IndexedDB in workspace-storage.test.cjs, rather than a source-code literal.
   assert.match(storage, /putProjectsIfUnchanged/);
   const master = fs.readFileSync(path.join(root,'index.html'),'utf8');
   assert.match(master, /normalization: result\.normalization/);

@@ -4,3 +4,7 @@ test-results/
 test-artifacts/
 playwright-report/
 __pycache__/
+.cache/
+_site/
+offline/atlas-app.zip
+offline/atlas-app.manifest.json
