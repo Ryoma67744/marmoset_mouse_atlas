@@ -32,6 +32,7 @@
     <script src="../lib/ingest.js"></script>
     <script src="../lib/imzml.js"></script>
     <script src="../lib/zipio.js"></script>
+    <script src="../lib/excelio.js?v=2.42.0"></script>
     <script src="../lib/cloud-config.js"></script>
     <script src="../lib/cloud.js"></script>
     <script src="../lib/project-sync.js"></script>
@@ -425,14 +426,16 @@
                             <label for="graph-select-3">追加表示3</label>
                             <select id="graph-select-3" class="text-xs border-gray-300 rounded py-0.5 px-1"></select>
                         </div>
-                        <div class="flex items-center gap-1 text-xs mb-1 shrink-0">
+                        <div class="flex items-center gap-1 text-xs mb-1 shrink-0 flex-wrap">
                             <label for="graph-sort">並び順</label>
                             <select id="graph-sort" class="text-xs border-gray-300 rounded py-0.5 px-1">
                                 <option value="registration">ROIの登録順</option>
                                 <option value="median">中央値の高い順</option>
                                 <option value="mean">平均値の高い順</option>
                             </select>
+                            <button id="graph-export-excel" type="button" class="border border-gray-300 rounded py-0.5 px-2" aria-describedby="graph-export-status" title="表示中の分子・ROIの統計をExcelに出力" disabled>Excel出力</button>
                         </div>
+                        <p id="graph-export-status" class="text-xs text-gray-600 mb-1 shrink-0" role="status" aria-live="polite">表示中の分子・ROIを出力します。</p>
                         <div id="graph-container" class="flex-1 border border-gray-300 rounded overflow-auto min-h-0">
                              <img id="graph-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='450'%3E%3Crect width='600' height='450' fill='%23f0f0f0'/%3E%3Ctext x='300' y='225' text-anchor='middle' fill='%23333' font-size='16'%3ESelect an ROI%3C/text%3E%3C/svg%3E" alt="Analysis Graph" class="w-full h-full object-contain">
                         </div>
@@ -558,6 +561,7 @@
         let analysisResizeObserver = null;
         let analysisResizeFrame = 0;
         let analysisDrawCallbacks = [];
+        let analysisExportSnapshot = null;
         const analysisSortStorageKey = 'marmoset:viewerAnalysisSort';
         const otsuLockedControls = new Map();
         // Action buttons derive their state from current operations, never a stale
@@ -2700,6 +2704,7 @@ function loadAllImages() {
                 try { sessionStorage.setItem(analysisSortStorageKey, sortSelect.value); } catch (_) {}
                 updateGraph();
             };
+            document.getElementById('graph-export-excel').onclick = exportAnalysisGraphXlsx;
         }
 
         /**
@@ -2848,6 +2853,9 @@ function loadAllImages() {
             const channels = [...new Set([1, 2, 3].map(i => document.getElementById('graph-select-' + i).value))].filter(key => key && key !== 'none');
             graphContainer.replaceChildren();
             analysisDrawCallbacks = [];
+            analysisExportSnapshot = null;
+            refreshAnalysisExportControl();
+            document.getElementById('graph-export-status').textContent = '表示中の分子・ROIを出力します。';
             observeAnalysisSize(graphContainer);
             const roiItems = atlasData.roi?.roi_items || {};
             const roiNames = atlasData.roi?.roi_names || {};
@@ -2871,6 +2879,7 @@ function loadAllImages() {
             }
             graphContainer.appendChild(legend);
             const fmt = value => Number.isFinite(value) ? String(Number(value.toPrecision(6))) : '—';
+            const exportRows = [];
             for (const key of channels) {
                 const corrected = valueDisplay.mode === 'normalized' && isCorrectedChannel(channelResult(key));
                 const stats = {}, distributions = {};
@@ -2909,7 +2918,7 @@ function loadAllImages() {
                     const th = document.createElement('th'); th.scope = 'col'; th.textContent = title; th.style.width = width; header.appendChild(th);
                 }
                 table.appendChild(header);
-                for (const roiKey of orderedRoiKeys) {
+                for (const [roiIndex, roiKey] of orderedRoiKeys.entries()) {
                     const result = roiResults[roiKey]?.values.find(row => row.key === key);
                     const stat = stats[roiKey], distribution = distributions[roiKey];
                     let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : /^MSI_/i.test(key) ? '生値ラスタなし：MSI 定量は算出不可' : '参考画像の輝度（MSI 強度ではありません）';
@@ -2947,17 +2956,75 @@ function loadAllImages() {
                     table.appendChild(row);
                     const statusRow = document.createElement('tr'); statusRow.dataset.roiStatus = roiKey; statusRow.dataset.selected = row.dataset.selected;
                     const statusCell = document.createElement('td'); statusCell.colSpan = 4; statusCell.className = 'analysis-status'; statusCell.dataset.field = 'status';
-                    statusCell.textContent = (corrected ? result?.status || 'UNAVAILABLE' : result?.rawStatus || (stat.n ? 'REFERENCE' : 'UNAVAILABLE')) + (reason.trim() ? ' — ' + reason.trim() : '');
+                    const status = corrected ? result?.status || 'UNAVAILABLE' : result?.rawStatus || (stat.n ? 'REFERENCE' : 'UNAVAILABLE');
+                    statusCell.textContent = status + (reason.trim() ? ' — ' + reason.trim() : '');
                     if (distribution?.sampled) statusCell.textContent += `\n点群表示 ${distribution.points.length.toLocaleString()} / 統計対象 ${distribution.n.toLocaleString()} 画素（通常域・上側域から抽出、箱・統計は全画素）`;
                     statusRow.appendChild(statusCell); table.appendChild(statusRow);
+                    // Keep full-precision numerical cells separate from the formatted UI.
+                    exportRows.push({
+                        roiKey, roiName: roiNames[roiKey] || roiKey, channelKey: key, moleculeName: formatDisplayName(key),
+                        sectionId: currentProject?.id || '', sectionName: currentProject?.displayName || '',
+                        valueMode: corrected ? 'normalized' : 'raw', unit: /^MSI_/i.test(key) ? channelUnit(key) : '画像輝度 (a.u.)',
+                        median: distribution?.median ?? null, mean: stat.n ? stat.mean : null, sd: stat.n ? stat.sd : null,
+                        q1: distribution?.q1 ?? null, q3: distribution?.q3 ?? null, min: distribution?.min ?? null,
+                        p99: distribution?.whiskerHigh ?? null, max: distribution?.max ?? null,
+                        n: stat.n && Number.isFinite(stat.mean) ? stat.n : 0, nValid: stat.n,
+                        nMeasured: result?.nMeasured ?? stat.n, nGeometry: result?.nGeometry ?? stat.n,
+                        mode: 'roi_pixels', order: roiIndex + 1, sortOrder: sortMode, status, reason,
+                    });
                 }
                 section.appendChild(table);
             }
+            analysisExportSnapshot = { rows: exportRows, metadata: {
+                view: '2D', projectId: currentProject?.id || '', projectName: currentProject?.displayName || '',
+                valueMode: valueDisplay.mode, sortOrder: document.getElementById('graph-sort').value,
+                channels: channels.join(', '), visibleRoiCount: roiKeys.length,
+                normalizationProfileId: currentProject?.normalization?.profileId || currentProject?.normalization?.id || '',
+                normalizationProfileRevision: currentProject?.normalization?.revision ?? '',
+                validPixelDefinition: '有効画素数は各行の値モードの有効数。集計画素数は統計量を算出できた画素数（算出不可は0）。',
+                note: note.textContent,
+            } };
+            refreshAnalysisExportControl();
             graphContainer.scrollTop = scrollTop;
             if (focusKey && focusChannel) {
                 const section = Array.from(graphContainer.querySelectorAll('.analysis-section')).find(node => node.dataset.channel === focusChannel);
                 const row = section && Array.from(section.querySelectorAll('[data-roi-key]')).find(node => node.dataset.roiKey === focusKey);
                 row?.querySelector('button')?.focus({ preventScroll: true });
+            }
+        }
+
+        function refreshAnalysisExportControl() {
+            const button = document.getElementById('graph-export-excel');
+            button.disabled = !analysisExportSnapshot?.rows.length;
+            button.classList.toggle('opacity-50', button.disabled);
+            button.classList.toggle('cursor-not-allowed', button.disabled);
+        }
+
+        function exportAnalysisGraphXlsx() {
+            const status = document.getElementById('graph-export-status');
+            if (viewerRefreshTask || sectionNavigation?.pending || viewerActions.import) {
+                status.textContent = 'データの更新が完了してから出力してください。';
+                return;
+            }
+            try {
+                // Rebuild from the current graph selections and authoritative ROI summaries.
+                displayGraphForRoi(document.querySelector('.roi-item.active')?.dataset.roiKey || null);
+                if (!analysisExportSnapshot?.rows.length) {
+                    status.textContent = '出力するグラフ・ROIがありません。';
+                    return;
+                }
+                const output = ExcelIO.buildGraphStatsXlsx(analysisExportSnapshot);
+                const blob = new Blob([output.bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                const name = currentProject?.displayName || 'atlas';
+                const ts = output.exportedAt.replace(/[:.]/g, '-').slice(0, 19);
+                a.download = ZipIO.safeName(name) + '_graph_statistics_' + ts + '.xlsx';
+                document.body.appendChild(a); a.click();
+                setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+                status.textContent = `表示中の分子・ROIの統計 ${output.rowCount} 行をExcelに出力しました。`;
+            } catch (error) {
+                status.textContent = 'Excel出力に失敗しました: ' + error.message;
             }
         }
 
