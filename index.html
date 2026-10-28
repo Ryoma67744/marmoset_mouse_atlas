@@ -181,11 +181,20 @@
                         <button id="new-folder" class="btn">+ フォルダ</button>
                         <button id="excel-export-all" class="btn btn-primary">全データをExcel一括出力</button>
                         <button id="restore-export-all" class="btn">全データを復元用ZIP一括出力</button>
+                        <button id="offline-export" class="btn">アプリ＋全データをダウンロード（Windows）</button>
                         <button id="normalization-settings" class="btn">同位体5-HTで補正</button>
                         <button id="bulk-merge" class="btn" disabled>選択を 1 つに統合</button>
                         <button id="bulk-move" class="btn" disabled>選択を移動</button>
                         <button id="bulk-export" class="btn" disabled>選択を Export</button>
                         <button id="bulk-delete" class="btn btn-danger" disabled>選択を削除</button>
+                    </div>
+                </div>
+                <p id="offline-mode-label" class="hidden text-xs text-blue-800 mb-2">オフライン版：変更はこのブラウザに保存されます。別のPCへ持ち出す前に、更新後の一式を保存してください。</p>
+                <p class="text-xs text-gray-500 mb-3">アプリ付き出力には保存済みの全データ・ROI・画像・空フォルダを含みます。未保存の編集は先に保存してください。元のimzML／ibdは含まれません。初版はWindows x64向け、アプリ込みの非圧縮合計512 MiBまでです。</p>
+                <div id="offline-panel" class="hidden mb-4 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
+                    <div class="flex items-start justify-between gap-3">
+                        <p id="offline-status" class="text-xs whitespace-pre-wrap" role="status" aria-live="polite"></p>
+                        <button id="offline-cancel" class="btn hidden shrink-0">キャンセル</button>
                     </div>
                 </div>
                 <div id="excel-export-panel" class="hidden mb-4 rounded-md border border-blue-200 bg-blue-50 px-3 py-2">
@@ -226,7 +235,11 @@
     </div>
 
     <script src="lib/version.js?v=2.39.0"></script>
+    <script src="lib/offline-config.js"></script>
     <script src="lib/storage.js"></script>
+    <script src="lib/offline-workspace.js"></script>
+    <script src="lib/offline-prepare.js"></script>
+    <script src="lib/offline-ui.js"></script>
     <script src="lib/series-import.js"></script>
     <script src="lib/otsu.js"></script>
     <script src="lib/align.js"></script>
@@ -267,7 +280,7 @@
         function wireDropZone(zoneId, inputId, onFiles) {
             const zone = document.getElementById(zoneId);
             const input = document.getElementById(inputId);
-            input.addEventListener('change', () => onFiles([...input.files]));
+            input.addEventListener('change', () => { if (!input.disabled) onFiles([...input.files]); });
             ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, (e) => {
                 e.preventDefault(); e.stopPropagation(); zone.classList.add('over');
             }));
@@ -275,6 +288,7 @@
                 e.preventDefault(); e.stopPropagation(); zone.classList.remove('over');
             }));
             zone.addEventListener('drop', (e) => {
+                if (input.disabled) return;
                 const files = [...(e.dataTransfer && e.dataTransfer.files ? e.dataTransfer.files : [])];
                 if (files.length) onFiles(files);
             });
@@ -420,7 +434,7 @@
         }
 
         function refreshRegisterButton() {
-            document.getElementById('register-btn').disabled = pendingGroups.length === 0;
+            document.getElementById('register-btn').disabled = document.getElementById('msi-input').disabled || pendingGroups.length === 0;
         }
 
         // =================================================================
@@ -437,6 +451,7 @@
 
         document.getElementById('register-btn').addEventListener('click', async () => {
             const btn = document.getElementById('register-btn');
+            if (btn.disabled || document.getElementById('msi-input').disabled || !pendingGroups.length) return;
             btn.disabled = true;
             // ★ 1 件でも失敗したら残り全部を諦める、という作りにはしない。
             //   5 件まとめて選んだうちの 3 件目だけ壊れていたとき、4・5 件目まで
@@ -2299,7 +2314,7 @@
             // 一覧取得から ZIP 完成までは同じ対象集合を保つ。処理中の削除・移動・
             // 登録・Import・クラウド送信が、取得済み/未取得の間へ割り込まないようにする。
             const controls = document.querySelectorAll(
-                'main button:not(#excel-export-cancel), main input[type="file"], #project-list input.sel');
+                'main button:not(#excel-export-cancel):not(#offline-cancel), main input[type="file"], #project-list input.sel');
             for (const control of controls) {
                 if (disabled) {
                     if (!Object.prototype.hasOwnProperty.call(control.dataset, 'excelBatchWasDisabled')) {
@@ -3273,8 +3288,21 @@
             location.reload();
         });
 
+        const offlineUI = OfflineUI.init({
+            prepareSnapshot: options => OfflinePrepare.collect({
+                storage: ProjectStorage, cloud: window.Cloud, sync: ProjectSync, zip: ZipIO,
+                pendingFolderChanges: readFolderChanges, ...options,
+            }),
+            setBusy: value => {
+                excelBatchBusy = value;
+                setExcelExportControlsDisabled(value);
+            },
+        });
+
         // ---- 起動 ------------------------------------------------------------
         (async function startup() {
+            try { await offlineUI.bootstrap(); }
+            catch (error) { console.error('[offline]', error); return; }
             paintCloudChip();
             if (cloudOn() && !Cloud.signedIn()) { showGate(); return; }
             await refreshProjectList();

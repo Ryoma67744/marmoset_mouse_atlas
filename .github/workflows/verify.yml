@@ -19,6 +19,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - name: Verify complete offline app build and official runtime checksum
+        run: npm run build:offline
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - name: Upload synthetic 3D preview
