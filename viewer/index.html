@@ -27,6 +27,7 @@
     <script src="../lib/roi-distribution.js"></script>
     <script src="../lib/normalization.js"></script>
     <script src="../lib/intensity-boxplot.js"></script>
+    <script src="../lib/intensity-order.js"></script>
     <script src="../lib/display-range.js"></script>
     <script src="../lib/ingest.js"></script>
     <script src="../lib/imzml.js"></script>
@@ -424,6 +425,14 @@
                             <label for="graph-select-3">追加表示3</label>
                             <select id="graph-select-3" class="text-xs border-gray-300 rounded py-0.5 px-1"></select>
                         </div>
+                        <div class="flex items-center gap-1 text-xs mb-1 shrink-0">
+                            <label for="graph-sort">並び順</label>
+                            <select id="graph-sort" class="text-xs border-gray-300 rounded py-0.5 px-1">
+                                <option value="registration">ROIの登録順</option>
+                                <option value="median">中央値の高い順</option>
+                                <option value="mean">平均値の高い順</option>
+                            </select>
+                        </div>
                         <div id="graph-container" class="flex-1 border border-gray-300 rounded overflow-auto min-h-0">
                              <img id="graph-image" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='450'%3E%3Crect width='600' height='450' fill='%23f0f0f0'/%3E%3Ctext x='300' y='225' text-anchor='middle' fill='%23333' font-size='16'%3ESelect an ROI%3C/text%3E%3C/svg%3E" alt="Analysis Graph" class="w-full h-full object-contain">
                         </div>
@@ -549,6 +558,7 @@
         let analysisResizeObserver = null;
         let analysisResizeFrame = 0;
         let analysisDrawCallbacks = [];
+        const analysisSortStorageKey = 'marmoset:viewerAnalysisSort';
         const otsuLockedControls = new Map();
         // Action buttons derive their state from current operations, never a stale
         // snapshot of disabled attributes taken by an overlapping Otsu dialog.
@@ -2681,6 +2691,15 @@ function loadAllImages() {
             select1.addEventListener('change', updateGraph);
             select2.addEventListener('change', updateGraph);
             select3.addEventListener('change', updateGraph);
+            const sortSelect = document.getElementById('graph-sort');
+            try {
+                const savedSort = sessionStorage.getItem(analysisSortStorageKey);
+                sortSelect.value = ['registration', 'median', 'mean'].includes(savedSort) ? savedSort : 'registration';
+            } catch (_) { sortSelect.value = 'registration'; }
+            sortSelect.onchange = () => {
+                try { sessionStorage.setItem(analysisSortStorageKey, sortSelect.value); } catch (_) {}
+                updateGraph();
+            };
         }
 
         /**
@@ -2863,6 +2882,12 @@ function loadAllImages() {
                     stats[roiKey] = result ? (corrected ? result.normalized : result.raw) : calcStats(referenceValues);
                     distributions[roiKey] = entry?.distributions.get(valueDisplay.mode + ':' + key) || (referenceValues.length ? RoiDistribution.summarize(referenceValues) : null);
                 }
+                const sortMode = document.getElementById('graph-sort').value;
+                // Order each molecule by its full ROI statistics, never drawing samples.
+                const orderedRoiKeys = sortMode === 'registration' ? roiKeys : IntensityOrder.sortByValue(roiKeys, roiKey => {
+                    if (sortMode === 'mean') return stats[roiKey]?.n > 0 ? stats[roiKey].mean : null;
+                    return distributions[roiKey]?.n > 0 ? distributions[roiKey].median : null;
+                });
                 const section = document.createElement('section'); section.className = 'analysis-section'; section.dataset.channel = key;
                 const plot = document.createElement('div'); plot.className = 'analysis-plot';
                 const canvas = document.createElement('canvas');
@@ -2872,7 +2897,7 @@ function loadAllImages() {
                     width: graphContainer.clientWidth - 2,
                     title: `${formatDisplayName(key)} — ${corrected ? '補正・正規化' : '生値'}`,
                     unit: /^MSI_/i.test(key) ? channelUnit(key) : '画像輝度 (a.u.)', highlightRoiKey,
-                    rois: roiKeys.map(roiKey => ({ key: roiKey, name: roiNames[roiKey] || roiKey, distribution: distributions[roiKey] })),
+                    rois: orderedRoiKeys.map(roiKey => ({ key: roiKey, name: roiNames[roiKey] || roiKey, distribution: distributions[roiKey] })),
                     onSelect: selectAnalysisRoi,
                 });
                 analysisDrawCallbacks.push(draw); draw();
@@ -2884,7 +2909,7 @@ function loadAllImages() {
                     const th = document.createElement('th'); th.scope = 'col'; th.textContent = title; th.style.width = width; header.appendChild(th);
                 }
                 table.appendChild(header);
-                for (const roiKey of roiKeys) {
+                for (const roiKey of orderedRoiKeys) {
                     const result = roiResults[roiKey]?.values.find(row => row.key === key);
                     const stat = stats[roiKey], distribution = distributions[roiKey];
                     let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : /^MSI_/i.test(key) ? '生値ラスタなし：MSI 定量は算出不可' : '参考画像の輝度（MSI 強度ではありません）';
