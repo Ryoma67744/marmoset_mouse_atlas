@@ -26,6 +26,11 @@
   const activeSeriesInfo = () => availableSeries.find(item => item.id === activeSeries) || { id: activeSeries, name: 'Marmoset', species: 'marmoset', coordinateMode: 'physical' };
   const pixelSeries = () => activeSeriesInfo().coordinateMode === 'pixel';
   const MOUSE_STANDARD = 'Serotonin-d4-DPP', MOUSE_RATIO_DISPLAY_VERSION = 1;
+  const DEFAULT_PROTECTION_DISTANCE = 8;
+  const protectionDistance = value => {
+    const depth = typeof value === 'string' && value.trim() ? Number(value) : value;
+    return typeof depth === 'number' && Number.isInteger(depth) && depth >= 5 && depth <= 20 ? depth : DEFAULT_PROTECTION_DISTANCE;
+  };
   const mouseRatioSeries = () => activeSeriesInfo().species === 'mouse' && sections.length > 0 &&
     sections.every(section => section.project?.normalization?.mode === 'pixel_ratio');
   const fixedMouseDisplay = () => activeSeries === 'mouse_tissue_1set' && pixelSeries() && mouseRatioSeries();
@@ -34,6 +39,7 @@
   const defaultSpacing = () => pixelSeries() ? finite(sections[0]?.project?.atlas?.displaySpacing, 2) : DEFAULT_SPACING;
   const viewState = () => session.get(viewKey());
   let sections = [], rendered = [], renderer = null, selected = 0, previewKind = 'MSI';
+  let highValueModel = null;
   let roiSelection = Stack3D.normalizeRoiSelection({});
   let roiInventory = [];
   let renderGeneration = 0, loadGeneration = 0, previewGeneration = 0, heGeneration = 0, detailGeneration = 0;
@@ -146,11 +152,20 @@
   }
   function options() {
     return { mode: fixedMouseDisplay() ? 'normalized' : $('value-mode').value, outerEdgeWidth: fixedMouseDisplay() ? 2 : 0,
+      ...(fixedMouseDisplay() ? { highValueFilter: { enabled: $('high-value-filter').checked,
+        protectDepth: protectionDistance($('protection-distance').value) } } : {}),
       rangeMode: 'common', roiRegions: roiSelection.regions === null ? null : [...roiSelection.regions],
       roiSelectionVersion: roiSelection.selectionVersion, roiIncludeUnassigned: roiSelection.includeUnassigned,
       roiLegacyVisibleOnlyNames: [...roiSelection.legacyVisibleOnlyNames],
       channels: Array.from(document.querySelectorAll('input[name=channel]:checked'), input => input.value)
         .filter(name => !(fixedMouseDisplay() || mouseRatioMode()) || name !== MOUSE_STANDARD), threshold: finite($('threshold').value, 0) };
+  }
+  function sectionRenderOptions(section, current) {
+    if (!fixedMouseDisplay() || !current.highValueFilter?.enabled) return current;
+    if (!highValueModel) throw new Error('高値の表示マスクを読み込めませんでした。再読込してください。');
+    // Masks exist only for a render call. Session preferences and analysis
+    // receive the small options object, never these per-pixel arrays.
+    return { ...current, signalMasks: highValueModel.masksFor(section, current.highValueFilter.protectDepth) };
   }
   function saveView() {
     // A queued repaint may finish after a series switch has started. Never
@@ -165,6 +180,13 @@
   }
   function restoreView() {
     const view = viewState();
+    if (fixedMouseDisplay()) {
+      // Keep this presentation preference when the loaded section set changes.
+      // Old sessions (without this setting) start with protection at 8 pixels.
+      $('high-value-filter').checked = view?.options?.highValueFilter?.enabled !== false;
+      $('protection-distance').value = protectionDistance(view?.options?.highValueFilter?.protectDepth);
+      syncHighValueControls();
+    }
     hiddenSectionIds.clear();
     // Preserve each known section's toggle even when sections are added or
     // removed. New sections start ON; never carry an unknown project ID.
@@ -270,6 +292,7 @@
     $('spacing').min = pixel ? '0.5' : '0.08'; $('spacing').max = pixel ? '8' : '2'; $('spacing').step = pixel ? '0.1' : '0.005';
     $('spacing').value = defaultSpacing();
     $('opacity').value = '0.55'; $('threshold').value = '0'; $('value-mode').value = mouseRatioSeries() ? 'normalized' : 'raw';
+    $('high-value-filter').checked = true; $('protection-distance').value = DEFAULT_PROTECTION_DISTANCE;
     $('value-mode').querySelector('[value="raw"]').textContent = mouseRatioSeries() ? '原値 (a.u.)' : '原値';
     $('value-mode').querySelector('[value="normalized"]').textContent = mouseRatioSeries() ? '5-HT-d4補正 (相対比)' : '補正値';
     $('roi-visible').checked = true; $('roi-labels').checked = true; $('brain-visible').checked = false;
@@ -305,6 +328,18 @@
       ? '5分子を同じ画素の5-HT-d4信号で割った相対比です。濃度ではありません。d4 > 0で計算し、0・欠損は算出不可。P10による低値除外はしていません。内部標準自体のQCは「原値」で表示できます。'
       : '保存された原値を表示しています。Serotonin-d4-DPPは噴霧した内部標準のQC信号です。';
     $('open-section').firstChild.textContent = fixed ? '全画素の個別ビューを開く ' : 'この断面を開く ';
+    syncHighValueControls();
+  }
+  function syncHighValueControls() {
+    const available = fixedMouseDisplay(), enabled = $('high-value-filter').checked;
+    const depth = protectionDistance($('protection-distance').value);
+    $('high-value-controls').hidden = !available;
+    $('high-value-filter').disabled = busy || !sections.length || !available;
+    $('protection-distance').disabled = busy || !sections.length || !available || !enabled;
+    $('protection-distance-value').textContent = `${depth} pixel以上`;
+    $('high-value-status').textContent = enabled
+      ? `外縁から${depth} pixel以上の内側を保護して表示します。`
+      : '追加の高値非表示はOFFです。従来の外周2 pixel非表示は有効です。';
   }
   function syncSeriesRestrictions() {
     const pixel = pixelSeries();
@@ -376,7 +411,7 @@
     analysisUI?.beginLoad();
     batchAlignmentUI?.reset();
     cancelAlignment();
-    setBusy(true); renderGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
+    setBusy(true); renderGeneration++; previewGeneration++; heGeneration++; detailGeneration++; highValueModel = null;
     $('preview-dialog').close(); syncWarning([]); clearTimeout(noticeTimer); $('notice').hidden = true;
     const generation = ++loadGeneration; global.__stack3dReady = false;
     $('render-error').hidden = true;
@@ -403,6 +438,9 @@
         const issues = [...source.notices, ...loaded.errors.map(error => `${error.name}: ${error.message}`)];
         if (issues.length) notice(issues.join(' / '), true); return;
       }
+      // Freeze high-value thresholds from all loaded original values. Neither
+      // section visibility, selected molecules, ROI nor depth changes rebuild it.
+      highValueModel = fixedMouseDisplay() ? global.Stack3DHighValueMask.create(sections) : null;
       $('range-start').value = 1; $('range-end').value = sections.length;
       for (const id of ['range-start', 'range-end']) $(id).max = sections.length;
       $('section-slider').max = sections.length - 1; buildRoiList(); restoreView();
@@ -508,7 +546,7 @@
     let unavailable = 0;
     for (let i = 0; i < sections.length; i++) {
       if (generation !== renderGeneration) return;
-      const result = Stack3D.renderSection(sections[i], enabled.length ? current : { ...current, channels: [] }), old = rendered[i]; rendered[i] = result;
+      const result = Stack3D.renderSection(sections[i], sectionRenderOptions(sections[i], enabled.length ? current : { ...current, channels: [] })), old = rendered[i]; rendered[i] = result;
       renderer?.updateTextures(new Map([[sections[i].id, result.canvas]])); releaseRender(old);
       if (!hiddenSectionIds.has(sections[i].id) && result.status.code === 'UNAVAILABLE') unavailable++;
       if (i % 4 === 3) await yieldUI();
@@ -629,7 +667,7 @@
       if (msiPreviewMessage()) return null;
       const current = options(); current.commonRanges = commonRanges.get(current.mode);
       current.channels = current.channels.filter(name => current.commonRanges[name]?.nFinite > 0);
-      const result = Stack3D.renderSection(section, { ...current, previewPixelScale: previewScale(section, maxSize), roi: true });
+      const result = Stack3D.renderSection(section, { ...sectionRenderOptions(section, current), previewPixelScale: previewScale(section, maxSize), roi: true });
       result.canvas.width = 0; result.canvas.height = 0; return result.previewCanvas;
     }
     if (kind === 'HE_Stain') return Stack3D.renderHePreview(section, { maxSize: 2048, roi: true, roiRegions: roiSelection.regions });
@@ -949,6 +987,8 @@
     $('scene-message').hidden = false; $('scene-message').querySelector('strong').textContent = '切片を読み込んでいます'; load();
   });
   $('threshold').addEventListener('input', requestRepaint);
+  $('high-value-filter').addEventListener('change', () => { syncHighValueControls(); requestRepaint(); saveView(); });
+  $('protection-distance').addEventListener('input', () => { syncHighValueControls(); requestRepaint(); saveView(); });
   $('opacity').addEventListener('input', () => { renderer?.setOpacity(Number($('opacity').value)); updateLabels(); saveView(); });
   for (const id of ['roi-visible', 'roi-labels']) $(id).addEventListener('change', () => {
     renderer?.setRoiOverlay(roiOptions()); saveView();
@@ -1000,6 +1040,7 @@
   global.addEventListener('pagehide', event => {
     batchAlignmentUI?.cancel(); cancelAlignment(); saveView(); if (event.persisted) return; renderGeneration++; loadGeneration++; previewGeneration++; heGeneration++; detailGeneration++;
     analysisUI?.dispose();
+    highValueModel = null;
     unsubscribe?.(); renderer?.dispose(); rendered.forEach(releaseRender); sections.forEach(Stack3D.releaseSection);
     hePlanes.forEach(releasePreview); hePlanes.clear();
   });
