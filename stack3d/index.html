@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>3D Atlas — Marmoset / Mouse Atlas</title>
-  <link rel="stylesheet" href="style.css?v=2.38.0">
+  <link rel="stylesheet" href="style.css?v=2.44.0">
   <link rel="stylesheet" href="analysis.css?v=2.42.0">
   <link rel="stylesheet" href="../lib/section-gallery.css?v=2.37.1">
 </head>
@@ -26,6 +26,14 @@
         <label class="channel ht"><input type="checkbox" name="channel" value="5-HT" checked><span class="swatch"></span><strong>5-HT</strong><small>Serotonin</small></label>
       </fieldset>
       <div class="control-block"><label id="value-mode-label" for="value-mode">表示値</label><select id="value-mode"><option value="raw">原値</option><option value="normalized">補正値</option></select><p id="value-mode-fixed" class="fixed-value" hidden>画素d4（従来）・外側2画素を非表示</p><p id="value-mode-help" class="hint" hidden></p></div>
+      <div id="high-value-controls" class="control-block high-value-controls" hidden>
+        <label class="toggle-label" for="high-value-filter"><span>中心部を保護した外側＋MAD</span><input id="high-value-filter" type="checkbox" checked aria-describedby="high-value-help high-value-status"></label>
+        <label for="protection-distance">内側を保護する距離 <output id="protection-distance-value">8 pixel以上</output></label>
+        <input id="protection-distance" type="range" min="5" max="20" step="1" value="8" aria-describedby="high-value-help">
+        <p id="high-value-status" class="hint" role="status" aria-live="polite"></p>
+        <p id="high-value-help" class="hint">元の測定範囲の外縁から指定距離以上の内側を保護します。小さい値ほど保護範囲が広がります。解剖学的な中心を判定するものではありません。</p>
+        <details class="high-value-details"><summary>非表示の条件</summary><p class="hint">外縁から3〜4 pixel目のP99超、または周囲5×5の中央値・MADから突出するP95超（k=6）を候補とし、保護範囲の外だけを隠します。基準は読み込んだ全切片の元値から固定します。</p><p class="hint">3Dとこの画面のMSIプレビューだけに適用します。測定値・色の基準・箱ひげ図・Excel集計は変更しません。OFFで追加の非表示を解除できます。</p></details>
+      </div>
       <div class="control-block"><span class="control-label">色の範囲</span><p class="fixed-value">全切片共通 · 分子ごと</p><p id="range-note" class="hint">ONの切片で色範囲を揃えます。OFFにすると残りの切片で再計算します。</p></div>
       <div class="control-block"><label for="opacity">不透明度 <output id="opacity-value">55%</output></label><input id="opacity" type="range" min="0.05" max="1" step="0.01" value="0.55"></div>
       <div class="control-block section-outline-controls">
@@ -125,7 +133,7 @@
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
   <script src="../lib/excelio.js?v=2.42.0"></script>
-  <script src="../lib/version.js?v=2.39.0"></script>
+  <script src="../lib/version.js?v=2.44.0"></script>
   <script src="../lib/offline-config.js"></script>
   <script src="../lib/storage.js"></script>
   <script src="../lib/otsu.js"></script>
@@ -142,7 +150,8 @@
   <script src="../lib/project-sync.js"></script>
   <script src="../lib/section-display.js"></script>
   <script src="../lib/section-edge-mask.js"></script>
-  <script src="../lib/stack3d.js?v=2.38.0"></script>
+  <script src="../lib/stack3d-high-value-mask.js"></script>
+  <script src="../lib/stack3d.js?v=2.44.0"></script>
   <script src="../lib/section-outline.js"></script>
   <script src="../lib/section-navigation.js"></script>
   <script src="../lib/section-gallery-data.js?v=2.37.1"></script>
@@ -165,6 +174,6 @@
   <script src="analysis-worker-client.js"></script>
   <script src="analysis-resize.js"></script>
   <script src="analysis.js?v=2.42.0"></script>
-  <script src="app.js?v=2.38.0"></script>
+  <script src="app.js?v=2.44.0"></script>
 </body>
 </html>
