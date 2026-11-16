@@ -769,6 +769,7 @@
     for (const id of ['save-placement', 'save-cloud']) $(id).disabled = unavailable || !!proposal;
     $('reload').disabled = busy || saving || !!batchAlignmentUI?.saving;
     $('open-section').disabled = busy || saving || !!batchAlignmentUI?.saving || !sections.length;
+    syncComparisonEntry();
     batchAlignmentUI?.sync();
   }
   function applyPlacement(section, placement) {
@@ -972,6 +973,26 @@
     saveView();
     global.open('../viewer/index.html?project=' + encodeURIComponent(sections[selected].id) + '&from=stack3d&newtab=1', '_blank', 'noopener');
   }
+  function syncComparisonEntry() {
+    const section = sections[selected], pair = global.MsiStPairs?.getPairForProject(section?.project);
+    const locked = busy || saving || !!batchAlignmentUI?.saving;
+    const button = $('open-st-comparison'), help = $('open-st-comparison-help');
+    button.disabled = locked || !pair;
+    help.textContent = busy ? '切片を読み込んでいます。'
+      : saving || batchAlignmentUI?.saving ? '保存が終わると比較を開けます。'
+      : !section ? '切片を選択してください。'
+      : !global.MsiStPairs ? '比較情報を読み込めませんでした。画面を再読み込みしてください。'
+      : !pair ? 'この切片はST対応未登録です。'
+      : `対応ST：${pair.st} · 別タブで開きます。3D画面と配置は保持されます。`;
+    button.title = help.textContent;
+  }
+  function openComparison() {
+    if (!sections[selected] || busy || saving || batchAlignmentUI?.saving) return;
+    const url = global.MsiStPairs?.comparisonUrl(sections[selected].project, { baseUrl: location.href, from: 'stack3d' });
+    if (!url) { syncComparisonEntry(); return; }
+    saveView();
+    global.open(url, '_blank', 'noopener');
+  }
   $('channel-group').addEventListener('change', event => {
     if (!event.target.matches('input[name=channel]')) return;
     requestRepaint(); analysisUI?.valueModeChanged();
@@ -1026,6 +1047,7 @@
   $('alignment-adopt').addEventListener('click', adoptAlignment);
   $('alignment-cancel').addEventListener('click', () => cancelAlignment('候補を取り消し、計算前の配置に戻しました。'));
   $('save-placement').addEventListener('click', savePlacement); $('save-cloud').addEventListener('click', saveCloud); $('open-section').addEventListener('click', openSection);
+  $('open-st-comparison').addEventListener('click', openComparison);
   $('master-link').addEventListener('click', saveView);
   $('reload').addEventListener('click', () => {
     if (dirtyPlacements.size && !global.confirm('未保存の3D配置を破棄して、最新データを再読込しますか？')) return;

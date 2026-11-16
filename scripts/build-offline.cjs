@@ -58,7 +58,7 @@ async function buildOffline(options = {}) {
   const output = options.output || path.join(root, 'offline');
   const includeRuntime = options.includeRuntime !== false;
   const entries = new Map();
-  for (const directory of ['lib', 'viewer', 'stack3d']) {
+  for (const directory of ['lib', 'viewer', 'stack3d', 'comparison']) {
     for (const relative of await walk(path.join(root, directory))) entries.set('app/' + directory + '/' + relative, await fs.readFile(path.join(root, directory, ...relative.split('/'))));
   }
   entries.set('app/index.html', await fs.readFile(path.join(root, 'index.html')));
@@ -68,7 +68,7 @@ async function buildOffline(options = {}) {
   const content = [...entries.entries()].filter(([name]) => /\.(html|js)$/.test(name)).map(([name, bytes]) => ({ raw: bytes.toString('utf8'), extension: path.extname(name).slice(1) }));
   const css = await postcss([tailwind({ content, theme: {}, plugins: [], safelist: [{ pattern: /^(bg|text|border)-(blue|gray|red|green|amber|indigo|orange|slate)-(50|100|200|300|400|500|600|700|800|900)$/ }] })]).process('@tailwind base;\n@tailwind components;\n@tailwind utilities;', { from: undefined });
   entries.set('app/vendor/tailwind.css', Buffer.from(css.css));
-  for (const [name, prefix] of [['app/index.html', ''], ['app/viewer/index.html', '../'], ['app/stack3d/index.html', '../']]) {
+  for (const [name, prefix] of [['app/index.html', ''], ['app/viewer/index.html', '../'], ['app/stack3d/index.html', '../'], ['app/comparison/index.html', '../']]) {
     const html = rewriteHtml(entries.get(name).toString('utf8'), prefix);
     if (/<(?:script|link)\b[^>]*(?:src|href)=["'](?:https?:)?\/\//i.test(html)) throw new Error('Unbundled remote dependency in ' + name);
     entries.set(name, Buffer.from(html));
