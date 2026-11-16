@@ -10,7 +10,7 @@ const JSZip = require('jszip');
 const { buildOffline } = require('../scripts/build-offline.cjs');
 const { start, parseConfig } = require('../offline/server.cjs');
 
-test('offline build bundles local dependencies, licenses, workers and no user/cloud data', async t => {
+test('offline build bundles local dependencies, licenses, workers and no workspace archives or cloud credentials', async t => {
   const output = await fs.mkdtemp(path.join(os.tmpdir(), 'atlas-build-'));
   t.after(() => fs.rm(output, { recursive: true, force: true }));
   const { manifest, bytes, entries } = await buildOffline({ output, includeRuntime: false });
@@ -20,6 +20,9 @@ test('offline build bundles local dependencies, licenses, workers and no user/cl
   const archive = await JSZip.loadAsync(bytes, { checkCRC32: true });
   const names = Object.keys(archive.files);
   assert.ok(names.includes('app/stack3d/analysis-worker.js'));
+  for (const name of ['index.html', 'app.js', 'bootstrap.js', 'styles.css', 'route.js', 'msi-project.js']) {
+    assert.ok(names.includes('app/comparison/' + name), 'comparison asset is packaged: ' + name);
+  }
   assert.ok(names.includes('offline/server.cjs'));
   assert.ok(names.includes('START_ATLAS.cmd'));
   assert.ok(names.includes('LICENSES/Three.js.txt'));
@@ -28,10 +31,10 @@ test('offline build bundles local dependencies, licenses, workers and no user/cl
   assert.ok(names.includes('app/STACK3D_GUIDE.md'));
   assert.ok(!names.some(name => /node_modules|\.git|cloudSession|^tests\/|data\/workspace\.zip/.test(name)));
   assert.match(entries.get('app/lib/cloud-config.js').toString(), /url: "", anonKey: ""/);
-  for (const name of ['app/index.html', 'app/viewer/index.html', 'app/stack3d/index.html']) {
+  for (const name of ['app/index.html', 'app/viewer/index.html', 'app/stack3d/index.html', 'app/comparison/index.html']) {
     const html = entries.get(name).toString();
     assert.doesNotMatch(html, /<script\b[^>]*src=["']https?:/);
-    assert.ok(html.indexOf('pako.min.js') < html.indexOf('UTIF.js'));
+    if (html.includes('UTIF.js')) assert.ok(html.indexOf('pako.min.js') >= 0 && html.indexOf('pako.min.js') < html.indexOf('UTIF.js'));
     for (const match of html.matchAll(/<(?:script|link)\b[^>]*(?:src|href)="([^"?#]+)(?:[?#][^"]*)?"/g)) {
       const relative = path.posix.normalize(path.posix.join(path.posix.dirname(name), match[1]));
       assert.ok(entries.has(relative), name + ' references missing asset ' + relative);

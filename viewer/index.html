@@ -39,6 +39,7 @@
     <script src="../lib/project-sync.js"></script>
     <script src="./notes.js"></script>
     <script src="../lib/section-navigation.js"></script>
+    <script src="../lib/msi-st-pairs.js"></script>
     <script src="./section-navigation.js"></script>
     <link rel="stylesheet" href="./section-navigation.css">
     <script src="../lib/section-display.js"></script>
@@ -251,6 +252,13 @@
         .notes-other-row { border-top:1px solid #e2e8f0; padding-top:6px; margin-top:6px; }
         .notes-row-heading { margin-bottom:4px; }
         #notes-panel .notes-help { font-size:11px; color:#64748b; margin:5px 0 0; }
+        .msi-st-navigation { display:flex; align-items:center; flex-wrap:wrap; gap:4px 8px; margin-bottom:6px; flex-shrink:0; }
+        #open-msi-st { display:inline-flex; align-items:center; white-space:nowrap; padding:4px 8px; border:1px solid #93c5fd;
+            border-radius:4px; color:#1d4ed8; background:#eff6ff; font-size:12px; text-decoration:none; }
+        #open-msi-st:hover:not([aria-disabled="true"]) { background:#dbeafe; }
+        #open-msi-st:focus-visible { outline:2px solid #2563eb; outline-offset:2px; }
+        #open-msi-st[aria-disabled="true"] { color:#64748b; border-color:#cbd5e1; background:#f1f5f9; cursor:not-allowed; }
+        #msi-st-navigation-status { font-size:11px; color:#64748b; }
     </style>
 </head>
 <body class="text-gray-800">
@@ -366,6 +374,11 @@
                     </div>
                     <!-- レイヤ選択: チェックボックスを横に並べ、その下に「選択中の 1 レイヤ」の
                          強度レンジ / 透明度を 1 組だけ常時表示する (歯車の開閉をやめた) -->
+                    <nav class="msi-st-navigation" aria-label="MSIとSTの比較">
+                        <a id="open-msi-st" role="link" aria-disabled="true" aria-describedby="msi-st-navigation-status"
+                            target="_blank" rel="noopener noreferrer" title="切片を読み込んでいます。">MSI–ST比較 ↗</a>
+                        <span id="msi-st-navigation-status" role="status" aria-live="polite">切片を読み込んでいます。</span>
+                    </nav>
                     <div id="image-selector-options" class="shrink-0 border border-gray-200 rounded-t p-1 text-xs bg-white"></div>
                     <div class="shrink-0 flex flex-wrap items-center gap-2 p-1 text-xs" id="value-display-controls">
                         <span>表示値:</span>
@@ -521,6 +534,26 @@
         let valueRasters = {};
         // IndexedDB から開いたプロジェクト (静的データセットの場合は null)
         let currentProject = null;
+        function refreshMsiStComparison(reason = '') {
+            const link = document.getElementById('open-msi-st');
+            const status = document.getElementById('msi-st-navigation-status');
+            const pair = !reason && window.MsiStPairs?.getPairForProject(currentProject);
+            const href = pair && window.MsiStPairs.comparisonUrl(currentProject, { baseUrl: location.href, from: 'viewer' });
+            link.setAttribute('aria-disabled', String(!href));
+            if (href) {
+                link.href = href;
+                link.title = 'この切片のMSIと対応STを新しいタブで比較します。';
+                status.textContent = pair.section + ' ↔ ' + pair.st;
+            } else {
+                link.removeAttribute('href');
+                link.title = reason || 'この切片のST対応は未登録です。';
+                status.textContent = link.title;
+            }
+        }
+        document.getElementById('open-msi-st').addEventListener('click', event => {
+            if (viewerReady) refreshMsiStComparison();
+            if (!event.currentTarget.hasAttribute('href')) event.preventDefault();
+        });
         let viewerStoredUpdatedAt = null;
         let viewerSaveQueue = Promise.resolve();
         let viewerSaveConflict = false;
@@ -1295,6 +1328,7 @@
                     if (firstRoiElement) firstRoiElement.click();
                 }, 0);
             }
+            refreshMsiStComparison();
         }
 
 // atlasData.images の値は loadProject() が data URL にして入れる
@@ -2064,6 +2098,7 @@ function loadAllImages() {
                         const normalizationChanged = !sameViewerField(currentProject.normalization, saved.normalization)
                             || !sameViewerField(currentProject.normalizationBinding, saved.normalizationBinding);
                         currentProject = { ...saved, ...subsequent };
+                        if (viewerReady) refreshMsiStComparison();
                         viewerStoredProject = structuredClone(saved);
                         viewerStoredUpdatedAt = saved.updatedAt;
                         if (notesEditRevision === notesRevision) notesPendingSave = false;
@@ -3467,6 +3502,7 @@ function loadAllImages() {
                     }
                     const subsequent = { ...viewerChanges(currentProject, saved), ...viewerChanges(currentProject, viewerStoredProject) };
                     currentProject = { ...acknowledged, ...subsequent };
+                    if (viewerReady) refreshMsiStComparison();
                     viewerStoredProject = structuredClone(acknowledged);
                     viewerStoredUpdatedAt = acknowledged.updatedAt;
                     viewerActionNotice = status.reason || 'クラウドに保存しました。';
@@ -4065,6 +4101,7 @@ function loadAllImages() {
           .some(key => !sameViewerField(latest[key], viewerStoredProject?.[key]));
         if (mustReload) { location.reload(); return; }
         currentProject = latest;
+        refreshMsiStComparison();
         viewerStoredProject = structuredClone(latest);
         viewerStoredUpdatedAt = latest.updatedAt;
         notesPanel?.render(latest.notes);
@@ -4092,6 +4129,7 @@ function loadAllImages() {
 
     /** 登録済みプロジェクト (?project=) を IndexedDB から読む。 */
     async function loadProject(projectId) {
+      refreshMsiStComparison('切片を読み込んでいます。');
       viewerContextRevision++;
       valueRasters = {}; imageSettings = {}; analysisRoiCache.clear();
       otsuState = { applied: false, strength: 0, manualThreshold: null, record: null };
@@ -4302,6 +4340,7 @@ function loadAllImages() {
       } catch (e) {
         console.error(e);
         await domReady;
+        refreshMsiStComparison('切片を読み込めなかったため、対応STを確認できません。');
         const viewer = document.getElementById('image-viewer');
         if (viewer) {
           viewer.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-red-300 text-sm p-4 text-center">' +
