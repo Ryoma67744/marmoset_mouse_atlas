@@ -90,7 +90,9 @@ test('renderer masks one normalized channel before merging, with original arrays
   c.SectionDisplay = { paintChannel: () => canvas(), mergeChannels: layers => {
     merged = layers; return { canvas: canvas(), previewCanvas: canvas(), invalidPixels: 0, measuredPixels: 9, visiblePixels: 9 };
   } };
-  vm.runInContext(fs.readFileSync(path.join(__dirname, '../lib/stack3d.js'), 'utf8'), c);
+  // Match the production renderer dependency order, including shared ROI masks.
+  for (const file of ['msi.js', 'stack3d.js'])
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lib', file), 'utf8'), c, { filename: file });
   const opts = { channels: [A, B], mode: 'normalized', signalMasks: { [A]: mask } };
   const result = c.Stack3D.renderSection(s, opts);
   assert(Number.isNaN(merged[0].values[target])); assert(Number.isNaN(merged[0].rawValues[target]), 'no invalid-value gray for a deliberate mask');

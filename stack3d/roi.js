@@ -14,13 +14,30 @@
       material.color.setRGB(...polygon.color.map(v => v / 255));
       const line = new T.LineLoop(geometry, material);
       line.renderOrder = 900000; group.add(line);
-      records.push({ name: polygon.name, line, points });
+      records.push({ name: polygon.name, key: polygon.key, kind: polygon.kind, line, points });
     }
     // One label per region on a section, even if it has disconnected contours.
     const labels = [];
     for (const name of new Set(records.map(r => r.name))) {
       const members = records.filter(r => r.name === name), anchor = new T.Vector3();
       const points = members.flatMap(r => r.points); points.forEach(p => anchor.add(p)); anchor.divideScalar(points.length);
+      // The mean of an annulus's vertices often lies inside white matter. Put
+      // each cortical label on a real member pixel of its difference mask.
+      if (members.some(member => member.kind === 'cortical-layer')) {
+        const definition = global.Stack3D.roiDefinitions(section).find(item => item.key === members[0].key);
+        const area = definition && global.MSIRaster.roiMask(definition, section.W, section.H);
+        if (area?.available && area.nGeometry) {
+          let sx = 0, sy = 0;
+          for (let i = 0; i < area.mask.length; i++) if (area.mask[i]) { sx += i % section.W; sy += Math.floor(i / section.W); }
+          const cx = sx / area.nGeometry, cy = sy / area.nGeometry;
+          let closest = -1, distance = Infinity;
+          for (let i = 0; i < area.mask.length; i++) if (area.mask[i]) {
+            const d = (i % section.W - cx) ** 2 + (Math.floor(i / section.W) - cy) ** 2;
+            if (d < distance) { distance = d; closest = i; }
+          }
+          if (closest >= 0) anchor.copy(point([closest % section.W, Math.floor(closest / section.W)]));
+        }
+      }
       const canvas = doc.createElement('canvas'), ctx = canvas.getContext('2d');
       ctx.font = '24px sans-serif'; canvas.width = Math.min(2048, Math.ceil(ctx.measureText(name).width) + 24); canvas.height = 40;
       ctx.fillStyle = '#101824e8'; ctx.fillRect(0, 0, canvas.width, canvas.height);

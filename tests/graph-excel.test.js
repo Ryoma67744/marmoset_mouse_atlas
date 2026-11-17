@@ -96,3 +96,24 @@ test('graph Excel rejects absent results and reports a missing XLSX dependency c
   vm.runInNewContext(source, { window });
   assert.throws(() => window.ExcelIO.buildGraphStatsXlsx({ rows: [{}] }), /SheetJS/);
 });
+
+test('graph Excel preserves cortical-layer formula, source boundaries and geometry failures as provenance', () => {
+  const result = writer()({ rows: [{ roiName: 'Layer 2', roiKey: '__cortical_layer__2',
+    roiKind: 'cortical-layer', roiDefinition: 'Layer 1 − Layer 2', sourceRoiKeys: 'boundary1, boundary2',
+    geometryReasonCodes: 'ROI_BOUNDARY_MISSING', geometryQc: '{"outsidePixels":0}',
+    roiRuleVersion: 'cortical-difference-v1', mean: null, n: null, status: 'UNAVAILABLE',
+    reason: '必要な内側境界がありません' }],
+  metadata: { layerRuleVersion: 'cortical-difference-v1', layerDefinitions: '[{"layer":2,"available":false}]' } });
+  const book = open(result), row = XLSX.utils.sheet_to_json(book.Sheets.Statistics, { defval: null })[0];
+  assert.equal(row['平均値'], null);
+  assert.equal(row['集計画素数'], null);
+  assert.equal(row['ROI定義'], 'Layer 1 − Layer 2');
+  assert.equal(row['元ROIキー'], 'boundary1, boundary2');
+  assert.equal(row['ROI種別'], 'cortical-layer');
+  assert.equal(row['領域算出理由コード'], 'ROI_BOUNDARY_MISSING');
+  assert.equal(row['領域QC'], '{"outsidePixels":0}');
+  assert.equal(row['ROI規則版'], 'cortical-difference-v1');
+  const conditions = Object.fromEntries(XLSX.utils.sheet_to_json(book.Sheets.Conditions, { header: 1 }).slice(1));
+  assert.equal(conditions.layerRuleVersion, 'cortical-difference-v1');
+  assert.equal(conditions.layerDefinitions, '[{"layer":2,"available":false}]');
+});

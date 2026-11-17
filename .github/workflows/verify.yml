@@ -23,11 +23,13 @@ jobs:
         run: npm run build:offline
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
-      - name: Upload synthetic 3D preview
+      - name: Upload synthetic previews
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: stack3d-preview
-          path: test-artifacts/stack3d-*.png
+          path: |
+            test-artifacts/stack3d-*.png
+            test-artifacts/cortical-layer-*.png
           if-no-files-found: ignore
           retention-days: 3

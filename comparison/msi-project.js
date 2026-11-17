@@ -44,40 +44,51 @@
     return { min: sorted[0], max: sorted[valid - 1], p99: sorted[lower] * (1 - fraction) + sorted[Math.min(lower + 1, valid - 1)] * fraction,
       valid, missing: values.length - valid, zero: sorted.filter(value => value === 0).length, negative: sorted.filter(value => value < 0).length };
   }
-  function pointInPolygon(x, y, polygon) {
-    let inside = false;
-    for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-      const [xi, yi] = polygon[i], [xj, yj] = polygon[j];
-      if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-12) + xi) inside = !inside;
-    }
-    return inside;
-  }
   function buildRois(project, bounds, measured) {
     const { width, height, matrix } = bounds, rois = [];
     const transform = ([x, y]) => [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
-    for (const [id, records] of Object.entries(project.roi?.roi_items || {})) {
+    const definitions = global.MSIRaster.roiDefinitions(project.roi);
+    const boundaryKeys = new Set((definitions.find(definition => definition.kind === 'cortical-layer')?.boundaryChain || [])
+      .flatMap(boundary => boundary.keys));
+    for (const [key, records] of Object.entries(project.roi?.roi_items || {})) {
+      // Layer geometry has per-ROI unavailable reasons in the common resolver.
+      // Keep the existing strict validation for unrelated saved annotations.
+      if (boundaryKeys.has(key)) continue;
       if (!Array.isArray(records)) throw failure('INVALID_ROI', '保存済みROIの構造が不正です。個別ページで確認してください。', project.id);
       const nativePolygons = records.map(record => record?.poly_msi);
       if (nativePolygons.some(poly => !Array.isArray(poly) || poly.length < 3 || poly.some(point => !Array.isArray(point) || point.length !== 2 || !point.every(finite)))) {
         throw failure('INVALID_ROI', '保存済みROIの輪郭に不正な座標があります。個別ページで確認してください。', project.id);
       }
-      if (!nativePolygons.length) continue;
-      const mask = new Uint8Array(width * height);
-      for (const polygon of nativePolygons) {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        for (const [x, y] of polygon) { minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); }
-        for (let y = Math.max(0, Math.floor(minY)); y <= Math.min(height - 1, Math.ceil(maxY)); y++) {
-          for (let x = Math.max(0, Math.floor(minX)); x <= Math.min(width - 1, Math.ceil(maxX)); x++) if (pointInPolygon(x, y, polygon)) mask[y * width + x] = 1;
-        }
-      }
+    }
+    for (const definition of definitions) {
+      const id = definition.key, contours = global.MSIRaster.roiContours(definition);
+      const nativePolygons = contours.map(contour => contour.vertices);
+      if (!nativePolygons.length && definition.kind !== 'cortical-layer') continue;
+      const resolved = global.MSIRaster.roiMask(definition, width, height), mask = resolved.mask;
       let measuredCount = 0, areaPixels = 0;
       for (let i = 0; i < mask.length; i++) if (mask[i]) { areaPixels++; if (measured[i]) measuredCount++; }
-      const savedColor = project.roi.palette?.[id];
-      const color = Array.isArray(savedColor) && savedColor.length >= 3 && savedColor.slice(0, 3).every(finite)
-        ? savedColor.slice(0, 3).map(value => Math.round(Math.min(255, Math.max(0, value)))) : [180, 180, 180];
-      rois.push({ id, name: String(project.roi.roi_names?.[id] || id), color,
+      // Run rectangles preserve exact union-minus-union membership even when a
+      // boundary has overlapping polygons. An even-odd contour fill would XOR them.
+      const paths = [];
+      if (definition.kind === 'cortical-layer' && resolved.available) {
+        for (let y = 0; y < height; y++) {
+          let x = 0;
+          while (x < width) {
+            if (!mask[y * width + x]) { x++; continue; }
+            const start = x;
+            while (x < width && mask[y * width + x]) x++;
+            const corners = [[start, y], [x, y], [x, y + 1], [start, y + 1]].map(transform);
+            paths.push('M' + corners.map(point => point.join(',')).join('L') + 'Z');
+          }
+        }
+      }
+      rois.push({ id, name: definition.name, color: definition.color,
         nativePolygons: nativePolygons.map(poly => poly.map(point => [...point])), polygons: nativePolygons.map(poly => poly.map(transform)),
-        measuredCount, areaPixels, polygonCount: nativePolygons.length, originalVisible: project.roi.roi_show_flags?.[id] !== false });
+        measuredCount: resolved.available ? measuredCount : null, areaPixels: resolved.available ? areaPixels : null,
+        polygonCount: nativePolygons.length, originalVisible: definition.visible,
+        kind: definition.kind, definition: definition.definition, ruleVersion: definition.ruleVersion,
+        sourceKeys: definition.sourceKeys, available: resolved.available, reasonCodes: resolved.reasonCodes,
+        reason: global.MSIRaster.roiReasonText(resolved.reasonCodes), areaPath: paths.join('') });
     }
     return rois;
   }
@@ -114,7 +125,8 @@
       note: 'Saved browser data only. No normalization, clipping, interpolation, thresholding, cloud sync, or writes. All-four-channel NaN pixels are omitted; individual NaN or absent-channel values remain null; zeros remain zero.' };
     const section = { ...bounds, x, y, values, ranges: Object.fromEntries(MOLECULES.map(molecule => [molecule.id, numericRange(values[molecule.id])])), measuredCount: x.length, source };
     const roiSection = { ...bounds, measuredCount: x.length, rois: buildRois(project, bounds, measured), source: { ...source,
-      statistic: 'Measured pixel count is the union of finite raw values across the four displayed molecule channels inside the saved ROI; overlapping polygons count once.' } };
+      statistic: 'Measured pixel count is the union of finite raw values across the four displayed molecule channels inside the effective ROI. Cortical layers use outer boundary minus inner boundary; overlapping polygons count once.',
+      roiRuleVersion: global.MSIRaster.ROI_LAYER_RULE_VERSION } };
     return { project, loadedAt, msiValues: { version: 1, molecules: MOLECULES, sections: { [pair.section]: section } },
       roiData: { version: 1, sections: { [pair.section]: roiSection } } };
   }

@@ -78,13 +78,51 @@
   function categorical(name){let h=0;for(const c of name)h=(h*31+c.charCodeAt(0))>>>0;return categoryColors[h%categoryColors.length];}
   let roiSection='',roiSelected=null,roiHovered=null;
   const roiSectionData=()=>msiRoiData.sections[meta[state.section].section];
-  function roiCountText(roi){return Number.isInteger(roi.measuredCount)?roi.measuredCount.toLocaleString()+'測定点':'測定点数未確認';}
+  function roiCountText(roi){if(roi.available===false)return '算出不可';return Number.isInteger(roi.measuredCount)?roi.measuredCount.toLocaleString()+'測定点':'測定点数未確認';}
   function emphasizeRois(){const target=roiHovered||roiSelected;$('mx-roi-overlay').querySelectorAll('[data-roi]').forEach(shape=>{shape.classList.toggle('is-emphasized',shape.dataset.roi===target);shape.classList.toggle('is-muted',!!target&&shape.dataset.roi!==target);});$('mx-roi-list').querySelectorAll('[data-roi]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.roi===roiSelected)));}
-  function renderRoiDetail(){const panel=$('mx-roi-inspection'),data=roiSectionData(),roi=data?.rois.find(r=>String(r.id)===roiSelected);panel.replaceChildren();if(!data){panel.append(element('span','','MSI・ROIを読み込むと登録ROIを確認できます。'));return;}if(!roi){panel.append(element('span','',data.rois.length?'画像のROIにカーソルを合わせると名前を表示します。一覧または輪郭をクリックして選択。':'この切片には登録ROIがありません。'));return;}panel.append(element('strong','',roi.name));const clear=element('button','mx-roi-clear','選択を解除');clear.type='button';clear.addEventListener('click',()=>{roiSelected=null;emphasizeRois();renderRoiDetail();});panel.append(clear,element('div','',roi.polygons.length+'箇所 · '+roiCountText(roi)),element('div','mx-roi-note','測定点数：保存済みMSIラスタで、ROI内にある測定座標の数。発現量や濃度ではありません。'));}
+  function renderRoiDetail(){const panel=$('mx-roi-inspection'),data=roiSectionData(),roi=data?.rois.find(r=>String(r.id)===roiSelected);panel.replaceChildren();if(!data){panel.append(element('span','','MSI・ROIを読み込むと登録ROIを確認できます。'));return;}if(!roi){panel.append(element('span','',data.rois.length?'画像のROIにカーソルを合わせると名前を表示します。一覧または輪郭をクリックして選択。':'この切片には登録ROIがありません。'));return;}panel.append(element('strong','',roi.name));if(roi.available===false)panel.append(element('div','mx-info-notice',roi.reason||'層の境界を確認してください。'));const clear=element('button','mx-roi-clear','選択を解除');clear.type='button';clear.addEventListener('click',()=>{roiSelected=null;emphasizeRois();renderRoiDetail();});panel.append(clear,element('div','',(roi.kind==='cortical-layer'?roi.definition:roi.polygons.length+'箇所')+' · '+roiCountText(roi)),element('div','mx-roi-note','測定点数：保存済みMSIラスタで、ROI内にある測定座標の数。発現量や濃度ではありません。'));}
   function selectRoi(id){roiSelected=roiSelected===id?null:id;if(roiSelected)$('mx-roi-show').checked=true;$('mx-roi-overlay').toggleAttribute('hidden',!$('mx-roi-show').checked);emphasizeRois();renderRoiDetail();}
   function hideRoiTooltip(){roiHovered=null;$('mx-roi-tooltip').hidden=true;emphasizeRois();}
-  function showRoiTooltip(roi,event){roiHovered=String(roi.id);const tip=$('mx-roi-tooltip');tip.replaceChildren(element('strong','',roi.name),element('div','',roi.polygons.length+'箇所 · '+roiCountText(roi)),element('div','mx-inspect-meta',meta[state.section].section+' · MSI登録ROI'));tip.hidden=false;const rect=$('mx-msi-surface').getBoundingClientRect();tip.style.left=Math.max(6,Math.min(event.clientX-rect.left+14,rect.width-tip.offsetWidth-6))+'px';tip.style.top=Math.max(6,Math.min(event.clientY-rect.top+14,rect.height-tip.offsetHeight-6))+'px';emphasizeRois();}
-  function renderMsiRois(){const section=meta[state.section].section;if(section===roiSection)return;roiSection=section;roiSelected=null;roiHovered=null;const data=roiSectionData(),svg=$('mx-roi-overlay'),list=$('mx-roi-list');svg.replaceChildren();list.replaceChildren();$('mx-roi-tooltip').hidden=true;svg.toggleAttribute('hidden',!data||!$('mx-roi-show').checked);const rois=data?.rois||[];$('mx-roi-count').textContent=data?rois.length+' ROI':'ROI未読込';$('mx-roi-show').disabled=!data;if(data){svg.setAttribute('viewBox','0 0 '+data.displayWidth+' '+data.displayHeight);svg.setAttribute('aria-label',section+'の登録ROI輪郭');}for(const roi of rois){const id=String(roi.id),button=element('button','','');button.type='button';button.dataset.roi=id;button.setAttribute('aria-label',roi.name+'のROIを選択');button.setAttribute('aria-pressed','false');const swatch=element('span','mx-roi-dot');swatch.style.backgroundColor=roi.color;button.append(swatch,document.createTextNode(roi.name+(roi.polygons.length>1?' ('+roi.polygons.length+')':'')));button.addEventListener('click',()=>selectRoi(id));list.append(button);for(const polygon of roi.polygons){const shape=document.createElementNS('http://www.w3.org/2000/svg','polygon');shape.setAttribute('points',polygon.map(p=>p.join(',')).join(' '));shape.dataset.roi=id;shape.setAttribute('class','mx-roi-shape');shape.setAttribute('fill',roi.color);shape.setAttribute('stroke',roi.color);shape.setAttribute('aria-label',roi.name);shape.addEventListener('pointermove',event=>showRoiTooltip(roi,event));shape.addEventListener('pointerleave',hideRoiTooltip);shape.addEventListener('click',()=>selectRoi(id));svg.append(shape);}}renderRoiDetail();}
+  function showRoiTooltip(roi,event){roiHovered=String(roi.id);const tip=$('mx-roi-tooltip');tip.replaceChildren(element('strong','',roi.name),element('div','',(roi.kind==='cortical-layer'?roi.definition:roi.polygons.length+'箇所')+' · '+roiCountText(roi)),element('div','mx-inspect-meta',meta[state.section].section+' · MSI登録ROI'));tip.hidden=false;const rect=$('mx-msi-surface').getBoundingClientRect();tip.style.left=Math.max(6,Math.min(event.clientX-rect.left+14,rect.width-tip.offsetWidth-6))+'px';tip.style.top=Math.max(6,Math.min(event.clientY-rect.top+14,rect.height-tip.offsetHeight-6))+'px';emphasizeRois();}
+  function renderMsiRois() {
+    const section = meta[state.section].section;
+    if (section === roiSection) return;
+    roiSection = section; roiSelected = null; roiHovered = null;
+    const data = roiSectionData(), svg = $('mx-roi-overlay'), list = $('mx-roi-list');
+    svg.replaceChildren(); list.replaceChildren(); $('mx-roi-tooltip').hidden = true;
+    svg.toggleAttribute('hidden', !data || !$('mx-roi-show').checked);
+    const rois = data?.rois || [];
+    $('mx-roi-count').textContent = data ? rois.length + ' ROI' : 'ROI未読込';
+    $('mx-roi-show').disabled = !data;
+    if (data) { svg.setAttribute('viewBox', '0 0 ' + data.displayWidth + ' ' + data.displayHeight); svg.setAttribute('aria-label', section + 'のROI領域と輪郭'); }
+    for (const roi of rois) {
+      const id = String(roi.id), button = element('button', '', '');
+      button.type = 'button'; button.dataset.roi = id;
+      button.setAttribute('aria-label', roi.name + 'のROIを選択'); button.setAttribute('aria-pressed', 'false');
+      button.title = roi.definition || roi.name;
+      const swatch = element('span', 'mx-roi-dot'); swatch.style.backgroundColor = roi.color;
+      button.append(swatch, document.createTextNode(roi.name + (roi.kind === 'cortical-layer' ? '（層）' : roi.polygons.length > 1 ? ' (' + roi.polygons.length + ')' : '')));
+      button.addEventListener('click', () => selectRoi(id)); list.append(button);
+      const appendShape = shape => {
+        shape.dataset.roi = id; shape.setAttribute('class', 'mx-roi-shape'); shape.setAttribute('aria-label', roi.name);
+        shape.addEventListener('pointermove', event => showRoiTooltip(roi, event));
+        shape.addEventListener('pointerleave', hideRoiTooltip); shape.addEventListener('click', () => selectRoi(id)); svg.append(shape);
+      };
+      if (roi.kind === 'cortical-layer' && roi.areaPath) {
+        const shape = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        shape.setAttribute('d', roi.areaPath); shape.setAttribute('fill', roi.color); shape.setAttribute('stroke', 'none');
+        shape.style.pointerEvents = 'fill'; appendShape(shape);
+      }
+      for (const polygon of roi.polygons) {
+        const shape = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+        shape.setAttribute('points', polygon.map(point => point.join(',')).join(' '));
+        shape.setAttribute('fill', roi.kind === 'cortical-layer' ? 'none' : roi.color); shape.setAttribute('stroke', roi.color);
+        if (roi.kind === 'cortical-layer') { shape.style.fillOpacity = '0'; shape.style.pointerEvents = 'stroke'; }
+        appendShape(shape);
+      }
+    }
+    renderRoiDetail();
+  }
   $('mx-roi-show').addEventListener('change',()=>{$('mx-roi-overlay').toggleAttribute('hidden',!$('mx-roi-show').checked);hideRoiTooltip();});
   $('mx-msi-surface').addEventListener('pointerleave',hideRoiTooltip);
   function msiLoadNotice(message,status='loading'){

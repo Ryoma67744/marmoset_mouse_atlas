@@ -1,0 +1,463 @@
+{
+  "sourceCommit": "c684e49172bcb198a226fd36066870edf15c3baa",
+  "description": "Generated using the unchanged v2.46.0 normalization code. Layer 2 previously covered x=4..14, D4 median=10; the new Layer 2 band must cover x=2..3, median=3.5.",
+  "project": {
+    "id": "layer-reference-fixture",
+    "displayName": "Layer reference fixture",
+    "grid": {
+      "W": 15,
+      "H": 1,
+      "umPerPxX": 10,
+      "umPerPxY": 10
+    },
+    "molecules": [
+      {
+        "key": "h",
+        "name": "5-HT"
+      },
+      {
+        "key": "d",
+        "name": "D4-5-HT"
+      },
+      {
+        "key": "a",
+        "name": "DA"
+      }
+    ],
+    "roi": {
+      "roi_items": {
+        "whole": [
+          {
+            "poly_msi": [
+              [
+                -0.5,
+                -0.5
+              ],
+              [
+                14.5,
+                -0.5
+              ],
+              [
+                14.5,
+                0.5
+              ],
+              [
+                -0.5,
+                0.5
+              ]
+            ]
+          }
+        ],
+        "l1": [
+          {
+            "poly_msi": [
+              [
+                1.5,
+                -0.5
+              ],
+              [
+                14.5,
+                -0.5
+              ],
+              [
+                14.5,
+                0.5
+              ],
+              [
+                1.5,
+                0.5
+              ]
+            ]
+          }
+        ],
+        "l2": [
+          {
+            "poly_msi": [
+              [
+                3.5,
+                -0.5
+              ],
+              [
+                14.5,
+                -0.5
+              ],
+              [
+                14.5,
+                0.5
+              ],
+              [
+                3.5,
+                0.5
+              ]
+            ]
+          }
+        ],
+        "l3": [
+          {
+            "poly_msi": [
+              [
+                5.5,
+                -0.5
+              ],
+              [
+                14.5,
+                -0.5
+              ],
+              [
+                14.5,
+                0.5
+              ],
+              [
+                5.5,
+                0.5
+              ]
+            ]
+          }
+        ],
+        "l4": [
+          {
+            "poly_msi": [
+              [
+                7.5,
+                -0.5
+              ],
+              [
+                14.5,
+                -0.5
+              ],
+              [
+                14.5,
+                0.5
+              ],
+              [
+                7.5,
+                0.5
+              ]
+            ]
+          }
+        ],
+        "l5": [
+          {
+            "poly_msi": [
+              [
+                9.5,
+                -0.5
+              ],
+              [
+                14.5,
+                -0.5
+              ],
+              [
+                14.5,
+                0.5
+              ],
+              [
+                9.5,
+                0.5
+              ]
+            ]
+          }
+        ],
+        "wm": [
+          {
+            "poly_msi": [
+              [
+                11.5,
+                -0.5
+              ],
+              [
+                14.5,
+                -0.5
+              ],
+              [
+                14.5,
+                0.5
+              ],
+              [
+                11.5,
+                0.5
+              ]
+            ]
+          }
+        ],
+        "control": [
+          {
+            "poly_msi": [
+              [
+                -0.5,
+                -0.5
+              ],
+              [
+                0.5,
+                -0.5
+              ],
+              [
+                0.5,
+                0.5
+              ],
+              [
+                -0.5,
+                0.5
+              ]
+            ]
+          }
+        ]
+      },
+      "roi_names": {
+        "whole": "Whole",
+        "l1": "Layer 1",
+        "l2": "Layer 2",
+        "l3": "Layer 3",
+        "l4": "Layer 4",
+        "l5": "Layer 5",
+        "wm": "White matter",
+        "control": "Control"
+      }
+    }
+  },
+  "raw": {
+    "h": [
+      10,
+      20,
+      30,
+      40,
+      50,
+      60,
+      70,
+      80,
+      90,
+      100,
+      110,
+      120,
+      130,
+      140,
+      150
+    ],
+    "d": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15
+    ],
+    "a": [
+      3,
+      6,
+      9,
+      12,
+      15,
+      18,
+      21,
+      24,
+      27,
+      30,
+      33,
+      36,
+      39,
+      42,
+      45
+    ]
+  },
+  "legacyProfiles": {
+    "detailed": {
+      "schemaVersion": 1,
+      "methodVersion": "1.0.0",
+      "id": "frozen-layer-reference",
+      "revision": 1,
+      "batchId": "run-a",
+      "prepId": "prep-a",
+      "quality": "provisional",
+      "createdAt": "2026-11-17T12:10:26.780Z",
+      "coordinateMatchConfirmed": true,
+      "comparabilityConfirmed": true,
+      "validationEvidence": "",
+      "mapping": {
+        "ht": "h",
+        "d4": "d",
+        "da": "a",
+        "ne": null
+      },
+      "qc": {
+        "minD4": 0,
+        "saturationD4": 1000,
+        "minCoverage": 0.5
+      },
+      "reference": {
+        "kind": "roi",
+        "projectIds": [
+          "layer-reference-fixture"
+        ],
+        "roiNames": [
+          "Layer 2"
+        ],
+        "entries": [
+          {
+            "projectId": "layer-reference-fixture",
+            "name": "Layer reference fixture",
+            "Ds": 10,
+            "rawFingerprint": "f32-v1:2cc73e3737bc61d1",
+            "geometryFingerprint": "61643272dbadb184",
+            "status": "VALID",
+            "reasonCodes": []
+          }
+        ]
+      },
+      "calibration": null,
+      "rawFingerprint": "f32-v1:2cc73e3737bc61d1",
+      "referenceGeometryFingerprint": "61643272dbadb184",
+      "section": {
+        "Ds": 10,
+        "Dref": 10,
+        "k": 1,
+        "nGeometry": 11,
+        "nMeasured": 11,
+        "nValid": 11,
+        "coverage": 1,
+        "reasonCounts": {},
+        "reasonCodes": [
+          "NORMALIZATION_PROVISIONAL"
+        ],
+        "status": "PROVISIONAL"
+      },
+      "commonRanges": {
+        "ht": {
+          "min": 10,
+          "max": 10
+        },
+        "da": {
+          "min": 3,
+          "max": 45
+        }
+      },
+      "otsuSourceRoles": [],
+      "otsuSourceKeys": [],
+      "calculationFingerprint": "3a34e6f01bdaf96a"
+    },
+    "simple": {
+      "schemaVersion": 3,
+      "methodVersion": "2.0.0",
+      "mode": "simple",
+      "id": "frozen-layer-reference",
+      "revision": 1,
+      "createdAt": "2026-11-17T12:10:26.790Z",
+      "batchId": "run-a",
+      "prepId": "prep-a",
+      "quality": "provisional",
+      "coordinateMatchConfirmed": true,
+      "comparabilityConfirmed": true,
+      "validationEvidence": "",
+      "configurationSource": "folder-isotope-relative",
+      "mapping": {
+        "ht": "h",
+        "d4": "d",
+        "da": "a",
+        "ne": null
+      },
+      "targets": [
+        {
+          "key": "h",
+          "method": "pixel_ratio",
+          "analyteName": "5-HT",
+          "rangeScope": "group",
+          "analyteId": "group:[\"pixel_ratio\",\"5-HT\"]"
+        },
+        {
+          "key": "a",
+          "method": "section_scale",
+          "analyteName": "DA",
+          "rangeScope": "group",
+          "analyteId": "group:[\"section_scale\",\"DA\"]"
+        }
+      ],
+      "excludedKeys": [
+        "d"
+      ],
+      "qc": {
+        "minD4": 0,
+        "saturationD4": 1000,
+        "minCoverage": 0.5,
+        "enforceCoverage": false
+      },
+      "reference": {
+        "kind": "roi",
+        "projectIds": [
+          "layer-reference-fixture"
+        ],
+        "roiNames": [
+          "Layer 2"
+        ],
+        "entries": [
+          {
+            "projectId": "layer-reference-fixture",
+            "memberId": "layer-reference-fixture",
+            "name": "Layer reference fixture",
+            "Ds": 10,
+            "rawFingerprint": "f32-v1:2cc73e3737bc61d1",
+            "geometryFingerprint": "61643272dbadb184",
+            "status": "VALID",
+            "reasonCodes": []
+          }
+        ]
+      },
+      "scope": {
+        "type": "folder-depth",
+        "depth": 2,
+        "includeDescendants": true,
+        "groupId": "group",
+        "folderPath": [
+          "Marmoset",
+          "Coronal"
+        ],
+        "memberIds": [
+          "layer-reference-fixture"
+        ]
+      },
+      "calibration": null,
+      "rawFingerprint": "f32-v1:2cc73e3737bc61d1",
+      "referenceGeometryFingerprint": "61643272dbadb184",
+      "section": {
+        "Ds": 10,
+        "Dref": 10,
+        "k": 1,
+        "nGeometry": 11,
+        "nMeasured": 11,
+        "nValid": 11,
+        "coverage": 1,
+        "reasonCounts": {},
+        "reasonCodes": [
+          "NORMALIZATION_PROVISIONAL"
+        ],
+        "status": "PROVISIONAL"
+      },
+      "commonRanges": {
+        "group:[\"pixel_ratio\",\"5-HT\"]": {
+          "min": 10,
+          "max": 10
+        },
+        "group:[\"section_scale\",\"DA\"]": {
+          "min": 3,
+          "max": 45
+        }
+      },
+      "otsuSourceRoles": [],
+      "otsuSourceKeys": [],
+      "calculationFingerprint": "70f174a242fbd0e4"
+    }
+  },
+  "fingerprints": {
+    "Whole": "87eafe62a8c8f354",
+    "White matter": "75740109060b1f2d",
+    "Control": "29223620b423bc6a",
+    "whole_tissue": "d0febf5a45d177bc"
+  }
+}

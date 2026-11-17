@@ -28,7 +28,7 @@ function fixture() {
     location: { href: 'https://example.com/atlas/comparison/index.html' }, ProjectStorage: storage };
   context.window = context;
   vm.createContext(context);
-  for (const file of ['lib/msi-st-pairs.js', 'comparison/msi-project.js']) vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
+  for (const file of ['lib/msi.js', 'lib/msi-st-pairs.js', 'comparison/msi-project.js']) vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
   return { context, project, rasters, reads, load: () => context.MsiStProject.load(id) };
 }
 
@@ -86,4 +86,49 @@ test('malformed ROI geometry and infinite signals fail explicitly instead of inv
   await assert.rejects(f.load(), error => error.code === 'INVALID_ROI');
   const infinite = fixture(); infinite.rasters['5-HT'][0] = Infinity;
   await assert.rejects(infinite.load(), error => error.code === 'INVALID_RASTER');
+});
+
+function corticalFixture() {
+  const f = fixture(), rectangle = inset => [{ poly_msi: [[inset - .5, -.5], [14.5 - inset, -.5], [14.5 - inset, .5], [inset - .5, .5]] }];
+  f.project.grid = { W: 15, H: 1 };
+  f.project.roi = { roi_items: { whole: rectangle(0), wm: rectangle(6) },
+    roi_names: { whole: 'Occipital lobe whole', wm: 'White mater' }, palette: {}, roi_show_flags: {} };
+  for (let layer = 1; layer <= 5; layer++) {
+    f.project.roi.roi_items['b' + layer] = rectangle(layer);
+    f.project.roi.roi_names['b' + layer] = layer === 3 ? 'Layer3' : 'Layer ' + layer;
+  }
+  for (const molecule of f.project.molecules) f.rasters[molecule.name] = Float32Array.from({ length: 15 }, (_, i) => i);
+  return f;
+}
+
+test('MSI–ST comparison uses six exact difference regions without altering saved ROI or signal', async () => {
+  const f = corticalFixture(), before = JSON.stringify(f.project);
+  const result = await f.load(), rois = result.roiData.sections.Cor_13_6.rois;
+  const layers = rois.filter(roi => roi.kind === 'cortical-layer');
+  assert.equal(layers.length, 6); assert.equal(rois.length, 8);
+  assert.deepEqual(plain(layers.map(roi => roi.name)), [1, 2, 3, 4, 5, 6].map(i => 'Layer ' + i));
+  assert.deepEqual(plain(layers.map(roi => roi.areaPixels)), [2, 2, 2, 2, 2, 2]);
+  assert.deepEqual(plain(layers.map(roi => roi.measuredCount)), [2, 2, 2, 2, 2, 2]);
+  assert.ok(layers.every(roi => roi.available && roi.areaPath && roi.nativePolygons.length === 2));
+  assert.equal(layers[0].definition, 'Whole − Layer 1');
+  assert.equal(layers[5].definition, 'Layer 5 − White matter');
+  assert.equal(JSON.stringify(f.project), before);
+  assert.deepEqual(Array.from(f.rasters['5-HT']), Array.from({ length: 15 }, (_, i) => i));
+});
+
+test('MSI–ST comparison leaves unavailable layer areas blank and keeps other data usable', async () => {
+  for (const invalid of [false, true]) {
+    const f = corticalFixture();
+    if (invalid) f.project.roi.roi_items.b2[0].poly_msi[0] = [NaN, 0];
+    else delete f.project.roi.roi_items.b2;
+    const result = await f.load(), layers = result.roiData.sections.Cor_13_6.rois.filter(roi => roi.kind === 'cortical-layer');
+    for (const index of [1, 2]) {
+      assert.equal(layers[index].available, false);
+      assert.equal(layers[index].areaPixels, null); assert.equal(layers[index].measuredCount, null);
+      assert.equal(layers[index].areaPath, '');
+      assert.ok(layers[index].reasonCodes.includes(invalid ? 'ROI_BOUNDARY_INVALID' : 'ROI_BOUNDARY_MISSING'));
+    }
+    assert.equal(layers[0].areaPixels, 2); assert.equal(layers[5].areaPixels, 2);
+    assert.equal(result.msiValues.sections.Cor_13_6.measuredCount, 15);
+  }
 });
