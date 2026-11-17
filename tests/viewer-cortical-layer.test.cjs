@@ -127,7 +127,10 @@ async function verifySelectedLayerAfterResize(page) {
     height: document.getElementById('image-viewer').clientHeight,
   }));
   const numbers = numeric(await snapshot(page));
-  await page.setViewportSize({ width: 1280, height: 820 });
+  // Keep a usable image area while resizing. At a very short/narrow viewport
+  // the existing settings panel can consume the viewer's height completely;
+  // that exercises collapsed layout rather than visible layer highlighting.
+  await page.setViewportSize({ width: 1700, height: 1100 });
   // Allow both the window resize handler and its ResizeObserver/RAF redraw
   // to finish before reading the live canvas. Do not redraw it first: that
   // would conceal a selection lost by either asynchronous callback.
@@ -210,7 +213,8 @@ async function verifySelectedLayerAfterResize(page) {
       canvasToMsi(...msiToCanvas(...point)).map((value, index) => Math.abs(value - point[index]))));
     return { activeKey, mismatchedBytes, selectedDifferenceBytes, fillDifferenceBytes, fillVisibleDifferencePixels,
       overlays, suppressedDraws, alphaTotals, initialContext, finalContext: contextState(roiCtx), coordinateError,
-      canvas: { width: roiCanvas.width, height: roiCanvas.height },
+      canvas: { width: roiCanvas.width, height: roiCanvas.height,
+        cssWidth: roiCanvas.offsetWidth, cssHeight: roiCanvas.offsetHeight },
       source: JSON.stringify(atlasData.roi.roi_items),
       color: effectiveRoiDefinitions().find(roi => roi.key === activeKey)?.color,
       width: document.getElementById('image-viewer').clientWidth,
@@ -223,6 +227,8 @@ async function verifySelectedLayerAfterResize(page) {
     initialContext: paint.initialContext, finalContext: paint.finalContext, overlays: paint.overlays,
     fillDifferenceBytes: paint.fillDifferenceBytes, fillVisibleDifferencePixels: paint.fillVisibleDifferencePixels });
   assert.ok(paint.width !== before.width || paint.height !== before.height, 'the image viewport actually resized');
+  assert.ok(paint.width >= 64 && paint.height >= 64 && paint.canvas.cssWidth >= 64 && paint.canvas.cssHeight >= 64,
+    'the resize fixture retains a visible image and ROI canvas: ' + diagnostic);
   assert.equal(paint.activeKey, layerKey(4));
   assert.equal(paint.mismatchedBytes, 0, 'window/observer resize retains every RGBA byte of the selected-layer paint: ' + diagnostic);
   assert.ok(paint.selectedDifferenceBytes > 0, 'the selected layer differs from an unselected outline render: ' + diagnostic);
