@@ -119,7 +119,62 @@ async function graphWorkbook(page) {
     conditions: Object.fromEntries(XLSX.utils.sheet_to_json(book.Sheets.Conditions, { header: 1 })) };
 }
 
-test('Viewer exposes six disjoint layers, exact raw/normalized statistics and matching graph Excel without changing source boundaries', { timeout: 90000 }, async () => {
+async function verifySelectedLayerAfterResize(page) {
+  const before = await page.evaluate(() => ({
+    source: JSON.stringify(atlasData.roi.roi_items),
+    color: effectiveRoiDefinitions().find(roi => roi.key === '__cortical_layer__4').color,
+    width: document.getElementById('image-viewer').clientWidth,
+    height: document.getElementById('image-viewer').clientHeight,
+  }));
+  const numbers = numeric(await snapshot(page));
+  await page.setViewportSize({ width: 1280, height: 820 });
+  // Allow both the window resize handler and its ResizeObserver/RAF redraw
+  // to finish before reading the live canvas. Do not redraw it first: that
+  // would conceal a selection lost by either asynchronous callback.
+  await page.evaluate(() => new Promise(resolve => {
+    let remaining = 6;
+    const frame = () => --remaining ? requestAnimationFrame(frame) : resolve();
+    requestAnimationFrame(frame);
+  }));
+  const paint = await page.evaluate(() => {
+    const activeKey = document.querySelector('.roi-item.active')?.dataset.roiKey;
+    const readPixels = () => roiCtx.getImageData(0, 0, roiCanvas.width, roiCanvas.height).data;
+    const actual = readPixels();
+    // Compare the observed post-resize paint with explicit selected and
+    // unselected renders in the SAME resized geometry. Restore selection so
+    // the following screenshot captures the result being checked.
+    drawAllRois(activeKey);
+    const selected = readPixels();
+    drawAllRois(null);
+    const unselected = readPixels();
+    drawAllRois(activeKey);
+    let mismatchedBytes = 0, selectedDifferenceBytes = 0, extraAlpha = 0;
+    for (let i = 0; i < actual.length; i++) {
+      if (actual[i] !== selected[i]) mismatchedBytes++;
+      if (selected[i] !== unselected[i]) selectedDifferenceBytes++;
+      if (i % 4 === 3) extraAlpha += selected[i] - unselected[i];
+    }
+    const points = [[0, 0], [3, 5], [7.25, 10.25], [15, 15]];
+    const coordinateError = Math.max(...points.flatMap(point =>
+      canvasToMsi(...msiToCanvas(...point)).map((value, index) => Math.abs(value - point[index]))));
+    return { activeKey, mismatchedBytes, selectedDifferenceBytes, extraAlpha, coordinateError,
+      source: JSON.stringify(atlasData.roi.roi_items),
+      color: effectiveRoiDefinitions().find(roi => roi.key === activeKey)?.color,
+      width: document.getElementById('image-viewer').clientWidth,
+      height: document.getElementById('image-viewer').clientHeight };
+  });
+  assert.ok(paint.width !== before.width || paint.height !== before.height, 'the image viewport actually resized');
+  assert.equal(paint.activeKey, layerKey(4));
+  assert.equal(paint.mismatchedBytes, 0, 'window/observer resize retains every RGBA byte of the selected-layer paint');
+  assert.ok(paint.selectedDifferenceBytes > 0, 'the selected layer is visibly distinct from an unselected outline render');
+  assert.ok(paint.extraAlpha > 0, 'the selected render includes additional layer paint');
+  assert.deepEqual(paint.color, before.color, 'the selected layer keeps its assigned color');
+  assert.equal(paint.source, before.source, 'resizing cannot rewrite native boundary coordinates');
+  assert.ok(paint.coordinateError < 1e-8, 'resized display coordinates still map back to the native MSI positions');
+  assert.deepEqual(numeric(await snapshot(page)), numbers, 'resizing does not change layer measurements');
+}
+
+test('Viewer exposes six disjoint layers, exact statistics and graph Excel while preserving source boundaries and selection through resize', { timeout: 90000 }, async () => {
   const h = await fixture('viewer-cortical-exact'), { page } = h;
   try {
     assert.equal(await page.locator('.roi-item').count(), 8, 'Whole, white matter and six analytical layers');
@@ -182,6 +237,7 @@ test('Viewer exposes six disjoint layers, exact raw/normalized statistics and ma
     await page.locator('.roi-item[data-roi-key="__cortical_layer__1"] input[type="checkbox"]').check();
     await page.locator('.roi-item[data-roi-key="__cortical_layer__4"]').click();
     verifyLayers(await snapshot(page), 'normalized');
+    await verifySelectedLayerAfterResize(page);
     await fs.mkdir(path.join(root, 'test-artifacts'), { recursive: true });
     await page.screenshot({ path: path.join(root, 'test-artifacts/cortical-layer-viewer.png'), fullPage: true });
     assert.deepEqual(h.errors, []);

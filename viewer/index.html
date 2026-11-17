@@ -1788,7 +1788,8 @@ function loadAllImages() {
 
             if (imageKeys.length > 0) {
                 const resize = () => {
-                    renderCompositeImage(); drawAllRois();
+                    renderCompositeImage();
+                    drawAllRois(document.querySelector('.roi-item.active')?.dataset.roiKey || null);
                     focusThumbnail(activeSettingsKey || imageKeys[0]);
                 };
                 resize();
