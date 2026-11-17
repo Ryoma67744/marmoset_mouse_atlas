@@ -1,6 +1,6 @@
 # MSI–ST comparison — six paired samples
 
-Open `comparison/index.html` directly or use the MSI–ST entry in the 3D section controls / individual Image Viewer. Both open a new tab, preserving the originating view and unsaved edits. This directory is a static page and is included by the Pages and offline builds.
+Open `comparison/index.html` through the hosted app or offline server, or use the MSI–ST entry in the 3D section controls / individual Image Viewer. Both entries open a new tab, preserving the originating view and unsaved edits. This directory is a static page and is included by the Pages and offline builds. Use the offline server rather than a `file://` URL to load the additional local gene files.
 
 ## Registered pairs
 
@@ -17,13 +17,33 @@ The query accepts `project`, `section`, `st`, and an optional `from=stack3d|view
 
 ## ST data and interpretation
 
-- ST: [MCCSTA](https://db.genomics.cn/stomics/mccsta/), datasets T420, T430, T462, T479, T503, T512 from [the paper](https://doi.org/10.1126/science.aea2673). The page includes spatial coordinates, cortical annotations, all six catalogs, and the initial 20 genes. Additional selected gene values are fetched on demand from the official public schema/data API; the returned coordinates must exactly match the bundled section before accepting expression data. This requires internet access and upstream CORS availability. Failed requests are shown separately from zero/unavailable expression, with a retry action. Without internet, the bundled genes remain available.
-- Numeric expression units/normalization remain unconfirmed; values are not labeled raw UMI. A zero is not proof of biological absence. MSI and ST are different specimens, are independently fitted, and are **not spatially registered**.
+- ST: [MCCSTA](https://db.genomics.cn/stomics/mccsta/), datasets T420, T430, T462, T479, T503, T512 from [the paper](https://doi.org/10.1126/science.aea2673). The page includes spatial coordinates, annotations, all six catalogs, and the initial 20 genes.
+- **T462 / Cor_9_3** combines cortex, thalamus, and striatum into one ST map with one display range per selected gene. All 32,891 genes in the union of the three source catalogs are packaged as local compressed files and loaded on demand; T462 does not require the official expression API. The offline package includes those files.
+- The other five sections continue to show cortical bins. Additional selected gene values beyond the initial 20 are fetched from the official public schema/data API; returned coordinates must exactly match the bundled section before accepting expression data. Those requests require internet access and upstream CORS availability.
+- T462 displays the audited raw RNA counts from H5AD `X` and each RDS object's `RNA/counts`. Integrated, imputed, and normalized `RNA/data` matrices are not mixed into this display. The display's `log1p` option changes color scaling only. The numeric expression units/normalization of the other five API datasets remain unconfirmed in the UI. A zero is not proof of biological absence.
+- Source catalogs differ. A gene absent from one source is unavailable in those bins, not a measured zero; unavailable bins are excluded from detection-rate denominators. Loading errors are shown separately and can be retried. MSI and ST are different specimens, are independently fitted, and are **not spatially registered**.
 - Gene descriptions include NCBI marmoset annotations and explicitly labeled general functions with human references; they do not establish cell identity or experimental function in marmoset.
 
-### Coverage audit (2026-11-16)
+### Unified T462 audit (2026-11-17)
 
-The current page displays cortical bins. Direct inspection of all six [official Coronal Bin200 H5AD files](https://db.genomics.cn/stomics/mccsta/download/) confirmed that their spatial coordinates exactly match the bundled viewer coordinates, including row order. Every observation has a cortical layer annotation; none supplies additional subcortical coordinates. T479 was downloaded completely; the other five were inspected through validated HTTPS range reads of their HDF5 metadata, spatial arrays, and annotation arrays without downloading their expression matrices.
+The complete `T462.h5ad`, `obj_Thalamus.rds`, and `obj_Striatum.rds` files were obtained from the [official distribution directory](https://ftp.cngb.org/pub/SciRAID/stomics/STDS0000395/). Both RDS gzip streams passed a complete CRC32/ISIZE read. T462 was selected using the stored sample identifiers and observation IDs.
+
+| Source | T462 bins | Source feature catalog | Region labels | Total raw counts |
+| --- | ---: | ---: | --- | ---: |
+| Cortex (`T462.h5ad`) | 8,407 | 29,724 | Existing cortical labels | 169,656,337 |
+| Thalamus (`obj_Thalamus.rds`) | 2,647 | 31,738 | Tha 2,023; Lgn 624 | 26,221,044 |
+| Striatum (`obj_Striatum.rds`) | 283 | 32,226 | Cd only; no Pu in T462 | 3,190,407 |
+| Combined | **11,337** | **32,891 in the union** | Available cortex, Tha, Lgn, and Cd | **199,067,788** |
+
+Counts are finite nonnegative integers. Per-bin total counts and detected-feature counts agree exactly with each source's QC metadata. Coordinates are retained without translation, reflection, rotation, scaling, or interpolation. All bins are unique within and across the three sources. Thalamus and striatum positions are consistent with the authors' T462 figures. These checks support one ST map; they do not establish MSI registration or whole-section coverage.
+
+The complete cortex coordinates and the 20 previously bundled gene vectors match the official viewer exactly, including row order. Existing viewer cortical annotations are preserved: 358 bins are labeled `L2-Allo` in the viewer but `L2/3/4` in the H5AD. This source-label difference is retained in provenance rather than silently relabeling the existing view. Subcortical bins use the original `Tha`, `Lgn`, or `Cd` region labels and the layer category `対象外（皮質下）`; numeric clusters are not presented as named nuclei.
+
+Among the six adopted pairs, only T462 is present in these two subcortical RDS objects. This does not establish biological absence or the absence of other public sources for the remaining sections. The application shows the **available cortex + thalamus + striatum subsets**, not a reconstructed whole section. Missing tissue is left blank.
+
+### Earlier cortical coverage audit (2026-11-16)
+
+The v2.45.0 page displayed cortical bins. Direct inspection of all six [official Coronal Bin200 H5AD files](https://db.genomics.cn/stomics/mccsta/download/) confirmed that their spatial coordinates exactly match the bundled viewer coordinates, including row order. Every observation has a cortical layer annotation; none supplies additional subcortical coordinates. At that audit, T479 was downloaded completely; the other five were inspected through validated HTTPS range reads of their HDF5 metadata, spatial arrays, and annotation arrays without downloading their expression matrices. T462 was subsequently downloaded and audited in full as described above.
 
 | Section | Spatial bins | Features |
 | --- | ---: | ---: |
@@ -36,11 +56,13 @@ The current page displays cortical bins. Direct inspection of all six [official 
 
 Layer names are L1–L6, with an additional combined `L2/3/4` label in T462. A whole-brain acquisition reported by the study does not make these processed cortical matrices whole-section datasets. Whole-section display must use independently verified, uncropped source coordinates and expression; do not relabel the current cortical data as full coverage or invent values in missing regions.
 
-The complete official `T479.gem.gz` (2,580,567,648 bytes; SHA-256 `0092f7e8b9240e2eb4e164dc24585fa24b44de4b93b9d7a063c2cf94486b050b`) was also audited. All 95,072,145 records, including 47,692,666 records with `cell_label=0`, fall in the same 7,964 cortical bins after nearest-bin aggregation of `rx/200, ry/200`. There are zero additional bins or counts outside that set. The total MIDCount is 131,860,014, and every bin total exactly matches the H5AD. All six recommended genes plus TH, TPH2, SLC6A3, and SLC6A4 also match exactly in every bin. Gzip CRC32/ISIZE verification passed. This complete-file conclusion applies to T479 Bin1; the other five Bin1 files and the separate subcortical RDS objects were not audited.
+The complete official `T479.gem.gz` (2,580,567,648 bytes; SHA-256 `0092f7e8b9240e2eb4e164dc24585fa24b44de4b93b9d7a063c2cf94486b050b`) was also audited. All 95,072,145 records, including 47,692,666 records with `cell_label=0`, fall in the same 7,964 cortical bins after nearest-bin aggregation of `rx/200, ry/200`. There are zero additional bins or counts outside that set. The total MIDCount is 131,860,014, and every bin total exactly matches the H5AD. All six recommended genes plus TH, TPH2, SLC6A3, and SLC6A4 also match exactly in every bin. Gzip CRC32/ISIZE verification passed. This complete-file conclusion applies to T479 Bin1; the other five Bin1 files remain unaudited in full. The separate subcortical RDS audit is described above.
 
 ## Files and distribution
 
-`index.html` contains the page and paired-section metadata. `bootstrap.js` contains the gzip/base64 public ST and gene-annotation package plus the numeric MSI renderer; it contains no user MSI raster values. `msi-project.js` adapts the current local project for display. `app.js` and `styles.css` implement the comparison UI, and `route.js` handles navigation. `tests/msi-st-public-assets.test.js` guards against accidentally bundling saved MSI images, values, or ROI geometry in these public assets.
+`index.html` contains the page and paired-section metadata. `bootstrap.js` contains the gzip/base64 public ST and gene-annotation package plus the numeric MSI renderer; it contains no user MSI raster values. `data/t462/manifest.js` contains the unified coordinates, annotations, source catalogs, initial genes, file checksums, and provenance; compressed gene files in the same directory contain all T462 RNA counts. `st-data.js` validates and loads those files, retaining source-specific availability. `scripts/pack-t462-st.py` regenerates them from the audited count matrices. The original multi-gigabyte H5AD/RDS files are not included in the repository or browser package.
+
+`msi-project.js` adapts the current local project for display. `app.js` and `styles.css` implement the comparison UI, and `route.js` handles navigation. `tests/msi-st-public-assets.test.js` guards against accidentally bundling saved MSI images, values, or ROI geometry in these public assets. T462 data/provider tests validate the packaged counts, coordinates, missing-versus-zero semantics, and loading failures.
 
 The same comparison code is included in Pages and offline builds. Public release files do not include users' MSI data. The existing complete offline workspace export intentionally packages the selected workspace's data separately, under its existing export behavior. Keep project data in that workspace or browser storage, not in comparison source assets.
 

@@ -9,7 +9,7 @@ const postcss = createRequire(require.resolve('tailwindcss/package.json'))('post
 
 // Reviewed against https://nodejs.org/dist/v24.22.1/SHASUMS256.txt.
 const NODE = Object.freeze({ version: '24.22.1', filename: 'node-v24.22.1-win-x64.zip', sha256: 'd2046d28c2c3dcd211ac5145c0bf30e2047ef9dfb306693c8c6e2eccd8b95fa5' });
-const ASSET_EXTENSIONS = new Set(['.js', '.css', '.html', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.txt']);
+const ASSET_EXTENSIONS = new Set(['.js', '.css', '.html', '.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.txt', '.gz']);
 const sha256 = data => crypto.createHash('sha256').update(data).digest('hex');
 async function walk(root, relative = '') {
   const files = [];
@@ -65,7 +65,9 @@ async function buildOffline(options = {}) {
   for (const name of ['USER_GUIDE.md', 'USER_GUIDE.pdf', 'STACK3D_GUIDE.md']) entries.set('app/' + name, await fs.readFile(path.join(root, name)));
   const versionSource = entries.get('app/lib/version.js').toString('utf8');
   const appVersion = versionSource.match(/const APP_VERSION\s*=\s*['"]([^'"]+)['"]/)[1];
-  const content = [...entries.entries()].filter(([name]) => /\.(html|js)$/.test(name)).map(([name, bytes]) => ({ raw: bytes.toString('utf8'), extension: path.extname(name).slice(1) }));
+  // Public gene catalogs contain no UI classes; scanning millions of data tokens
+  // as Tailwind candidates needlessly stalls the build.
+  const content = [...entries.entries()].filter(([name]) => /\.(html|js)$/.test(name) && !name.startsWith('app/comparison/data/')).map(([name, bytes]) => ({ raw: bytes.toString('utf8'), extension: path.extname(name).slice(1) }));
   const css = await postcss([tailwind({ content, theme: {}, plugins: [], safelist: [{ pattern: /^(bg|text|border)-(blue|gray|red|green|amber|indigo|orange|slate)-(50|100|200|300|400|500|600|700|800|900)$/ }] })]).process('@tailwind base;\n@tailwind components;\n@tailwind utilities;', { from: undefined });
   entries.set('app/vendor/tailwind.css', Buffer.from(css.css));
   for (const [name, prefix] of [['app/index.html', ''], ['app/viewer/index.html', '../'], ['app/stack3d/index.html', '../'], ['app/comparison/index.html', '../']]) {
@@ -95,7 +97,7 @@ async function buildOffline(options = {}) {
   entries.set('offline/package-files.json', Buffer.from(JSON.stringify({ format: 'marmoset-atlas-package-files', version: 1, files: paths }, null, 2) + '\n'));
   const zip = new JSZip();
   // Stable entry dates and sorted paths make identical inputs reproducible.
-  for (const name of paths) zip.file(name, entries.get(name), { date: new Date('2020-01-01T00:00:00Z'), createFolders: false });
+  for (const name of paths) zip.file(name, entries.get(name), { date: new Date('2020-01-01T00:00:00Z'), createFolders: false, ...(name.endsWith('.gz') ? { compression: 'STORE' } : {}) });
   const bytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 }, platform: 'DOS' });
   const manifest = { format: 'marmoset-atlas-app-template', schemaVersion: 1, appVersion, platform: 'win32-x64', nodeVersion: NODE.version, runtimeIncluded: includeRuntime, archive: 'atlas-app.zip', size: bytes.length, sha256: sha256(bytes), files: paths.length };
   await fs.mkdir(output, { recursive: true });

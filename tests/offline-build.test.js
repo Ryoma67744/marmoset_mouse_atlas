@@ -20,8 +20,16 @@ test('offline build bundles local dependencies, licenses, workers and no workspa
   const archive = await JSZip.loadAsync(bytes, { checkCRC32: true });
   const names = Object.keys(archive.files);
   assert.ok(names.includes('app/stack3d/analysis-worker.js'));
-  for (const name of ['index.html', 'app.js', 'bootstrap.js', 'styles.css', 'route.js', 'msi-project.js']) {
+  for (const name of ['index.html', 'app.js', 'bootstrap.js', 'styles.css', 'route.js', 'msi-project.js', 'st-data.js', 'data/t462/manifest.js']) {
     assert.ok(names.includes('app/comparison/' + name), 'comparison asset is packaged: ' + name);
+  }
+  const stScope = { window: {} };
+  require('node:vm').runInNewContext(entries.get('app/comparison/data/t462/manifest.js').toString(), stScope);
+  for (const [file, record] of Object.entries(stScope.window.MSI_ST_T462.chunks)) {
+    const data = entries.get('app/comparison/data/t462/' + file);
+    assert.ok(data, 'all T462 genes remain available in the offline package: ' + file);
+    assert.equal(data.length, record.bytes);
+    assert.equal(crypto.createHash('sha256').update(data).digest('hex'), record.sha256);
   }
   assert.ok(names.includes('offline/server.cjs'));
   assert.ok(names.includes('START_ATLAS.cmd'));
