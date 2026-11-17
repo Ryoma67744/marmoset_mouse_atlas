@@ -146,7 +146,7 @@ test('Viewer exposes six disjoint layers, exact raw/normalized statistics and ma
     expected = await snapshot(page);
     verifyLayers(expected, 'raw');
     const beforeDisplayChange = numeric(expected);
-    await page.selectOption('#rot-target', 'all');
+    await page.selectOption('#rot-target', 'both');
     await page.locator('#rot-angle').fill('90');
     await page.locator('#rot-angle').press('Tab');
     const masked = await page.evaluate(() => {

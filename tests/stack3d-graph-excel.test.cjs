@@ -193,7 +193,13 @@ test('3D unknown cortical geometry shows unavailable counts and exports blank nu
     await page.reload(); await readyAnalysisStack(page, 8); await ready(page, 'selected');
     const expected = await graphSnapshot(page), layer = expected.groups.find(group => group.roiName === 'Layer 1');
     assert.equal(layer.geometryAvailable, false);
-    assert.match(await page.locator('.analysis-molecule:not([hidden]) tr[data-roi-name="Layer 1"] [data-stat="count"]').innerText(), /算出不可/);
+    // Statistics are intentionally collapsed on load. Exercise the same visible
+    // table flow as a user before asserting rendered text (not hidden textContent).
+    const card = page.locator('.analysis-molecule:not([hidden])');
+    await card.locator('.analysis-table-details > summary').click();
+    const countCell = card.locator('tr[data-roi-name="Layer 1"] [data-stat="count"]');
+    await countCell.waitFor({ state: 'visible' });
+    assert.match(await countCell.innerText(), /算出不可/);
     const before = await scientificSnapshot(page), workbook = await download(h);
     const actual = assertWorkbook(workbook, expected).find(row => row['ROI名'] === 'Layer 1');
     for (const column of ['集計画素数', '有効画素数', '測定画素数', 'ROI画素数']) assert.equal(actual[column], null);
