@@ -30,6 +30,17 @@ analytes do not use local D4 denominators; reference snapshots and ranges are fi
 require a compatible ROI calibration; unavailable values are not zero-filled;
 stale Viewer saves cannot erase newer Master settings.
 
+The v2.47 cortical-layer regressions use synthetic nested boundaries to verify
+six mutually exclusive outer-minus-inner masks, measured zeros and NaNs,
+raw/normalized statistics, native-grid invariance, unavailable geometry,
+3D selection and rendering, MSI–ST comparison, real CSV/XLSX/ZIP round trips,
+and immutable source polygons. All consumers share the same mask resolver.
+Legacy Layer-based reference profiles become stale without changing saved
+factors; Whole, white matter and ordinary ROI reference hashes stay compatible.
+`viewer-cortical-layer.test.cjs` checks the actual UI, save/reload and graph Excel
+against known population statistics. It compiles the local production Tailwind
+styles for `test-artifacts/cortical-layer-viewer.png`, with no external requests.
+
 The v2.14 3D tests cover numeric coronal ordering and ordinal Z, saved XY pitch
 and arbitrary rotation, missing-correction exclusion, source-array preservation,
 and optional placement metadata through cloud state and real ZIP round trips.

@@ -199,11 +199,16 @@
       const rows = groups.map((group, index) => {
         const d = group.distribution, stats = group.statistics || {}, counts = group.counts || {};
         return { roiKey: group.roiName || group.key, roiName: group.roiName || group.name, channelKey: channel.key, moleculeName: channel.name || channel.key,
+          roiKind: group.roiKind || '', roiDefinition: group.roiDefinition || '', sourceRoiKeys: (group.sourceRoiKeys || []).join(', '),
+          geometryReasonCodes: (group.geometryReasonCodes || []).join('; '), geometryQc: JSON.stringify(group.geometryQc || []), roiRuleVersion: group.roiRuleVersion || '',
           sectionId: group.sectionId || '', sectionName: group.sectionId ? result.mode === 'by-section' ? group.name : names.get(group.sectionId) || group.sectionId : '',
           valueMode: result.valueMode, unit: group.unit || channel.unit || '',
           median: finite(d?.median), mean: d ? finite(stats.mean) : null, sd: d ? finite(stats.sd) : null,
           q1: finite(d?.q1), q3: finite(d?.q3), min: finite(d?.min), p99: finite(d?.whiskerHigh), max: finite(d?.max),
-          n: finite(counts.nIncluded), nValid: finite(counts.nValid), nMeasured: finite(counts.nMeasured), nGeometry: finite(counts.nGeometry),
+          n: group.geometryAvailable === false ? null : finite(counts.nIncluded),
+          nValid: group.geometryAvailable === false ? null : finite(counts.nValid),
+          nMeasured: group.geometryAvailable === false ? null : finite(counts.nMeasured),
+          nGeometry: group.geometryAvailable === false ? null : finite(counts.nGeometry),
           targetSections: finite(counts.targetSections), roiSections: finite(counts.roiSections), includedSections: finite(counts.includedSections),
           mode: result.mode, order: index + 1, sortOrder: state.sortOrder, status: group.status || channel.status || '', reason: reasons(groupReasons(group)) };
       });
@@ -224,6 +229,7 @@
           sortOrderLabel: ORDER_LABELS[state.sortOrder], axisMode: state.axisMode, targetSectionCount: result.selection.count,
           targetSectionList: 'Sections シート参照', roiList: 'Statistics シート参照',
           roiKeyDefinition: '3Dでは同名ROIをまとめた名称を識別子として使用',
+          layerRuleVersion: result.layerRuleVersion || '', layerDefinitions: JSON.stringify(result.layerDefinitions || []),
           pooling: result.mode === 'pooled' ? '全有効画素を統合（画素数による重み）' : '',
           statisticsSource: 'グラフの集計結果。表示用の間引き点群からは再計算しません。',
           sdConvention: '画素間の母標準偏差', stale: false
@@ -264,6 +270,9 @@
       // In comparison/pooled modes a known ROI may be absent from this subset.
       // Keep it selectable so absence is reported, rather than silently dropped.
       availableNames = core.regionCatalog(state.mode === 'selected' ? sections.filter(section => wanted.has(section.id)) : sections).map(row => row.name);
+      const definitions = sections.flatMap(section => global.Stack3D.roiDefinitions(section));
+      state.roiNames = [...new Set(state.roiNames.map(name => global.MSIRaster.roiCanonicalName(name, definitions)))];
+      state.singleRoi = global.MSIRaster.roiCanonicalName(state.singleRoi, definitions);
       if (state.allRois) state.roiNames = availableNames.slice();
       // Retain unchecked/temporarily absent names so switching sections does not erase choices.
       if (!availableNames.includes(state.singleRoi)) state.singleRoi = availableNames[0] || '';
@@ -330,13 +339,16 @@
       updateDisplay();
     }
     function reasons(codes) {
-      const local = { ROI_MISSING: '対象ROIなし', CHANNEL_MISSING: '分子データなし', NO_VALUES: '有効画素なし', NO_VALID_PIXELS: '有効画素なし', RAW_QC: '内部標準は原値のQC専用です',
+      const local = { ROI_MISSING: '対象ROIなし', ROI_GEOMETRY_UNAVAILABLE: '層ROIを算出できません', CHANNEL_MISSING: '分子データなし', NO_VALUES: '有効画素なし', NO_VALID_PIXELS: '有効画素なし', RAW_QC: '内部標準は原値のQC専用です',
         PIXEL_WEIGHTED: '全有効画素を統合（画素数による重み）', MIXED_PIXEL_SIZE: '画素サイズが異なる切片を含みます。面積・体積ではなく各画素を同じ重みで集計しています',
         UNIT_MISMATCH: '補正値の単位が一致しません', NORMALIZATION_GROUP_MISMATCH: '補正グループが一致しません', NORMALIZATION_REFERENCE_MISMATCH: '補正基準が一致しません',
         NORMALIZATION_UNAVAILABLE: '補正値を算出できません', NORMALIZATION_SCOPE_UNVERIFIED: '補正基準グループが未確認です',
         NORMALIZATION_SCOPE_INCOMPATIBLE: '補正グループの状態が一致しません',
         NORMALIZATION_INCOMPATIBLE: '補正方法・単位・保存基準が異なります' };
-      return [...new Set(codes || [])].map(code => local[code] || global.Normalization?.reasonText?.(code) || code).join('・');
+      return [...new Set(codes || [])].map(code => {
+        const geometry = global.MSIRaster?.roiReasonText?.(code);
+        return local[code] || (geometry && geometry !== code ? geometry : global.Normalization?.reasonText?.(code) || code);
+      }).join('・');
     }
     function tableFor(groups) {
       const wrap = element('div', 'analysis-table-wrap'), table = element('table', 'analysis-table');
@@ -354,16 +366,19 @@
           button.type = 'button'; button.addEventListener('click', () => options.onSelect(group.sectionId)); label.append(button);
         } else label.textContent = group.name;
         if (group.roiName && state.mode === 'by-section') label.append(element('small', '', group.roiName));
+        if (group.roiDefinition) label.append(element('small', '', group.roiDefinition));
+        if (group.geometryReasonCodes?.length) label.append(element('small', '', reasons(group.geometryReasonCodes)));
         row.append(label);
         const d = group.distribution, stats = group.statistics || {}, counts = group.counts || {};
         const values = [
           ['median', d ? `${fmt(d.median)} [${fmt(d.q1)}–${fmt(d.q3)}]` : '算出不可'],
           ['mean', d ? `${fmt(stats.mean)} ± ${fmt(stats.sd)}` : '—'],
-          ['count', count(counts.nIncluded)],
+          ['count', group.geometryAvailable === false ? '算出不可' : count(counts.nIncluded)],
           ['sections', `${count(counts.targetSections)} / ${count(counts.roiSections)} / ${count(counts.includedSections)}`]
         ];
         for (const [index, [key, value]] of values.entries()) { const cell = element('td', '', value); cell.dataset.stat = key; cell.dataset.label = labels[index + 1]; row.append(cell); }
-        const detail = element('small', 'analysis-count-detail', `有効 ${count(counts.nValid)} / 測定 ${count(counts.nMeasured)} / ROI ${count(counts.nGeometry)}`);
+        const detail = element('small', 'analysis-count-detail', group.geometryAvailable === false
+          ? '有効 / 測定 / ROI：算出不可' : `有効 ${count(counts.nValid)} / 測定 ${count(counts.nMeasured)} / ROI ${count(counts.nGeometry)}`);
         row.querySelector('[data-stat=count]').append(detail);
         const selected = state.mode === 'by-section' && group.sectionId === selectedSection()?.id;
         row.setAttribute('aria-selected', String(selected));

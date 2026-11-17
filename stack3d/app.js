@@ -519,13 +519,15 @@
   }
   function buildRoiList() {
     const list = $('roi-region-list'); list.replaceChildren();
-    roiInventory = sections.flatMap(section => Stack3D.roiPolygons(section));
+    roiInventory = sections.flatMap(section => Stack3D.roiDefinitions(section));
     const names = new Set(roiInventory.map(p => p.name));
     for (const name of [...names].sort((a, b) => a.localeCompare(b))) {
       const label = document.createElement('label'), input = document.createElement('input'), text = document.createElement('span');
       label.className = 'roi-region-row'; input.type = 'checkbox'; input.name = 'roi-region'; input.value = name;
       input.disabled = busy; text.textContent = name; label.append(input, text); list.append(label);
       const members = roiInventory.filter(p => p.name === name);
+      const layer = members.find(member => member.kind === 'cortical-layer');
+      if (layer) { const note = document.createElement('small'); note.className = 'roi-source-visibility'; note.textContent = layer.definition; text.append(note); }
       if (members.some(p => !p.visible)) {
         const note = document.createElement('small'); note.className = 'roi-source-visibility';
         note.textContent = members.some(p => p.visible) ? '一部の輪郭は非表示' : '輪郭は非表示'; text.append(note);

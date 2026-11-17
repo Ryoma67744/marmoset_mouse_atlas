@@ -592,6 +592,7 @@
         let otsuPending = false;
         let viewerContextRevision = 0;
         let analysisRoiCache = new Map();
+        let roiBoundaryListOpen = false;
         let analysisResizeObserver = null;
         let analysisResizeFrame = 0;
         let analysisDrawCallbacks = [];
@@ -1321,7 +1322,7 @@
                 const applied = await requestOtsuCommit({ ...otsuState, applied: true }, '保存された Otsu 設定の再適用');
                 if (!applied && currentProject) { currentProject.otsu = committedOtsuSettings(); queueSaveProject(); }
             }
-            const firstRoiKey = (atlasData.roi && atlasData.roi.roi_items) ? Object.keys(atlasData.roi.roi_items)[0] : null;
+            const firstRoiKey = effectiveRoiDefinitions()[0]?.key || null;
             if (firstRoiKey) {
                 setTimeout(() => {
                     const firstRoiElement = document.querySelector('.roi-item[data-roi-key="' + CSS.escape(firstRoiKey) + '"]');
@@ -1787,7 +1788,8 @@ function loadAllImages() {
 
             if (imageKeys.length > 0) {
                 const resize = () => {
-                    renderCompositeImage(); drawAllRois();
+                    renderCompositeImage();
+                    drawAllRois(document.querySelector('.roi-item.active')?.dataset.roiKey || null);
                     focusThumbnail(activeSettingsKey || imageKeys[0]);
                 };
                 resize();
@@ -1959,9 +1961,14 @@ function loadAllImages() {
             if (!roi || !roi.roi_items) return false;
             const items = roi.roi_items;
             const names = roi.roi_names || {};
+            // Boundary aliases must remain distinct: merging them here would
+            // hide ambiguous geometry from the shared 2D/3D/export resolver.
+            const boundaryKeys = new Set((MSIRaster.roiDefinitions(roi).find(record => record.kind === 'cortical-layer')?.boundaryChain || [])
+                .flatMap(boundary => boundary.keys));
             const firstOf = new Map();
             let merged = false;
             for (const k of Object.keys(items)) {
+                if (boundaryKeys.has(k)) continue;
                 if (names[k] === undefined) continue;
                 const want = roiNameKey(names[k]);
                 if (!want) continue;
@@ -2486,6 +2493,20 @@ function loadAllImages() {
             }
         }
 
+        // Saved polygons remain the editable boundaries. Analytical layers are
+        // resolved on every load, so all sections share one rule without a data migration.
+        function effectiveRoiDefinitions() {
+            return MSIRaster.roiDefinitions(atlasData.roi || {});
+        }
+        function effectiveRoiKey(key) {
+            const definitions = effectiveRoiDefinitions();
+            if (definitions.some(roi => roi.key === key)) return key;
+            return definitions.find(roi => roi.innerKeys?.includes(key))?.key || definitions[0]?.key || null;
+        }
+        function layerGeometryReason(codes) {
+            return MSIRaster.roiReasonText(codes || []);
+        }
+
         function populateRoiList() {
             const roiList = document.getElementById('roi-list');
             roiList.innerHTML = '';
@@ -2495,16 +2516,50 @@ function loadAllImages() {
             atlasData.roi = atlasData.roi || {};
             atlasData.roi.roi_show_flags = atlasData.roi.roi_show_flags || {};
             const showFlags = atlasData.roi.roi_show_flags;
-
-            Object.keys(roiItems).forEach(key => {
-                const name = roiNames[key] || key;
-                const rgba = palette[key]  || [128,128,128,255];
-                const isUser = typeof key === 'string' && key.startsWith(USER_ROI_PREFIX);
-                if (showFlags[key] === undefined) showFlags[key] = true;
+            const definitions = effectiveRoiDefinitions();
+            const effectiveKeys = new Set(definitions.map(roi => roi.key));
+            const boundaryKeys = Object.keys(roiItems).filter(key => !effectiveKeys.has(key));
+            let boundaryList = null;
+            if (definitions.some(roi => roi.kind === 'cortical-layer')) {
+                const note = document.createElement('p');
+                note.className = 'text-xs text-gray-500 p-1';
+                note.id = 'roi-layer-note';
+                note.textContent = 'Layer 1–6は隣接する境界ROIの間を表示・集計します。選択すると対象領域を色で示します。';
+                roiList.appendChild(note);
+            }
+            if (boundaryKeys.length) {
+                const details = document.createElement('details');
+                details.id = 'roi-boundaries'; details.open = roiBoundaryListOpen;
+                const summary = document.createElement('summary');
+                summary.textContent = '境界ROIを確認・編集'; summary.className = 'cursor-pointer text-gray-500 p-1';
+                details.appendChild(summary);
+                boundaryList = document.createElement('div'); boundaryList.className = 'space-y-1';
+                const help = document.createElement('p'); help.className = 'text-gray-500 p-1';
+                help.textContent = '保存済みの輪郭です。集計は上のLayer 1–6から選択します。';
+                boundaryList.appendChild(help); details.appendChild(boundaryList);
+                details.addEventListener('toggle', () => {
+                    roiBoundaryListOpen = details.open;
+                    drawAllRois(document.querySelector('.roi-item.active')?.dataset.roiKey || null);
+                });
+                // Appended after the effective regions below.
+                boundaryList._details = details;
+            }
+            const entries = definitions.concat(boundaryKeys.map(key => ({
+                key, name: roiNames[key] || key, color: palette[key], kind: 'boundary',
+            })));
+            entries.forEach(definition => {
+                const key = definition.key, isBoundary = definition.kind === 'boundary';
+                const isLayer = definition.kind === 'cortical-layer';
+                const name = definition.name;
+                const rgba = definition.color || palette[key] || [128,128,128,255];
+                const isUser = !isLayer && typeof key === 'string' && key.startsWith(USER_ROI_PREFIX);
+                if (showFlags[key] === undefined) showFlags[key] = definition.visible !== false;
 
                 const el = document.createElement('div');
-                el.className = 'roi-item p-2 rounded-md flex items-center justify-between border-l-4 border-transparent';
+                el.className = (isBoundary ? 'roi-boundary-item' : 'roi-item') + ' p-2 rounded-md flex items-center justify-between border-l-4 border-transparent';
                 el.dataset.roiKey = key;
+                el.dataset.roiKind = definition.kind;
+                if (isLayer) el.title = definition.definition;
 
                 const label = document.createElement('div');
                 label.className = 'flex items-center min-w-0 flex-1';
@@ -2514,7 +2569,7 @@ function loadAllImages() {
                 showChk.type = 'checkbox';
                 showChk.className = 'mr-1 accent-blue-600 cursor-pointer flex-none';
                 showChk.checked = showFlags[key] !== false;
-                showChk.title = '表示 ON/OFF（クリックでトグル）';
+                showChk.title = isBoundary ? '境界線の表示 ON/OFF' : '表示・集計 ON/OFF（クリックでトグル）';
                 showChk.addEventListener('click', (e) => e.stopPropagation());
                 showChk.addEventListener('change', () => {
                     showFlags[key] = showChk.checked;
@@ -2527,7 +2582,7 @@ function loadAllImages() {
 
                 const swatch = document.createElement('span');
                 swatch.className = 'color-swatch';
-                swatch.style.backgroundColor = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${rgba[3]/255})`;
+                swatch.style.backgroundColor = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${(rgba[3] ?? 255)/255})`;
                 label.appendChild(swatch);
 
                 const nameSpan = document.createElement('span');
@@ -2568,13 +2623,14 @@ function loadAllImages() {
                         }
                         persistRoi();
                         populateRoiList();
-                        const prev = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(focusKey)}"]`);
+                        const analyticalFocusKey = effectiveRoiKey(focusKey);
+                        const prev = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(analyticalFocusKey || focusKey)}"]`);
                         if (prev) {
                             document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                             prev.classList.add('active');
                         }
-                        drawAllRois(focusKey);
-                        displayGraphForRoi(focusKey);
+                        drawAllRois(isBoundary ? focusKey : analyticalFocusKey);
+                        displayGraphForRoi(analyticalFocusKey);
                     });
                     pencil = document.createElement('span');
                     pencil.textContent = ' ✎';
@@ -2588,7 +2644,7 @@ function loadAllImages() {
                 label.appendChild(nameSpan);
                 // 同じ名前でまとまっているときは、いくつの場所を含むかを出す。
                 // これが無いと「まとまった」ことが画面から分からない。
-                const sites = roiSiteCount(key);
+                const sites = isLayer ? 0 : roiSiteCount(key);
                 if (sites >= 2) {
                     const badge = document.createElement('span');
                     badge.className = 'ml-1 text-slate-400 flex-none';
@@ -2597,6 +2653,10 @@ function loadAllImages() {
                     label.appendChild(badge);
                 }
                 if (pencil) label.appendChild(pencil);
+                if (isLayer) {
+                    const badge = document.createElement('span'); badge.className = 'ml-1 text-sky-600 flex-none';
+                    badge.textContent = '層'; badge.title = definition.definition; label.appendChild(badge);
+                }
 
                 el.appendChild(label);
 
@@ -2614,13 +2674,18 @@ function loadAllImages() {
                 }
 
                 el.addEventListener('click', () => {
+                    if (isBoundary) {
+                        drawAllRois(key);
+                        return;
+                    }
                     displayGraphForRoi(key);
                     drawAllRois(key);
                     document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                     el.classList.add('active');
                 });
-                roiList.appendChild(el);
+                (isBoundary ? boundaryList : roiList).appendChild(el);
             });
+            if (boundaryList) roiList.appendChild(boundaryList._details);
 
             // ROI表示トグル(全体マスター)
             const roiToggle = document.getElementById('roi-toggle');
@@ -2666,24 +2731,31 @@ function loadAllImages() {
             const cssW = roiCanvas.offsetWidth || roiCanvas.width;
             const pxPerCss = roiCanvas.width / Math.max(1, cssW);
 
-            Object.keys(roiItems).forEach(roiKey => {
-                if (showFlags[roiKey] === false) return;
-                const isHighlight = roiKey === highlightKey;
-                const rgba = palette[roiKey];
-                const recs = roiItems[roiKey];
-                if (!Array.isArray(recs) || !rgba) return;
-
+            const definitions = effectiveRoiDefinitions();
+            const selected = definitions.find(roi => roi.key === highlightKey);
+            if (selected?.kind === 'cortical-layer' && showFlags[selected.key] !== false) {
+                const size = getMsiRefSize();
+                const resolved = MSIRaster.roiMask(selected, size.w, size.h);
+                if (resolved.available) {
+                    const overlay = document.createElement('canvas'); overlay.width = size.w; overlay.height = size.h;
+                    const context = overlay.getContext('2d'), pixels = context.createImageData(size.w, size.h);
+                    const color = selected.color || [59,130,246,255];
+                    for (let i = 0; i < resolved.mask.length; i++) if (resolved.mask[i]) {
+                        pixels.data.set([color[0], color[1], color[2], 55], i * 4);
+                    }
+                    context.putImageData(pixels, 0, 0);
+                    const origin = msiToCanvas(0, 0), unitX = msiToCanvas(1, 0), unitY = msiToCanvas(0, 1);
+                    roiCtx.save();
+                    roiCtx.setTransform(unitX[0] - origin[0], unitX[1] - origin[1], unitY[0] - origin[0], unitY[1] - origin[1], origin[0], origin[1]);
+                    roiCtx.imageSmoothingEnabled = false; roiCtx.drawImage(overlay, 0, 0); roiCtx.restore();
+                }
+            }
+            function strokeRings(rings, rgba, isHighlight, boundary) {
                 roiCtx.strokeStyle = `rgba(${rgba[0]}, ${rgba[1]}, ${rgba[2]}, 0.95)`;
                 // CSS 表示で 1〜2px になるよう内部座標の lineWidth を計算
                 roiCtx.lineWidth = (isHighlight ? 2.0 : 1.0) * pxPerCss;
-
-                // ★ 1 つの ROI が離れた複数の場所を持つ (同じ名前でまとめたもの)。
-                //   場所ごとに beginPath() から引き直す。頂点をひと続きに繋いでしまうと、
-                //   離れた場所の間に「繋ぎ線」が引かれてしまう。
-                //   以前はここで recs[0] しか描いていなかったため、2 箇所目以降は
-                //   統計に入っているのに線が出ない、という食い違いが起きていた。
-                for (const rec of recs) {
-                    const poly = rec && rec.poly_msi;
+                roiCtx.setLineDash(boundary ? [4 * pxPerCss, 3 * pxPerCss] : []);
+                for (const poly of rings) {
                     if (!Array.isArray(poly) || poly.length < 3) continue;
 
                     roiCtx.beginPath();
@@ -2696,6 +2768,18 @@ function loadAllImages() {
                     roiCtx.closePath();
                     roiCtx.stroke();
                 }
+                roiCtx.setLineDash([]);
+            }
+            for (const definition of definitions) {
+                if ((showFlags[definition.key] ?? definition.visible) === false) continue;
+                strokeRings(MSIRaster.roiContours(definition).map(contour => contour.vertices),
+                    definition.color || palette[definition.key] || [128,128,128,255], definition.key === highlightKey, false);
+            }
+            const effectiveKeys = new Set(definitions.map(roi => roi.key));
+            Object.keys(roiItems).forEach(roiKey => {
+                if (effectiveKeys.has(roiKey) || !roiBoundaryListOpen || showFlags[roiKey] === false) return;
+                strokeRings((roiItems[roiKey] || []).map(record => record?.poly_msi),
+                    palette[roiKey] || [128,128,128,255], roiKey === highlightKey, true);
             });
         }
 
@@ -2748,6 +2832,18 @@ function loadAllImages() {
          * poly_msi座標はMSI画像のピクセル空間（portrait）上の座標
          */
         function extractRoiPixels(imageKey, roiKey) {
+            const definition = effectiveRoiDefinitions().find(roi => roi.key === roiKey);
+            if (definition?.kind === 'cortical-layer') {
+                const raster = displayRaster(imageKey);
+                // A derived anatomical layer needs the native MSI raster. Image
+                // brightness is never a substitute for its analytical values.
+                if (!raster?.values) return [];
+                const resolved = MSIRaster.roiMask(definition, raster.W, raster.H);
+                if (!resolved.available) return [];
+                const out = [];
+                for (let i = 0; i < resolved.mask.length; i++) if (resolved.mask[i] && Number.isFinite(raster.values[i])) out.push(raster.values[i]);
+                return out;
+            }
             const polys = atlasData.roi?.roi_items?.[roiKey];
             if (!polys || polys.length === 0) return [];
 
@@ -2833,16 +2929,17 @@ function loadAllImages() {
 
         // Cache only the visible ROI masks, summaries and bounded drawing samples.
         // Raster/profile replacement also clears this cache in the existing reload paths.
-        function analysisResultsForRoi(roiKey, channels) {
-            const polygons = atlasData.roi?.roi_items?.[roiKey] || [];
-            const geometry = JSON.stringify(polygons);
+        function analysisResultsForRoi(roiKey, channels, knownDefinition) {
+            const definition = knownDefinition || effectiveRoiDefinitions().find(roi => roi.key === roiKey);
+            if (!definition) return null;
+            const geometry = JSON.stringify(definition);
             const ref = Object.values(valueRasters)[0];
             if (!ref || !normalizationEvaluation) return null;
             let entry = analysisRoiCache.get(roiKey);
             if (!entry || entry.geometry !== geometry || entry.evaluation !== normalizationEvaluation || entry.rasters !== valueRasters) {
-                const mask = new Uint8Array(ref.W * ref.H);
-                for (const poly of polygons) if (poly?.poly_msi?.length >= 3) MSIRaster.markRoiMask(mask, ref.W, ref.H, poly.poly_msi);
-                entry = { geometry, evaluation: normalizationEvaluation, rasters: valueRasters, mask, values: [], distributions: new Map() };
+                const resolved = MSIRaster.roiMask(definition, ref.W, ref.H);
+                entry = { geometry, definition, geometryResult: resolved, evaluation: normalizationEvaluation,
+                    rasters: valueRasters, mask: resolved.mask, values: [], distributions: new Map() };
                 analysisRoiCache.set(roiKey, entry);
             }
             const mode = valueDisplay.mode;
@@ -2851,8 +2948,12 @@ function loadAllImages() {
             const missing = channels.filter(key => !entry.distributions.has(mode + ':' + key));
             if (missing.length) {
                 const project = { ...normalizationProjectForEvaluation(), roi: atlasData.roi };
-                const rows = Normalization.quantifyRoi(project, valueRasters, normalizationEvaluation, entry.mask,
+                let rows = Normalization.quantifyRoi(project, valueRasters, normalizationEvaluation, entry.mask,
                     { distribution: { keys: missing, mode, maxPoints: 2000 } });
+                if (!entry.geometryResult.available) rows = rows.map(row => ({ ...row,
+                    nGeometry: null, nMeasured: null, nValid: null, rawStatus: 'UNAVAILABLE', status: 'UNAVAILABLE',
+                    rawReasonCodes: entry.geometryResult.reasonCodes, reasonCodes: entry.geometryResult.reasonCodes,
+                }));
                 // Do not retain extra references to old samples when replacing a channel.
                 entry.values = rows.map(({ distribution, ...row }) => row);
                 for (const key of missing) entry.distributions.set(mode + ':' + key, rows.find(row => row.key === key)?.distribution || null);
@@ -2893,19 +2994,21 @@ function loadAllImages() {
             refreshAnalysisExportControl();
             document.getElementById('graph-export-status').textContent = '表示中の分子・ROIを出力します。';
             observeAnalysisSize(graphContainer);
-            const roiItems = atlasData.roi?.roi_items || {};
-            const roiNames = atlasData.roi?.roi_names || {};
+            const definitions = effectiveRoiDefinitions();
+            const definitionByKey = Object.fromEntries(definitions.map(roi => [roi.key, roi]));
+            const roiNames = Object.fromEntries(definitions.map(roi => [roi.key, roi.name]));
             const showFlags = atlasData.roi?.roi_show_flags || {};
-            const roiKeys = Object.keys(roiItems).filter(k => showFlags[k] !== false);
+            const roiKeys = definitions.filter(roi => (showFlags[roi.key] ?? roi.visible) !== false).map(roi => roi.key);
             for (const key of analysisRoiCache.keys()) if (!roiKeys.includes(key)) analysisRoiCache.delete(key);
             if (!roiKeys.length) {
                 graphContainer.textContent = '表示中の ROI がありません';
                 return;
             }
-            const roiResults = Object.fromEntries(roiKeys.map(key => [key, analysisResultsForRoi(key, channels)]));
+            const roiResults = Object.fromEntries(roiKeys.map(key => [key, analysisResultsForRoi(key, channels, definitionByKey[key])]));
             const note = document.createElement('p');
             note.className = 'text-xs p-2 text-gray-600';
             note.textContent = 'Intensity Box Plot — 選択した分子を個別に表示します。分子間ではイオン化効率や単位が異なるため、分布の高さから濃度の大小は比較できません。各グラフの軸は独立しています。統計は元の MSI 座標の ROI 全体（Otsu の非表示画素を含む）。SD は画素間分布で、切片間の誤差ではありません。';
+            if (definitions.some(roi => roi.kind === 'cortical-layer')) note.textContent += ' Layer 1–6は外側の境界から内側の境界を除いた領域です。';
             graphContainer.appendChild(note);
             const legend = document.createElement('div'); legend.className = 'analysis-legend';
             const specification = document.createElement('span'); specification.textContent = '箱 P25–P75・中央値 ｜ ひげ P0–P99（線形補間）'; legend.appendChild(specification);
@@ -2957,7 +3060,12 @@ function loadAllImages() {
                 for (const [roiIndex, roiKey] of orderedRoiKeys.entries()) {
                     const result = roiResults[roiKey]?.values.find(row => row.key === key);
                     const stat = stats[roiKey], distribution = distributions[roiKey];
-                    let reason = result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : /^MSI_/i.test(key) ? '生値ラスタなし：MSI 定量は算出不可' : '参考画像の輝度（MSI 強度ではありません）';
+                    const definition = definitionByKey[roiKey], geometryResult = roiResults[roiKey]?.geometryResult;
+                    let reason = geometryResult?.available === false ? layerGeometryReason(geometryResult.reasonCodes)
+                        : result ? normalizationReasons(corrected ? result.reasonCodes : result.rawReasonCodes) : /^MSI_/i.test(key) ? '生値ラスタなし：MSI 定量は算出不可' : '参考画像の輝度（MSI 強度ではありません）';
+                    if (definition.kind === 'cortical-layer') {
+                        reason = definition.definition + (reason ? '\n' + reason : '');
+                    }
                     if (isNormalizationSkipped()) reason = skippedNormalizationNotice() + (reason ? '\n' + reason : '');
                     const abs = result?.absolute;
                     if (corrected && result?.role === 'ht' && showsAbsoluteQuantification()) reason += (reason ? '\n' : '') + '絶対定量: ' + (Number.isFinite(abs?.value) ? fmt(abs.value) + ' ' + (abs.unit || '') : '算出不可 — ' + normalizationReasons(abs?.reasonCodes || ['CALIBRATION_MISSING']));
@@ -2978,12 +3086,13 @@ function loadAllImages() {
                         ['roi', roiNames[roiKey] || roiKey],
                         ['median', distribution ? fmt(distribution.median) + ' [' + fmt(distribution.q1) + '–' + fmt(distribution.q3) + ']' : '算出不可'],
                         ['mean', stat.n && Number.isFinite(stat.mean) ? fmt(stat.mean) + ' ± ' + fmt(stat.sd) : '算出不可'],
-                        ['count', result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry}` + (corrected ? `\n補正 coverage ${coverage}` : '') : String(stat.n)],
+                        ['count', geometryResult?.available === false ? '算出不可' : result ? `${stat.n} / ${result.nMeasured} / ${result.nGeometry}` + (corrected ? `\n補正 coverage ${coverage}` : '') : String(stat.n)],
                     ];
                     for (const [field, text] of cells) {
                         const td = document.createElement('td'); td.dataset.field = field; td.style.whiteSpace = 'pre-line';
                         if (field === 'roi') {
                             const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+                            if (definition.kind === 'cortical-layer') button.title = definition.definition;
                             button.setAttribute('aria-pressed', String(roiKey === highlightRoiKey));
                             button.addEventListener('click', () => selectAnalysisRoi(roiKey)); td.appendChild(button);
                         } else td.textContent = text;
@@ -3004,9 +3113,16 @@ function loadAllImages() {
                         median: distribution?.median ?? null, mean: stat.n ? stat.mean : null, sd: stat.n ? stat.sd : null,
                         q1: distribution?.q1 ?? null, q3: distribution?.q3 ?? null, min: distribution?.min ?? null,
                         p99: distribution?.whiskerHigh ?? null, max: distribution?.max ?? null,
-                        n: stat.n && Number.isFinite(stat.mean) ? stat.n : 0, nValid: stat.n,
-                        nMeasured: result?.nMeasured ?? stat.n, nGeometry: result?.nGeometry ?? stat.n,
+                        n: geometryResult?.available === false ? null : stat.n && Number.isFinite(stat.mean) ? stat.n : 0,
+                        nValid: geometryResult?.available === false ? null : stat.n,
+                        nMeasured: geometryResult?.available === false ? null : result?.nMeasured ?? stat.n,
+                        nGeometry: geometryResult?.available === false ? null : result?.nGeometry ?? stat.n,
                         mode: 'roi_pixels', order: roiIndex + 1, sortOrder: sortMode, status, reason,
+                        roiKind: definition.kind, roiDefinition: definition.definition || '',
+                        sourceRoiKeys: (definition.sourceKeys || definition.keys || []).join(', '),
+                        roiRuleVersion: definition.ruleVersion || '',
+                        geometryReasonCodes: (geometryResult?.reasonCodes || []).join('; '),
+                        geometryQc: geometryResult?.geometryQc ? JSON.stringify(geometryResult.geometryQc) : '',
                     });
                 }
                 section.appendChild(table);
@@ -3017,8 +3133,14 @@ function loadAllImages() {
                 channels: channels.join(', '), visibleRoiCount: roiKeys.length,
                 normalizationProfileId: currentProject?.normalization?.profileId || currentProject?.normalization?.id || '',
                 normalizationProfileRevision: currentProject?.normalization?.revision ?? '',
-                validPixelDefinition: '有効画素数は各行の値モードの有効数。集計画素数は統計量を算出できた画素数（算出不可は0）。',
+                validPixelDefinition: '有効画素数は各行の値モードの有効数。集計画素数は統計量を算出できた画素数。領域が確定して有効な値がない場合は0、境界ROIから領域を確定できない場合は空欄。',
                 note: note.textContent,
+                ...(definitions.some(roi => roi.kind === 'cortical-layer') ? {
+                    layerRuleVersion: MSIRaster.ROI_LAYER_RULE_VERSION,
+                    layerDefinitions: JSON.stringify(definitions.filter(roi => roi.kind === 'cortical-layer').map(roi => ({
+                        key: roi.key, name: roi.name, definition: roi.definition, sourceKeys: roi.sourceKeys,
+                    }))),
+                } : {}),
             } };
             refreshAnalysisExportControl();
             graphContainer.scrollTop = scrollTop;
@@ -3249,13 +3371,14 @@ function loadAllImages() {
             persistRoi();
             populateRoiList();
             // 描いた ROI (統合したならその統合先) を active 扱いにする
-            const newItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(targetKey)}"]`);
+            const analyticalKey = effectiveRoiKey(targetKey);
+            const newItem = document.querySelector(`.roi-item[data-roi-key="${CSS.escape(analyticalKey || targetKey)}"]`);
             if (newItem) {
                 document.querySelectorAll('.roi-item').forEach(i => i.classList.remove('active'));
                 newItem.classList.add('active');
             }
-            drawAllRois(targetKey);
-            displayGraphForRoi(targetKey);
+            drawAllRois(analyticalKey);
+            displayGraphForRoi(analyticalKey);
         }
 
         function deleteUserRoi(key) {
@@ -3275,7 +3398,7 @@ function loadAllImages() {
             persistRoi();
             populateRoiList();
             // 削除した ROI が active なら残った先頭 ROI に切替、そうでなければ現在の active を維持
-            const remaining = Object.keys((atlasData.roi && atlasData.roi.roi_items) || {});
+            const remaining = effectiveRoiDefinitions().map(roi => roi.key);
             const nextKey = remaining.includes(selectedKey) ? selectedKey : selectedKey === key ? remaining[0] || null : null;
             const nextItem = nextKey && document.querySelector(`.roi-item[data-roi-key="${CSS.escape(nextKey)}"]`);
             if (nextItem) nextItem.classList.add('active');
@@ -4075,7 +4198,7 @@ function loadAllImages() {
       useModeRanges();
       redrawValueViews();
       const active = document.querySelector('.roi-item.active');
-      const roiKey = active?.dataset.roiKey || Object.keys(atlasData.roi?.roi_items || {})[0];
+      const roiKey = active?.dataset.roiKey || effectiveRoiDefinitions()[0]?.key;
       if (roiKey) displayGraphForRoi(roiKey);
       const title = document.getElementById('atlas-title');
       if (title) title.textContent = currentProject.displayName;

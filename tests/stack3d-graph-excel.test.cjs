@@ -180,3 +180,30 @@ test('3D Excel disables immediately for queued calculations, pending results, st
     assert.equal(h.downloads.length, 0); assert.deepEqual(h.errors, []);
   } finally { await h.close(); }
 });
+
+test('3D unknown cortical geometry shows unavailable counts and exports blank numeric cells', { timeout: 90000 }, async () => {
+  const h = await fixture(), { page } = h;
+  try {
+    await page.evaluate(async id => {
+      const project = await ProjectStorage.getProject(id);
+      project.roi.roi_items.corticalBoundary = [{ poly_msi: [[-.5, -.5], [.5, -.5], [.5, .5], [-.5, .5]] }];
+      project.roi.roi_names.corticalBoundary = 'Layer1';
+      await ProjectStorage.putProject(project);
+    }, sectionId(1));
+    await page.reload(); await readyAnalysisStack(page, 8); await ready(page, 'selected');
+    const expected = await graphSnapshot(page), layer = expected.groups.find(group => group.roiName === 'Layer 1');
+    assert.equal(layer.geometryAvailable, false);
+    // Statistics are intentionally collapsed on load. Exercise the same visible
+    // table flow as a user before asserting rendered text (not hidden textContent).
+    const card = page.locator('.analysis-molecule:not([hidden])');
+    await card.locator('.analysis-table-details > summary').click();
+    const countCell = card.locator('tr[data-roi-name="Layer 1"] [data-stat="count"]');
+    await countCell.waitFor({ state: 'visible' });
+    assert.match(await countCell.innerText(), /算出不可/);
+    const before = await scientificSnapshot(page), workbook = await download(h);
+    const actual = assertWorkbook(workbook, expected).find(row => row['ROI名'] === 'Layer 1');
+    for (const column of ['集計画素数', '有効画素数', '測定画素数', 'ROI画素数']) assert.equal(actual[column], null);
+    assert.match(actual['理由'], /境界ROI/);
+    assert.deepEqual(await scientificSnapshot(page), before); assert.deepEqual(h.errors, []);
+  } finally { await h.close(); }
+});
