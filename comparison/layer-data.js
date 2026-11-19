@@ -5,6 +5,7 @@
   const allowedGroups = [...standardLayers, 'V1', 'V2'];
   const scriptBase = global.document?.currentScript?.src || global.location?.href;
   const datasets = new Set(['T420', 'T430', 'T462', 'T479', 'T503', 'T512']);
+  const summaries = new Map();
   const pending = new Map();
 
   function check(condition) {
@@ -83,13 +84,23 @@
       } catch (error) { testErrors[contrast] = error.message; }
     }
 
+    function measurement(geneIndex, groupIndex) {
+      const cell = pos(geneIndex, groupIndex);
+      const detected = detectedAt(cell), n = counts[groupIndex];
+      return { group: groups[groupIndex], mean: meanAt(cell), detected, n, pct: 100 * detected / n };
+    }
+
     function profile(gene) {
       const geneIndex = indices.get(gene);
       if (geneIndex === undefined) return [];
-      return groups.map((group, i) => {
-        const cell = pos(geneIndex, i), detected = detectedAt(cell);
-        return { group, mean: meanAt(cell), detected, n: counts[i], pct: 100 * detected / counts[i] };
-      });
+      return groups.map((group, i) => measurement(geneIndex, i));
+    }
+
+    const layers = Object.freeze(standardLayers.filter(layer => groups.includes(layer)));
+    function layerRows(layer) {
+      if (!layers.includes(layer)) return [];
+      const groupIndex = groups.indexOf(layer);
+      return genes.map((gene, i) => ({ gene, ...measurement(i, groupIndex) }));
     }
 
     function row(geneIndex, i) {
@@ -145,7 +156,7 @@
     const { genes: catalog, ...meta } = manifest;
     meta.analyses = analyses;
     meta.testErrors = testErrors;
-    return { genes: Object.freeze(catalog), groups: Object.freeze(groups), contrasts: Object.freeze(contrasts), meta, profile, compare, rows };
+    return { genes: Object.freeze(catalog), groups: Object.freeze(groups), contrasts: Object.freeze(contrasts), meta, layers, layerRows, profile, compare, rows };
   }
 
   async function verifiedBytes(response, sha) {
@@ -158,7 +169,7 @@
     return bytes;
   }
 
-  async function retrieve(section) {
+  async function fetchSummary(section) {
     const url = new URL('data/layer-analysis/' + section.toLowerCase() + '.json', scriptBase);
     const response = await global.fetch(url);
     if (!response.ok) throw new Error('ST層別データの目録を読み込めませんでした。再試行してください。');
@@ -166,6 +177,28 @@
     check(manifest?.section === section && /^[a-f0-9]{64}$/.test(manifest.dataSha256) &&
       manifest.dataFile === section.toLowerCase() + '-' + manifest.dataSha256.slice(0, 16) + '.bin');
     const bytes = await verifiedBytes(await global.fetch(new URL(manifest.dataFile, url)), manifest.dataSha256);
+    return { url, manifest, bytes, profiles: create(manifest, bytes) };
+  }
+
+  function summary(section) {
+    if (!summaries.has(section)) {
+      const request = fetchSummary(section).catch(error => {
+        summaries.delete(section);
+        throw error;
+      });
+      summaries.set(section, request);
+    }
+    return summaries.get(section);
+  }
+
+  async function loadProfiles(section) {
+    if (!datasets.has(section)) return null;
+    return (await summary(section)).profiles;
+  }
+
+  async function retrieve(section) {
+    const { url, manifest, bytes, profiles } = await summary(section);
+    if (!Object.keys(manifest.tests || {}).length) return profiles;
     const files = {}, errors = {};
     await Promise.all(Object.entries(manifest.tests || {}).map(async ([contrast, ref]) => {
       check(allowedGroups.includes(contrast) && contrast !== 'V2');
@@ -193,7 +226,7 @@
     return pending.get(section);
   }
 
-  const api = { load, create };
+  const api = { load, loadProfiles, create };
   global.STLayerData = api;
   if (typeof module === 'object' && module.exports) module.exports = api;
 })(typeof window === 'object' ? window : globalThis);

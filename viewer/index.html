@@ -374,9 +374,9 @@
                     </div>
                     <!-- レイヤ選択: チェックボックスを横に並べ、その下に「選択中の 1 レイヤ」の
                          強度レンジ / 透明度を 1 組だけ常時表示する (歯車の開閉をやめた) -->
-                    <nav class="msi-st-navigation" aria-label="MSIとSTの比較">
+                    <nav class="msi-st-navigation" aria-label="皮質の層別データ">
                         <a id="open-msi-st" role="link" aria-disabled="true" aria-describedby="msi-st-navigation-status"
-                            target="_blank" rel="noopener noreferrer" title="切片を読み込んでいます。">MSI–ST比較 ↗</a>
+                            target="_blank" rel="noopener noreferrer" title="切片を読み込んでいます。">層別データ ↗</a>
                         <span id="msi-st-navigation-status" role="status" aria-live="polite">切片を読み込んでいます。</span>
                     </nav>
                     <div id="image-selector-options" class="shrink-0 border border-gray-200 rounded-t p-1 text-xs bg-white"></div>
@@ -542,8 +542,8 @@
             link.setAttribute('aria-disabled', String(!href));
             if (href) {
                 link.href = href;
-                link.title = 'この切片のMSIと対応STを新しいタブで比較します。';
-                status.textContent = pair.section + ' ↔ ' + pair.st;
+                link.title = 'この切片に対応する皮質の層別データを新しいタブで開きます。';
+                status.textContent = pair.section + '（ST ' + pair.st + '）';
             } else {
                 link.removeAttribute('href');
                 link.title = reason || 'この切片のST対応は未登録です。';

@@ -981,9 +981,9 @@
     const button = $('open-st-comparison'), help = $('open-st-comparison-help');
     button.disabled = locked || !pair;
     help.textContent = busy ? '切片を読み込んでいます。'
-      : saving || batchAlignmentUI?.saving ? '保存が終わると比較を開けます。'
+      : saving || batchAlignmentUI?.saving ? '保存が終わると層別データを開けます。'
       : !section ? '切片を選択してください。'
-      : !global.MsiStPairs ? '比較情報を読み込めませんでした。画面を再読み込みしてください。'
+      : !global.MsiStPairs ? '切片情報を読み込めませんでした。画面を再読み込みしてください。'
       : !pair ? 'この切片はST対応未登録です。'
       : `対応ST：${pair.st} · 別タブで開きます。3D画面と配置は保持されます。`;
     button.title = help.textContent;

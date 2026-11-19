@@ -51,7 +51,7 @@
 <body class="text-gray-800">
     <div class="min-h-screen flex flex-col">
         <header class="bg-white border-b">
-            <div class="max-w-5xl mx-auto px-6 py-5 flex items-center justify-between">
+            <div class="max-w-5xl mx-auto px-6 py-5 flex flex-wrap items-center justify-between gap-3">
                 <div>
                     <div class="flex items-baseline gap-2">
                         <h1 class="text-xl font-bold text-gray-900">Marmoset / Mouse Brain Atlas — Master</h1>
@@ -60,7 +60,8 @@
                     </div>
                     <p class="text-xs text-gray-500 mt-0.5">データ登録と一括管理</p>
                 </div>
-                <div class="flex items-center gap-3">
+                <div class="flex flex-wrap items-center gap-3">
+                    <a id="open-layer-data" href="comparison/index.html" class="btn" target="_blank" rel="noopener noreferrer" title="皮質各層の遺伝子発現を閲覧・出力します。">層別データ</a>
                     <a id="open-stack3d" href="stack3d/index.html" class="btn" title="選択中の系列の切片を3D表示します。">3Dモデル</a>
                     <!-- クラウドの状態。接続先が未設定なら出さない (ローカルのみモード) -->
                     <span id="cloud-chip" class="hidden text-xs px-2 py-0.5 rounded-full border"></span>

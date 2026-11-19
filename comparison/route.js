@@ -39,8 +39,8 @@
       stack.searchParams.set('series', 'legacy_marmoset');
       document.getElementById('comparison-stack3d').href = stack.href;
       document.getElementById('comparison-source').textContent = route.from === 'stack3d'
-        ? '3Dから開いた比較' : route.from === 'viewer' ? '個別ページから開いた比較' : 'MSI–ST比較';
-      document.title = (source === pair ? pair.section + ' ↔ ' : source.section + '（参照）× ') + st + ' | Marmoset MSI–ST';
+        ? '3Dから開いた層別データ' : route.from === 'viewer' ? '個別ページから開いた層別データ' : '層別データ';
+      document.title = st + ' 層別データ | Marmoset Atlas';
     }
   });
 })();

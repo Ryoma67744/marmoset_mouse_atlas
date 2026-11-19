@@ -146,3 +146,50 @@ test('public T503 model matches the retained spatial calibration and the H5AD su
   assert.equal(ds.compare('SLC17A7', 'L3').testStatus, 'not_tested');
   assert.equal(ds.compare('SLC17A7', 'L3').p, null);
 });
+
+test('layer extraction returns one measured row per catalog gene, including zeros and only cortical layers', () => {
+  const ds = readSection('T503');
+  const l4 = ds.layerRows('L4');
+  assert.deepEqual(ds.layers, ['L1', 'L2', 'L3', 'L4', 'L5', 'L6']);
+  assert.deepEqual(l4.map(r => r.gene), ds.genes);
+  assert.ok(l4.some(r => r.mean === 0 && r.detected === 0 && r.pct === 0 && r.n === 1053));
+  assert.deepEqual(l4.find(r => r.gene === 'HTR2A'), {
+    gene: 'HTR2A', group: 'L4', mean: 2.2713066699364455, detected: 1029, n: 1053, pct: 100 * 1029 / 1053,
+  });
+  assert.deepEqual(ds.layerRows('V1'), []);
+  assert.deepEqual(ds.layerRows('L7'), []);
+});
+
+test('profiles retry a failed transfer, share concurrent requests, and never require contrast data', async () => {
+  const vm = require('node:vm');
+  const paths = [];
+  let rejectOnce = true;
+  const browser = {
+    location: { href: 'https://atlas.test/comparison/index.html' },
+    crypto: crypto.webcrypto,
+    async fetch(url) {
+      const name = path.basename(url.pathname);
+      paths.push(name);
+      if (rejectOnce && name.endsWith('.bin')) {
+        rejectOnce = false;
+        return new Response(null, { status: 503 });
+      }
+      return new Response(fs.readFileSync(path.join(folder, name)));
+    },
+  };
+  const code = fs.readFileSync(path.join(__dirname, '../comparison/layer-data.js'), 'utf8');
+  vm.runInNewContext(code, { window: browser, URL, TextDecoder });
+  const api = browser.STLayerData;
+  await assert.rejects(api.loadProfiles('T503'), /読み込めません/);
+  const [first, second] = await Promise.all([api.loadProfiles('T503'), api.loadProfiles('T503')]);
+  assert.equal(first, second);
+  assert.equal(await api.loadProfiles('unknown'), null);
+  assert.equal(paths.filter(name => name === 't503.json').length, 2);
+  assert.equal(paths.filter(name => name.endsWith('.bin')).length, 2);
+  assert.equal(paths.length, 4);
+  assert.equal(first.layerRows('L1').length, 30009);
+  const full = await api.load('T503');
+  assert.equal(paths.length, 5);
+  assert.match(paths.at(-1), /^t503-l3-.*\.json$/);
+  assert.equal(full.compare('HTR2A', 'L3').testStatus, 'validated');
+});
