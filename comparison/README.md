@@ -72,7 +72,7 @@ Run `npm test` for repository checks and `npm run build:pages` for the deploymen
 
 Select a section and one of L1–L6. Each gene has a zero-inclusive mean CP10k, detected bin count, total bin count and detection percentage. The table includes all genes in the cortical catalog. A layer pools the sampled cortex. T462 uses only bins with an individual cortical layer annotation. V1 and V2 are anatomical regions and do not enter the layer list.
 
-Download one layer or all six from the selected section. CSV uses one row per section, layer and gene. Excel contains a sheet for each requested layer and records the normalization and data source. Searches and table pagination affect the on-screen view only. ST extraction works independently of local MSI data.
+Download one layer or all six from the selected section. CSV uses one row per section, layer and gene. An Excel workbook opens with a Japanese guide (「説明」) listing the selected section, included layers and the contents of each exported sheet. It defines the per-gene measurements and units, the Metadata keys, and the MSI_ROI fields when that sheet is present. Each requested layer has its own expression sheet. Metadata records the normalization and data source. Searches and table pagination affect the on-screen view only. ST extraction works independently of local MSI data.
 
 For a registered MSI region, the page can also report the selected molecule’s raw median and finite-pixel count from browser storage. Missing ROI boundaries or signal retain a missing status. T503 can use Cor_2_2 as an optional MSI source, alongside its registered Cor_2_3 source.
 
