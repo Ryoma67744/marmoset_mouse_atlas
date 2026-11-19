@@ -69,7 +69,7 @@
     const section = { id: manifest.id, n, valueType: manifest.valueType,
       x: manifest.x.slice(), y: manifest.y.slice(),
       region: categorical(manifest.region, n, '領域注釈'), layer: categorical(manifest.layer, n, '皮質層注釈'),
-      sources, scope: 'cortex_plus_available_subcortex', provenance: manifest.provenance };
+      sources, scope: sources.length === 1 && sources[0].id === 'Cortex' ? 'cortex' : 'cortex_plus_available_subcortex', provenance: manifest.provenance };
     section.bounds = [Infinity, -Infinity, Infinity, -Infinity];
     for (let i = 0; i < n; i++) {
       section.bounds[0] = Math.min(section.bounds[0], section.x[i]); section.bounds[1] = Math.max(section.bounds[1], section.x[i]);
@@ -174,7 +174,28 @@
     return { section, genes, initialGenes, fetchGenes,
       sourceAt: index => Number.isInteger(index) && index >= 0 && index < n ? sources[binSources[index]] : null };
   }
-  const api = Object.freeze({ create });
+  // The T503 bootstrap already holds coordinates and initial maps. Bind its
+  // ordered catalog to the shard index before resolving any gene by position.
+  async function createCortical(viewer, catalog, index, options = {}) {
+    check(viewer?.id === 'T503' && index?.section === viewer.id && index.nBins === viewer.x.length &&
+      index.nGenes === catalog.length && Number.isSafeInteger(index.genesPerChunk) &&
+      index.genesPerChunk > 0, '皮質カウントの切片・サイズ');
+    const bytes = new TextEncoder().encode(JSON.stringify(catalog));
+    check(global.crypto?.subtle, '遺伝子一覧の検証機能');
+    const hash = new Uint8Array(await global.crypto.subtle.digest('SHA-256', bytes));
+    check(Array.from(hash, b => b.toString(16).padStart(2, '0')).join('') === index.catalogSha256,
+      '皮質カウントの遺伝子順序');
+    const geneChunks = Object.fromEntries(catalog.map((gene, i) =>
+      [gene, 'chunk-' + String(Math.floor(i / index.genesPerChunk)).padStart(3, '0') + '.json.gz']));
+    return create({
+      format: 'marmoset-st-unified-v1', id: viewer.id, n: index.nBins, valueType: 'RNA counts',
+      x: viewer.x, y: viewer.y, region: viewer.region, layer: viewer.layer, genes: catalog,
+      sources: [{ id: 'Cortex', label: '皮質', offset: 0, n: index.nBins, genes: catalog }],
+      initialGenes: viewer.genes, chunks: index.chunks, geneChunks,
+      provenance: { sourceUrl: index.sourceUrl, sourceSha256: index.sourceSha256 }
+    }, { baseUrl: 'data/t503/', ...options });
+  }
+  const api = Object.freeze({ create, createCortical });
   if (typeof module === 'object' && module.exports) module.exports = api;
   else global.MsiStData = api;
 })(typeof window === 'object' ? window : globalThis);

@@ -8,7 +8,7 @@ window.MARMOSET_BOOTSTRAP="H4sIAAAAAAACCuy93Y5ly3Em9iqNul4iM/J/HV8diYAkgNIIJC3AI
   const finite=value=>typeof value==='number'&&Number.isFinite(value);
   function el(tag,className,text){const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node;}
 
-  window.createMsiViewer=({root,data,section})=>{
+  window.createMsiViewer=({root,data,section,onSingleMolecule})=>{
     const $=id=>root.querySelector('#'+id),canvas=$('mx-msi-canvas'),surface=$('mx-msi-surface'),controls=$('mx-msi-controls');
     if(!canvas||!surface||!controls)throw Error('MSIの表示領域が見つかりません');
     const storageKey='marmoset-msi-display-v1',molecules=data.molecules,moleculeIds=new Set(molecules.map(m=>m.id));
@@ -32,8 +32,8 @@ window.MARMOSET_BOOTSTRAP="H4sIAAAAAAACCuy93Y5ly3Em9iqNul4iM/J/HV8diYAkgNIIJC3AI
       nativeContext.putImageData(pixels,0,0);const dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(rect.width*dpr);canvas.height=Math.round(rect.height*dpr);const ctx=canvas.getContext('2d');ctx.clearRect(0,0,canvas.width,canvas.height);const fit=Math.min(rect.width/s.displayWidth,rect.height/s.displayHeight),left=(rect.width-s.displayWidth*fit)/2,top=(rect.height-s.displayHeight*fit)/2,[a,b,c,d,e,f]=s.matrix;ctx.imageSmoothingEnabled=false;ctx.setTransform(dpr*fit*a,dpr*fit*b,dpr*fit*c,dpr*fit*d,dpr*(left+fit*e),dpr*(top+fit*f));ctx.drawImage(nativeCanvas,0,0);ctx.setTransform(1,0,0,1,0,0);
       const title=active.length?active.join(' + '):'表示する分子を選択';$('mx-msi-heading').textContent='MSI / '+title;canvas.setAttribute('aria-label',currentSection+' '+title+'、生信号 a.u.、'+(state.mode==='overlay'?'色を加算して重ね合わせ':'単一分子'));$('mx-msi-summary').textContent='生信号（a.u.） · '+(state.mode==='overlay'?'色の加算合成':'単一分子')+' · '+s.x.length.toLocaleString()+'測定点';message.hidden=active.length>0;message.textContent='重ね合わせる分子を選択してください';
     }
-    function render(){controls.replaceChildren();const bar=el('div','mx-msi-toolbar'),modeLabel=el('label','mx-msi-field','表示方法'),mode=el('select');mode.setAttribute('aria-label','MSIの表示方法');for(const[value,text]of[['single','単一分子'],['overlay','重ね合わせ']]){const option=el('option','',text);option.value=value;mode.append(option);}mode.value=state.mode;mode.addEventListener('change',()=>{state.mode=mode.value;save();render();schedule();});modeLabel.append(mode);bar.append(modeLabel);
-      if(state.mode==='single'){const label=el('label','mx-msi-field','分子'),select=el('select');select.setAttribute('aria-label','MSIの分子');for(const m of molecules){const option=el('option','',m.label||m.id);option.value=m.id;select.append(option);}select.value=state.single;select.addEventListener('change',()=>{state.single=select.value;save();render();schedule();});label.append(select);bar.append(label);}
+    function render(){controls.replaceChildren();const bar=el('div','mx-msi-toolbar'),modeLabel=el('label','mx-msi-field','表示方法'),mode=el('select');mode.setAttribute('aria-label','MSIの表示方法');for(const[value,text]of[['single','単一分子'],['overlay','重ね合わせ']]){const option=el('option','',text);option.value=value;mode.append(option);}mode.value=state.mode;mode.addEventListener('change',()=>{state.mode=mode.value;save();render();schedule();if(state.mode==='single')onSingleMolecule?.(state.single);});modeLabel.append(mode);bar.append(modeLabel);
+      if(state.mode==='single'){const label=el('label','mx-msi-field','分子'),select=el('select');select.setAttribute('aria-label','MSIの分子');for(const m of molecules){const option=el('option','',m.label||m.id);option.value=m.id;select.append(option);}select.value=state.single;select.addEventListener('change',()=>{state.single=select.value;save();render();schedule();onSingleMolecule?.(state.single);});label.append(select);bar.append(label);}
       const reset=el('button','mx-msi-reset','この切片のレンジを自動に');reset.type='button';reset.addEventListener('click',()=>{for(const m of molecules)delete state.ranges[rangeKey(m.id)];save();render();schedule();});controls.append(bar);
       if(state.mode==='overlay'){const choices=el('div','mx-msi-molecules');for(const m of molecules){const label=el('label','mx-msi-choice'),check=el('input');check.type='checkbox';check.checked=state.layers[m.id].visible;check.setAttribute('aria-label',m.id+'をMSIに重ねる');check.addEventListener('change',()=>{state.layers[m.id].visible=check.checked;save();render();schedule();});const dot=el('span','mx-msi-dot');dot.style.backgroundColor=state.layers[m.id].color;label.append(check,dot,document.createTextNode(m.label||m.id));choices.append(label);}controls.append(choices);}
       const disclosure=el('details','mx-msi-range-disclosure');disclosure.open=state.rangeExpanded;const summary=el('summary'),hint=el('span','mx-msi-range-summary-hint',state.rangeExpanded?'閉じる':'開く');summary.setAttribute('aria-label','MSIのレンジ調整');summary.append(el('strong','','MSI表示レンジ'),hint,el('span','mx-msi-range-summary-values'));const body=el('div','mx-msi-range-body');body.append(reset);disclosure.append(summary,body);disclosure.addEventListener('toggle',()=>{if(!disclosure.isConnected)return;state.rangeExpanded=disclosure.open;hint.textContent=state.rangeExpanded?'閉じる':'開く';save();});controls.append(disclosure);
@@ -51,6 +51,12 @@ window.MARMOSET_BOOTSTRAP="H4sIAAAAAAACCuy93Y5ly3Em9iqNul4iM/J/HV8diYAkgNIIJC3AI
       preset.addEventListener('change',()=>{if(preset.value==='manual'){const currentRange=range(id);state.ranges[rangeKey(id)]={...currentRange,preset:'manual'};}else state.ranges[rangeKey(id)]={preset:preset.value};error.hidden=true;sync(range(id));save();schedule();});sync(r);if(!s.valid)for(const input of[minInput,maxInput,minSlider,maxSlider,preset])input.disabled=true;return box;
     }
     canvas.hidden=false;$('mx-msi-image').hidden=true;const observer=new ResizeObserver(schedule);observer.observe(surface);render();schedule();
-    return {setSection(id){if(id===currentSection)return;if(!data.sections[id])throw Error('MSI切片が見つかりません：'+id);currentSection=id;render();schedule();},redraw:schedule,destroy(){destroyed=true;if(frame)cancelAnimationFrame(frame);observer.disconnect();message.remove();}};
+    return {
+      singleMolecule(){return state.mode==='single'?state.single:null;},
+      showMolecule(id){
+        if(!moleculeIds.has(id))return;
+        state.mode='single';state.single=id;save();render();schedule();
+      },
+      setSection(id){if(id===currentSection)return;if(!data.sections[id])throw Error('MSI切片が見つかりません：'+id);currentSection=id;render();schedule();},redraw:schedule,destroy(){destroyed=true;if(frame)cancelAnimationFrame(frame);observer.disconnect();message.remove();}};
   };
 })();

@@ -19,8 +19,8 @@ The query accepts `project`, `section`, `st`, and an optional `from=stack3d|view
 
 - ST: [MCCSTA](https://db.genomics.cn/stomics/mccsta/), datasets T420, T430, T462, T479, T503, T512 from [the paper](https://doi.org/10.1126/science.aea2673). The page includes spatial coordinates, annotations, all six catalogs, and the initial 20 genes.
 - **T462 / Cor_9_3** combines cortex, thalamus, and striatum into one ST map with one display range per selected gene. All 32,891 genes in the union of the three source catalogs are packaged as local compressed files and loaded on demand; T462 does not require the official expression API. The offline package includes those files.
-- The other five sections continue to show cortical bins. Additional selected gene values beyond the initial 20 are fetched from the official public schema/data API; returned coordinates must exactly match the bundled section before accepting expression data. Those requests require internet access and upstream CORS availability.
-- T462 displays the audited raw RNA counts from H5AD `X` and each RDS object's `RNA/counts`. Integrated, imputed, and normalized `RNA/data` matrices are not mixed into this display. The display's `log1p` option changes color scaling only. The numeric expression units/normalization of the other five API datasets remain unconfirmed in the UI. A zero is not proof of biological absence.
+- The other five sections show cortical bins. T503 ships its 30,009 spatial gene vectors in 118 local raw-count shards. For T420, T430, T479 and T512, additional spatial gene values beyond the initial 20 are fetched from the official public schema/data API; returned coordinates must exactly match the bundled section before accepting expression data. Those requests require internet access and upstream CORS availability.
+- T462 displays the audited raw RNA counts from H5AD `X` and each RDS object's `RNA/counts`. Integrated, imputed, and normalized `RNA/data` matrices are not mixed into this display. The display's `log1p` option changes color scaling only. T503 also displays raw H5AD counts. Additional spatial vectors fetched on demand for the four API-backed sections retain the original viewer units. A zero is not proof of biological absence.
 - Source catalogs differ. A gene absent from one source is unavailable in those bins, not a measured zero; unavailable bins are excluded from detection-rate denominators. Loading errors are shown separately and can be retried. MSI and ST are different specimens, are independently fitted, and are **not spatially registered**.
 - Gene descriptions include NCBI marmoset annotations and explicitly labeled general functions with human references; they do not establish cell identity or experimental function in marmoset.
 
@@ -67,3 +67,23 @@ The complete official `T479.gem.gz` (2,580,567,648 bytes; SHA-256 `0092f7e8b9240
 The same comparison code is included in Pages and offline builds. Public release files do not include users' MSI data. The existing complete offline workspace export intentionally packages the selected workspace's data separately, under its existing export behavior. Keep project data in that workspace or browser storage, not in comparison source assets.
 
 Run `npm test` for repository checks and `npm run build:pages` for the deployment package. Publishing is performed by the existing main-branch Pages workflow; local source changes alone do not update the public app.
+
+## Anatomical ROI and cortical expression analysis
+
+Select a region and gene on the comparison page. Each MSI row reports the raw median and finite-pixel count for the selected channel inside the current saved ROI. The denominator is the native ROI mask area. T503 can also be compared with Cor_2_2 as a separately labeled anatomical reference. Cor_2_3 remains the registered pair. Missing boundaries, repeated names and unavailable signals carry separate status codes. MSI coordinates and measurements are read from browser storage.
+
+All six sections ship genome-wide cortical summaries, independent of spatial map availability. The grouped means use raw counts normalized to 10,000 per bin and include measured zeros. Detection is the fraction of eligible bins with a positive count. Layer contrasts give each of the other five standard layers equal weight in both mean expression and detection rate. Log ratios use these arithmetic means without a pseudocount. The layer axis pools all sampled cortical regions. V1 vs V2 uses complete regions, and is available for T503 and T512. The T462 layers use only individually annotated cortical bins. T479 has V2 without V1.
+
+The interactive MA plot shows finite descriptive effects. T503 L3 vs the other layers also has an exploratory spatial-block volcano, with BH adjustment across 20,830 eligible genes in that contrast. Its null calibration evaluated the marginal false-positive rate at 0.05 under 15 simulated conditions. A single section provides within-section evidence, and does not estimate biological variability across animals. Inspect the calculation and its selection criteria in `scripts/validate-t503-spatial.py` and the calibration results in `data/layer-analysis/t503-spatial-validation.json`. Full tables retain one-sided and all-zero genes, with uncomputed test results left empty. Excel, zipped TSV and standalone interactive HTML record the compared regions, available tests, source and selected MSI molecule. SVG and PNG save the active plot.
+
+### Rebuild the released public data
+
+Use Python 3.11+ with NumPy, h5py and SciPy (including `scipy.stats.false_discovery_control`). Obtain the six named H5AD files from the [official MCCSTA distribution](https://ftp.cngb.org/pub/SciRAID/stomics/STDS0000395/). Run from the repository root, supplying the original filenames. The summary generator checks each file against its recorded SHA-256 and matches its coordinates, annotation, library sizes and initial map values.
+
+```sh
+for section in T420 T430 T462 T479 T503 T512; do
+    python scripts/build-st-layer-data.py "/path/to/data/${section}.h5ad"
+done
+python scripts/pack-t503-spatial.py /path/to/data/T503.h5ad
+OPENBLAS_NUM_THREADS=1 python scripts/validate-t503-spatial.py /path/to/data/T503.h5ad comparison/data/layer-analysis/t503-spatial-validation.json --publish comparison/data/layer-analysis
+```

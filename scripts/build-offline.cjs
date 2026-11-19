@@ -17,7 +17,11 @@ async function walk(root, relative = '') {
     const name = relative ? relative + '/' + entry.name : entry.name;
     if (entry.isSymbolicLink()) throw new Error('Symlinks are not supported in app assets: ' + name);
     if (entry.isDirectory()) files.push(...await walk(root, name));
-    else if (entry.isFile() && ASSET_EXTENSIONS.has(path.extname(entry.name))) files.push(name);
+    else if (entry.isFile()) {
+      const auditedStAsset = path.basename(root) === 'comparison' &&
+        /^data\/layer-analysis\/[A-Za-z0-9_.-]+\.(?:json|bin)$/.test(name);
+      if (ASSET_EXTENSIONS.has(path.extname(entry.name)) || auditedStAsset) files.push(name);
+    }
   }
   return files.sort();
 }
