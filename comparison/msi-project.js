@@ -155,7 +155,7 @@
     const storage = global.ProjectStorage;
     if (!storage?.getProject || !storage?.getValueRaster) throw failure('STORAGE_UNAVAILABLE', 'MSIの保存領域を利用できません。個別ページから開き直してください。', projectId);
     const project = await storage.getProject(projectId);
-    if (!project) throw failure('PROJECT_NOT_LOADED', 'このブラウザには切片のMSIデータがまだありません。個別ページで切片を開き、読み込み後に比較画面を再読み込みしてください。', projectId);
+    if (!project) throw failure('PROJECT_NOT_LOADED', 'このブラウザには切片のMSIデータがまだありません。個別ページで切片を開き、読み込み後に「MSI・ROIを再読込」を押してください。', projectId);
     if (project.id !== projectId || !global.MsiStPairs.isMarmosetCoronalProject(project)) {
       throw failure('PROJECT_MISMATCH', '保存済み切片とMSI–ST対応情報が一致しません。個別ページで確認してください。', projectId);
     }
@@ -169,7 +169,7 @@
       if (values.some(value => !Number.isFinite(value) && !Number.isNaN(value))) throw failure('INVALID_RASTER', molecule.id + 'の生信号に無限値が含まれています。', projectId);
       return values;
     }));
-    if (!rasters.some(Boolean)) throw failure('NO_MSI_DATA', '比較に使用する5-HT・DA・NE・D4-5-HTの生信号が登録されていません。', projectId);
+    if (!rasters.some(Boolean)) throw failure('NO_MSI_DATA', '5-HT・DA・NE・D4-5-HTの生信号が登録されていません。', projectId);
     const x = [], y = [], measured = new Uint8Array(count), values = Object.fromEntries(MOLECULES.map(molecule => [molecule.id, []]));
     for (let i = 0; i < count; i++) {
       if (!rasters.some(raster => raster && Number.isFinite(raster[i]))) continue;

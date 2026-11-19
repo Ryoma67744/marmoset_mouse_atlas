@@ -20,7 +20,7 @@ test('offline build bundles local dependencies, licenses, workers and no workspa
   const archive = await JSZip.loadAsync(bytes, { checkCRC32: true });
   const names = Object.keys(archive.files);
   assert.ok(names.includes('app/stack3d/analysis-worker.js'));
-  for (const name of ['index.html', 'app.js', 'bootstrap.js', 'styles.css', 'route.js', 'msi-project.js', 'st-data.js', 'data/t462/manifest.js']) {
+  for (const name of ['index.html', 'app.js', 'bootstrap.js', 'styles.css', 'route.js', 'msi-project.js', 'st-data.js', 'layer-data.js', 'layer-panel.js', 'layer-extract.js', 'data/t462/manifest.js']) {
     assert.ok(names.includes('app/comparison/' + name), 'comparison asset is packaged: ' + name);
   }
   const stScope = { window: {} };

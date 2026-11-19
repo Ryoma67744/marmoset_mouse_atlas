@@ -2,164 +2,143 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
+const XLSX = require('xlsx');
 const { startBrowserHarness, seedViewerProject } = require('./browser-harness.cjs');
 
-async function setup(t) {
+const layers = ['L1', 'L2', 'L3', 'L4', 'L5', 'L6'];
+const csvFields = ['st_section', 'layer', 'gene', 'mean_cp10k', 'detected_bins', 'total_bins', 'detection_pct'];
+const t503Genes = 30009;
+
+async function setup(t, beforeOpen) {
   const harness = await startBrowserHarness();
   t.after(() => harness.close());
   const { page, baseURL, context } = harness;
-  const registered = 'proj_mu2doxrs_euob1x';
-  const reference = 'proj_mu1e4mep_x3hlio';
-  // The fixtures populate the actual browser storage. Only the registered sample has a V1 ROI.
-  for (const id of [registered, reference]) await seedViewerProject(page, baseURL, { id });
-  await page.evaluate(async id => {
-    const project = await ProjectStorage.getProject(id);
-    project.roi.roi_names.all = 'V1';
-    await ProjectStorage.putProject(project);
-  }, registered);
-  await context.route('**/stomics/api/explore/api/**', route => route.fulfill({
-    status: 503, body: 'No external requests in the browser fixture.'
+  const testFiles = [];
+  page.on('request', request => {
+    if (/\/layer-analysis\/t503-(?:l3|spatial-validation)/.test(request.url())) testFiles.push(request.url());
+  });
+  await context.route('**/stomics/api/explore/api/**', route => route.fulfill({ status: 503, body: '' }));
+  await context.route('**/xlsx.full.min.js', route => route.fulfill({
+    path: require.resolve('xlsx/dist/xlsx.full.min.js'), contentType: 'application/javascript'
   }));
+  if (beforeOpen) await beforeOpen(page, baseURL);
   await page.goto(baseURL + '/comparison/index.html?section=Cor_2_3');
-  await page.waitForFunction(() => document.querySelector('#la-status').textContent.includes('30,009'));
-  await page.waitForFunction(() => !document.querySelector('#mx-msi-canvas').hidden);
-  return harness;
+  await page.waitForFunction(() => document.querySelector('#la-status')?.textContent.includes('30,009'));
+  return { ...harness, testFiles };
 }
 
-test('real T503 matrix, ROI source switching, contrast and gene selection stay in sync', async t => {
-  const { page, errors } = await setup(t);
-  const profile = page.locator('#la-profile-rows');
-  await page.locator('#la-show-matrix').click();
-  assert.equal(await page.locator('#la-matrix-head th').allTextContents().then(x => x.join(',')),
-    '遺伝子,L1,L2,L3,L4,L5,L6,V1,V2');
-  await page.locator('#la-matrix-next').click();
-  assert.match(await page.locator('#la-matrix-count').innerText(), /9–16/);
-  await page.locator('#la-matrix-query').fill('htr2a');
-  await page.locator('#la-matrix-rows button').first().click();
-  assert.match(await page.locator('#la-profile-title').innerText(), /HTR2A/);
-  assert.match(await page.locator('#mx-st-heading').innerText(), /HTR2A/);
-  assert.match(await page.locator('#la-gene-stats').innerText(), /1\.46/);
-  const l4 = profile.getByRole('row').filter({ has: page.getByRole('button', { name: 'L4', exact: true }) });
-  assert.deepEqual((await l4.locator('td').allTextContents()).slice(1), ['—', '—', '2.271', '1,029 / 1,053', '97.7%']);
-  await page.locator('#la-matrix-metric').selectOption('detected');
-  assert.equal(await page.locator('#la-matrix-rows tr').first().locator('td').nth(4).innerText(), '1,029');
-  const v1 = profile.getByRole('row').filter({ has: page.getByRole('button', { name: 'V1', exact: true }) });
-  assert.equal(await v1.locator('td').nth(1).innerText(), '27');
-  await v1.getByRole('button').click();
-  assert.equal(await page.locator('#la-contrast').inputValue(), 'V1');
-  await page.locator('#mx-msi-source').selectOption('proj_mu1e4mep_x3hlio');
-  await page.waitForFunction(() => document.querySelector('#mx-msi-load-status').textContent.includes('Cor_2_2の保存済みMSI・ROIを表示中'));
-  assert.match(await page.locator('#la-scope').innerText(), /Cor_2_2.*参照/);
-  assert.equal(new URL(page.url()).searchParams.get('msiReference'), 'Cor_2_2');
-  await page.reload();
-  await page.waitForFunction(() => document.querySelector('#la-status').textContent.includes('30,009') &&
-    document.querySelector('#mx-msi-load-status').textContent.includes('Cor_2_2の保存済みMSI・ROIを表示中'));
-  assert.equal(await page.locator('#mx-msi-source').inputValue(), 'proj_mu1e4mep_x3hlio');
-  assert.equal(await v1.locator('td').nth(1).innerText(), '—');
-  assert.equal(await l4.locator('td').nth(3).innerText(), '2.271');
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
-  await page.locator('#la-show-analysis').click();
-  await page.locator('#la-contrast').selectOption('L4');
-  await page.locator('#la-query').fill('HTR2A');
-  assert.match(await page.locator('#la-gene-rows').innerText(), /HTR2A/);
-  await page.locator('#la-export-scope').selectOption('gene');
-  await page.locator('#la-format').selectOption('svg');
-  const download = page.waitForEvent('download');
-  await page.locator('#la-save').click();
-  const file = await download;
-  assert.match(file.suggestedFilename(), /\.svg$/);
-  const figure = await fs.readFile(await file.path(), 'utf8');
-  assert.match(figure, /T503/);
-  assert.match(figure, /L4/);
-  assert.equal(await page.evaluate(source =>
-    new DOMParser().parseFromString(source, 'image/svg+xml').querySelector('parsererror') === null, figure), true);
-  await page.locator('#la-format').selectOption('png');
-  const pngDownload = page.waitForEvent('download');
-  await page.locator('#la-save').click();
-  const pngFile = await pngDownload;
-  const png = await fs.readFile(await pngFile.path());
-  assert.equal(png.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
-  assert.deepEqual(errors, []);
-});
+function numeric(text) {
+  return Number(text.replace(/[,\s%]/g, ''));
+}
 
-test('T503 validated contrast opens directly, renders real P values and keeps other contrasts descriptive', async t => {
-  const { page, errors } = await setup(t);
-  const button = page.getByRole('button', { name: 'L3のボルケーノを開く' });
-  await button.click();
-  assert.equal(await page.locator('#la-mode').inputValue(), 'volcano');
-  assert.equal(await page.locator('#la-contrast').inputValue(), 'L3');
-  assert.match(await page.locator('#la-plot-note').innerText(), /検定/);
-  await page.locator('#la-order').selectOption('q');
-  const first = page.locator('#la-gene-rows tr').first();
-  const gene = await first.getByRole('button').innerText();
-  await first.getByRole('button').click();
-  assert.ok((await page.locator('#la-gene-stats').innerText()).includes(gene));
-  assert.match(await page.locator('#la-gene-stats').innerText(), /BH調整P [\de.\-+]+/);
-  const marker = page.locator('#la-plot circle');
-  await marker.hover();
-  assert.match(await page.locator('#la-tooltip').innerText(), /BH調整P/);
-  await marker.click();
-  await page.locator('#la-contrast').selectOption('L4');
-  assert.equal(await page.locator('#la-mode').inputValue(), 'ma');
-  assert.equal(await page.locator('#la-mode option[value=volcano]').evaluate(option => option.matches(':disabled')), true);
-  assert.equal(await page.locator('#la-order').inputValue(), 'targetMean');
-  assert.deepEqual(errors, []);
-});
+async function checkHtr2a(page, mean, detected, total) {
+  const row = page.locator('#la-gene-rows tr').filter({ has: page.getByText('HTR2A', { exact: true }) });
+  const cells = (await row.locator('td').allTextContents()).map(text => text.trim());
+  assert.equal(cells.length, 5);
+  assert.equal(cells[0], 'HTR2A');
+  const values = cells.slice(1).map(numeric);
+  assert.ok(Math.abs(values[0] - mean) < 0.001);
+  assert.equal(values[1], detected);
+  assert.equal(values[2], total);
+  assert.ok(Math.abs(values[3] - 100 * detected / total) < 0.1);
+}
 
-test('downloaded HTML restores the visible gene list and links volcano points to the regional profile offline', async t => {
-  const { page, context, baseURL, errors } = await setup(t);
-  await page.getByRole('button', { name: 'L3のボルケーノを開く' }).click();
-  await page.locator('#la-query').fill('HTR');
-  await page.locator('#la-order').selectOption('q');
-  const expected = await page.locator('#la-gene-rows button').allTextContents();
-  assert.ok(expected.length > 1);
-  await page.locator('#la-gene-rows button').first().click();
-  await page.locator('#la-export-scope').selectOption('contrast');
-  await page.locator('#la-format').selectOption('html');
-  const pending = page.waitForEvent('download');
+async function download(page, scope, format) {
+  await page.locator('#la-export-scope').selectOption(scope);
+  await page.locator('#la-format').selectOption(format);
+  const pending = page.waitForEvent('download', { timeout: 60000 });
   await page.locator('#la-save').click();
   const file = await pending;
-  const html = await fs.readFile(await file.path(), 'utf8');
-  const report = await context.newPage();
-  const requests = [];
-  report.on('pageerror', error => errors.push(error.message));
-  await report.route('**/*', route => {
-    if (route.request().url() === baseURL + '/report.html') {
-      return route.fulfill({ contentType: 'text/html', body: html });
-    }
-    requests.push(route.request().url());
-    return route.abort();
-  });
-  await report.goto(baseURL + '/report.html');
-  assert.equal(await report.locator('#mode').inputValue(), 'volcano');
-  assert.equal(await report.locator('#gene-name').innerText(), expected[0]);
-  assert.equal(await report.locator('#list-order').inputValue(), 'q');
-  assert.equal(await report.locator('#list-query').inputValue(), 'HTR');
-  assert.deepEqual((await report.locator('#results button').allTextContents()).slice(0, expected.length), expected);
-  await report.locator('#plot').scrollIntoViewIfNeeded();
-  const point = await report.evaluate(() => {
-    const data = JSON.parse(document.querySelector('#data').textContent);
-    const j = data.keys.indexOf(data.active);
-    const points = data.rows.filter(row => row[3][j][5] === 'validated').map(row => ({
-      gene: row[0], x: row[3][j][2], y: -Math.log10(Math.max(Number.MIN_VALUE, row[3][j][4])),
-    }));
-    const top = points.reduce((best, cur) => cur.y > best.y ? cur : best);
-    const min = Math.min(-data.settings.effectThreshold, ...points.map(p => p.x));
-    const max = Math.max(data.settings.effectThreshold, ...points.map(p => p.x));
-    const canvas = document.querySelector('#plot'), box = canvas.getBoundingClientRect();
-    return {
-      gene: top.gene,
-      x: box.left + (52 + (top.x - min) / (max - min) * (canvas.width - 76)) * box.width / canvas.width,
-      y: box.top + 20 * box.height / canvas.height,
-    };
-  });
-  await report.mouse.move(point.x, point.y);
-  assert.ok((await report.locator('#hover').innerText()).startsWith(point.gene + '　モデルlog₂FC '));
-  assert.match(await report.locator('#hover').innerText(), /BH調整P/);
-  await report.mouse.click(point.x, point.y);
-  assert.equal(await report.locator('#gene-name').innerText(), point.gene);
-  assert.equal(await report.locator('#profile tr').count(), 8);
-  assert.deepEqual(requests, []);
+  assert.equal(await file.failure(), null);
+  return { name: file.suggestedFilename(), bytes: await fs.readFile(await file.path()) };
+}
+
+test('each layer opens without MSI: real T503 values, another section, and no contrast controls or test files', async t => {
+  const { page, context, baseURL, errors, testFiles } = await setup(t);
+  const home = await context.newPage();
+  await home.goto(baseURL + '/index.html');
+  const entry = home.locator('#open-layer-data');
+  assert.match(await entry.textContent(), /層別データ/);
+  assert.equal(await entry.evaluate(link => link.href), baseURL + '/comparison/index.html');
+  await home.close();
+  const layer = page.locator('#la-layer');
+  assert.equal(await layer.inputValue(), 'L1');
+  assert.deepEqual(await layer.locator('option').evaluateAll(options => options.map(option => option.value)), layers);
+  assert.equal(await page.locator('#la-contrast, #la-mode, #la-plot').count(), 0);
+  await page.locator('.la-msi summary').click();
+  assert.match(await page.locator('#la-msi-summary').innerText(), /保存|未登録|登録ROI|未読込/);
+
+  await page.locator('#la-query').fill('htr2a');
+  await checkHtr2a(page, 0.4591896074885584, 342, 1046);
+  await layer.selectOption('L4');
+  await checkHtr2a(page, 2.2713066699364455, 1029, 1053);
+  await page.locator('#mx-pair-select').selectOption('T430');
+  await page.waitForFunction(() => document.querySelector('#la-status').textContent.includes('28,887'));
+  await layer.selectOption('L4');
+  await page.locator('#la-query').fill('HTR2A');
+  const row = page.locator('#la-gene-rows tr').filter({ has: page.getByText('HTR2A', { exact: true }) });
+  assert.equal(numeric(await row.locator('td').nth(3).innerText()), 202);
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth + 1), false);
+  assert.deepEqual(testFiles, []);
+  assert.deepEqual(errors, []);
+});
+
+async function seedSavedLayer(page, baseURL) {
+  const id = 'proj_mu2doxrs_euob1x';
+  await seedViewerProject(page, baseURL, { id });
+  await page.evaluate(async id => {
+    const project = await ProjectStorage.getProject(id);
+    const rectangle = left => [{ poly_msi: [[left, -.5], [3.5, -.5], [3.5, 1.5], [left, 1.5]] }];
+    project.roi.roi_items = { b3: rectangle(-.5), b4: rectangle(.5) };
+    project.roi.roi_names = { b3: 'Layer 3', b4: 'Layer 4' };
+    await ProjectStorage.putProject(project);
+  }, id);
+}
+
+test('selected and all-layer downloads contain full gene tables even with an empty visible search result', async t => {
+  const { page, errors, testFiles } = await setup(t, seedSavedLayer);
+  await page.waitForFunction(() => !document.querySelector('#mx-msi-canvas').hidden);
+  await page.locator('#la-layer').selectOption('L4');
+  await page.locator('#la-query').fill('no-such-gene-0000000');
+  const one = await download(page, 'layer', 'csv');
+  assert.equal(one.name, 'T503_L4.csv');
+  const csv = one.bytes.toString('utf8').replace(/^\uFEFF/, '').trimEnd().split(/\r?\n/);
+  assert.deepEqual(csv[0].split(','), csvFields);
+  assert.equal(csv.length - 1, t503Genes);
+  const targets = csv.filter(line => line.startsWith('T503,L4,HTR2A,'));
+  assert.equal(targets.length, 1);
+  const values = targets[0].split(',').slice(3).map(Number);
+  assert.ok(Math.abs(values[0] - 2.2713066699364455) < 1e-12);
+  assert.deepEqual(values.slice(1, 3), [1029, 1053]);
+  assert.ok(Math.abs(values[3] - 100 * 1029 / 1053) < 1e-12);
+
+  const all = await download(page, 'all', 'csv');
+  const rows = all.bytes.toString('utf8').trimEnd().split(/\r?\n/).slice(1);
+  assert.equal(rows.length, t503Genes * 6);
+  const counts = new Map();
+  for (const row of rows) {
+    const match = /^T503,(L[1-6]),/.exec(row);
+    if (!match) assert.fail('Unexpected section or layer in a CSV data row');
+    const layer = match[1];
+    counts.set(layer, (counts.get(layer) || 0) + 1);
+  }
+  assert.deepEqual([...counts], layers.map(layer => [layer, t503Genes]));
+
+  const workbook = await download(page, 'layer', 'xlsx');
+  assert.equal(workbook.name, 'T503_L4.xlsx');
+  const book = XLSX.read(workbook.bytes, { type: 'buffer', sheetRows: 2 });
+  assert.deepEqual(book.SheetNames.filter(sheet => /^L\d$/.test(sheet)), ['L4']);
+  const sheet = book.Sheets.L4;
+  assert.equal(XLSX.utils.decode_range(sheet['!fullref']).e.r, t503Genes);
+  assert.deepEqual(XLSX.utils.sheet_to_json(sheet, { header: 1 })[0], csvFields.slice(2));
+  const [msi] = XLSX.utils.sheet_to_json(book.Sheets.MSI_ROI);
+  assert.equal(msi.msi_section, 'Cor_2_3');
+  assert.equal(msi.layer, 'L4');
+  assert.equal(msi.molecule, '5-HT');
+  // Saved Layer 3 minus Layer 4 contains two native pixels with raw signals 0 and 50.
+  assert.equal(msi.median_au, 25);
+  assert.equal(msi.measured_pixels, 2);
+  assert.deepEqual(testFiles, []);
   assert.deepEqual(errors, []);
 });

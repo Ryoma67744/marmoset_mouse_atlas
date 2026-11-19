@@ -1,6 +1,6 @@
-# MSI–ST comparison — six paired samples
+# Cortical layer data for six marmoset sections
 
-Open `comparison/index.html` through the hosted app or offline server, or use the MSI–ST entry in the 3D section controls / individual Image Viewer. Both entries open a new tab, preserving the originating view and unsaved edits. This directory is a static page and is included by the Pages and offline builds. Use the offline server rather than a `file://` URL to load the additional local gene files.
+Open **層別データ** from the Atlas home page, 3D section controls, or individual Image Viewer. The page is also available at `comparison/index.html`. Each entry opens a new tab. This directory is a static page and is included by the Pages and offline builds. Use the offline server rather than a `file://` URL to load the additional local gene files.
 
 ## Registered pairs
 
@@ -68,13 +68,13 @@ The same comparison code is included in Pages and offline builds. Public release
 
 Run `npm test` for repository checks and `npm run build:pages` for the deployment package. Publishing is performed by the existing main-branch Pages workflow; local source changes alone do not update the public app.
 
-## Anatomical ROI and cortical expression analysis
+## Cortical layer tables and downloads
 
-Select a region and gene on the comparison page. Each MSI row reports the raw median and finite-pixel count for the selected channel inside the current saved ROI. The denominator is the native ROI mask area. T503 can also be compared with Cor_2_2 as a separately labeled anatomical reference. Cor_2_3 remains the registered pair. Missing boundaries, repeated names and unavailable signals carry separate status codes. MSI coordinates and measurements are read from browser storage.
+Select a section and one of L1–L6. Each gene has a zero-inclusive mean CP10k, detected bin count, total bin count and detection percentage. The table includes all genes in the cortical catalog. A layer pools the sampled cortex. T462 uses only bins with an individual cortical layer annotation. V1 and V2 are anatomical regions and do not enter the layer list.
 
-All six sections ship genome-wide cortical summaries, independent of spatial map availability. The grouped means use raw counts normalized to 10,000 per bin and include measured zeros. Detection is the fraction of eligible bins with a positive count. Layer contrasts give each of the other five standard layers equal weight in both mean expression and detection rate. Log ratios use these arithmetic means without a pseudocount. The layer axis pools all sampled cortical regions. V1 vs V2 uses complete regions, and is available for T503 and T512. The T462 layers use only individually annotated cortical bins. T479 has V2 without V1.
+Download one layer or all six from the selected section. CSV uses one row per section, layer and gene. Excel contains a sheet for each requested layer and records the normalization and data source. Searches and table pagination affect the on-screen view only. ST extraction works independently of local MSI data.
 
-The interactive MA plot shows finite descriptive effects. T503 L3 vs the other layers also has an exploratory spatial-block volcano, with BH adjustment across 20,830 eligible genes in that contrast. Its null calibration evaluated the marginal false-positive rate at 0.05 under 15 simulated conditions. A single section provides within-section evidence, and does not estimate biological variability across animals. Inspect the calculation and its selection criteria in `scripts/validate-t503-spatial.py` and the calibration results in `data/layer-analysis/t503-spatial-validation.json`. Full tables retain one-sided and all-zero genes, with uncomputed test results left empty. Excel, zipped TSV and standalone interactive HTML record the compared regions, available tests, source and selected MSI molecule. SVG and PNG save the active plot.
+For a registered MSI region, the page can also report the selected molecule’s raw median and finite-pixel count from browser storage. Missing ROI boundaries or signal retain a missing status. T503 can use Cor_2_2 as an optional MSI source, alongside its registered Cor_2_3 source.
 
 ### Rebuild the released public data
 
