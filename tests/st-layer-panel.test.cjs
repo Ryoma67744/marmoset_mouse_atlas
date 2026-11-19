@@ -128,7 +128,8 @@ test('selected and all-layer downloads contain full gene tables even with an emp
   const workbook = await download(page, 'layer', 'xlsx');
   assert.equal(workbook.name, 'T503_L4.xlsx');
   const book = XLSX.read(workbook.bytes, { type: 'buffer', sheetRows: 2 });
-  assert.deepEqual(book.SheetNames.filter(sheet => /^L\d$/.test(sheet)), ['L4']);
+  assert.deepEqual(book.SheetNames, ['説明', 'L4', 'Metadata', 'MSI_ROI']);
+  assert.deepEqual(XLSX.utils.sheet_to_json(book.Sheets['説明'], { header: 1 })[0], ['区分', '項目', '説明']);
   const sheet = book.Sheets.L4;
   assert.equal(XLSX.utils.decode_range(sheet['!fullref']).e.r, t503Genes);
   assert.deepEqual(XLSX.utils.sheet_to_json(sheet, { header: 1 })[0], csvFields.slice(2));
