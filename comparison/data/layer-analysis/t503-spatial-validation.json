@@ -1,0 +1,2087 @@
+{
+  "schema_version": 1,
+  "section": "T503",
+  "source_sha256": "d314a439da9352895aef9c6f7fbf280e65903eed47fb218db74605270936a8ef",
+  "spatial_bins": 7205,
+  "pilot_genes": [
+    "HTR1A",
+    "HTR2A",
+    "DRD1",
+    "DRD2",
+    "ADRA1A",
+    "ADRB2",
+    "SLC17A7",
+    "GAD1",
+    "GAD2",
+    "CHRM1",
+    "CHRNA4",
+    "SST",
+    "VIP",
+    "NPY",
+    "PVALB",
+    "GRIA1",
+    "GRIN1",
+    "GABRA1",
+    "TH",
+    "TPH2",
+    "HTR2C",
+    "RORB",
+    "BCL11B",
+    "CUX2",
+    "HTR3A",
+    "TLE4",
+    "RELN",
+    "LAMP5",
+    "FOXP2"
+  ],
+  "method": "Spatial-block delta-method SE for CP10k log mean ratio; t degrees of freedom from effective spatial block count; maximum P over all grid tilings.",
+  "null": "Independent Poisson counts conditional on spatially correlated lognormal rates, mean CP10k constant across regions, fixed observed UMI per bin; stationary Gaussian kernel fields on padded native grid.",
+  "observed_within_domain_residual_correlations": [
+    {
+      "axis": "x",
+      "lag_bins": 1,
+      "within_domain_pairs": 5748,
+      "genes_with_defined_r": 29,
+      "r_min_median_max": [
+        -0.02,
+        0.033,
+        0.128
+      ]
+    },
+    {
+      "axis": "y",
+      "lag_bins": 1,
+      "within_domain_pairs": 5435,
+      "genes_with_defined_r": 29,
+      "r_min_median_max": [
+        -0.014,
+        0.031,
+        0.105
+      ]
+    },
+    {
+      "axis": "x",
+      "lag_bins": 6,
+      "within_domain_pairs": 1572,
+      "genes_with_defined_r": 29,
+      "r_min_median_max": [
+        -0.04,
+        -0.007,
+        0.048
+      ]
+    },
+    {
+      "axis": "y",
+      "lag_bins": 6,
+      "within_domain_pairs": 1220,
+      "genes_with_defined_r": 29,
+      "r_min_median_max": [
+        -0.063,
+        0.024,
+        0.117
+      ]
+    },
+    {
+      "axis": "x",
+      "lag_bins": 15,
+      "within_domain_pairs": 666,
+      "genes_with_defined_r": 29,
+      "r_min_median_max": [
+        -0.124,
+        -0.01,
+        0.103
+      ]
+    },
+    {
+      "axis": "y",
+      "lag_bins": 15,
+      "within_domain_pairs": 536,
+      "genes_with_defined_r": 29,
+      "r_min_median_max": [
+        -0.116,
+        -0.014,
+        0.094
+      ]
+    }
+  ],
+  "block_side_bins": [
+    6,
+    12,
+    24
+  ],
+  "grid_shifts_fraction": [
+    0.0,
+    0.5
+  ],
+  "seed": 50319,
+  "stress_seed": 50320,
+  "calibration_nominal_alpha": 0.05,
+  "required_estimable_fraction": 0.95,
+  "required_minimum_effective_spatial_blocks": 10,
+  "maximum_allowed_upper_fpr_ci": 0.075,
+  "contrast_order": [
+    "L1_vs_other5",
+    "L2_vs_other5",
+    "L3_vs_other5",
+    "L4_vs_other5",
+    "L5_vs_other5",
+    "L6_vs_other5",
+    "V1_vs_V2"
+  ],
+  "results": {
+    "L1_vs_other5": {
+      "calibration": [
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 348,
+          "draws": 384,
+          "false_positives": 5,
+          "fpr": 0.0144,
+          "fpr_ci_95": [
+            0.0047,
+            0.0332
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 21,
+          "fpr": 0.0547,
+          "fpr_ci_95": [
+            0.0342,
+            0.0824
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 25,
+          "fpr": 0.0651,
+          "fpr_ci_95": [
+            0.0426,
+            0.0946
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 355,
+          "draws": 384,
+          "false_positives": 11,
+          "fpr": 0.031,
+          "fpr_ci_95": [
+            0.0156,
+            0.0548
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 21,
+          "fpr": 0.0547,
+          "fpr_ci_95": [
+            0.0342,
+            0.0824
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 21,
+          "fpr": 0.0547,
+          "fpr_ci_95": [
+            0.0342,
+            0.0824
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 341,
+          "draws": 384,
+          "false_positives": 5,
+          "fpr": 0.0147,
+          "fpr_ci_95": [
+            0.0048,
+            0.0339
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 37,
+          "fpr": 0.0964,
+          "fpr_ci_95": [
+            0.0688,
+            0.1304
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 36,
+          "fpr": 0.0938,
+          "fpr_ci_95": [
+            0.0665,
+            0.1274
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 28,
+          "fpr": 0.0729,
+          "fpr_ci_95": [
+            0.049,
+            0.1037
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 28,
+          "fpr": 0.0729,
+          "fpr_ci_95": [
+            0.049,
+            0.1037
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 25,
+          "fpr": 0.0651,
+          "fpr_ci_95": [
+            0.0426,
+            0.0946
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 26,
+          "fpr": 0.0677,
+          "fpr_ci_95": [
+            0.0447,
+            0.0976
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 50,
+          "fpr": 0.1302,
+          "fpr_ci_95": [
+            0.0982,
+            0.168
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 70,
+          "fpr": 0.1823,
+          "fpr_ci_95": [
+            0.145,
+            0.2246
+          ],
+          "passes": false
+        }
+      ],
+      "null_scenarios_passed": 0,
+      "minimum_effective_spatial_blocks": 15.824,
+      "pilot_genes_estimable_all_tilings": 29,
+      "pilot_genes_nominal_classification_changes_with_tiling": 3,
+      "calibration_gate_passed": false
+    },
+    "L2_vs_other5": {
+      "calibration": [
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 382,
+          "draws": 384,
+          "false_positives": 12,
+          "fpr": 0.0314,
+          "fpr_ci_95": [
+            0.0163,
+            0.0542
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 17,
+          "fpr": 0.0443,
+          "fpr_ci_95": [
+            0.026,
+            0.0699
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 14,
+          "fpr": 0.0365,
+          "fpr_ci_95": [
+            0.0201,
+            0.0604
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 378,
+          "draws": 384,
+          "false_positives": 11,
+          "fpr": 0.0291,
+          "fpr_ci_95": [
+            0.0146,
+            0.0515
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 18,
+          "fpr": 0.0469,
+          "fpr_ci_95": [
+            0.028,
+            0.0731
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 16,
+          "fpr": 0.0417,
+          "fpr_ci_95": [
+            0.024,
+            0.0668
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 377,
+          "draws": 384,
+          "false_positives": 9,
+          "fpr": 0.0239,
+          "fpr_ci_95": [
+            0.011,
+            0.0448
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 18,
+          "fpr": 0.0469,
+          "fpr_ci_95": [
+            0.028,
+            0.0731
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 18,
+          "fpr": 0.0469,
+          "fpr_ci_95": [
+            0.028,
+            0.0731
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 25,
+          "fpr": 0.0651,
+          "fpr_ci_95": [
+            0.0426,
+            0.0946
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 23,
+          "fpr": 0.0599,
+          "fpr_ci_95": [
+            0.0383,
+            0.0885
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 7,
+          "fpr": 0.0182,
+          "fpr_ci_95": [
+            0.0074,
+            0.0372
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 6,
+          "fpr": 0.0156,
+          "fpr_ci_95": [
+            0.0058,
+            0.0337
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 26,
+          "fpr": 0.0677,
+          "fpr_ci_95": [
+            0.0447,
+            0.0976
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 27,
+          "fpr": 0.0703,
+          "fpr_ci_95": [
+            0.0468,
+            0.1007
+          ],
+          "passes": false
+        }
+      ],
+      "null_scenarios_passed": 11,
+      "minimum_effective_spatial_blocks": 14.633,
+      "pilot_genes_estimable_all_tilings": 29,
+      "pilot_genes_nominal_classification_changes_with_tiling": 1,
+      "calibration_gate_passed": false
+    },
+    "L3_vs_other5": {
+      "calibration": [
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 14,
+          "fpr": 0.0365,
+          "fpr_ci_95": [
+            0.0201,
+            0.0604
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 12,
+          "fpr": 0.0312,
+          "fpr_ci_95": [
+            0.0162,
+            0.054
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 13,
+          "fpr": 0.0339,
+          "fpr_ci_95": [
+            0.0181,
+            0.0572
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 5,
+          "fpr": 0.013,
+          "fpr_ci_95": [
+            0.0042,
+            0.0301
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 7,
+          "fpr": 0.0182,
+          "fpr_ci_95": [
+            0.0074,
+            0.0372
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 7,
+          "fpr": 0.0182,
+          "fpr_ci_95": [
+            0.0074,
+            0.0372
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 14,
+          "fpr": 0.0365,
+          "fpr_ci_95": [
+            0.0201,
+            0.0604
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 0,
+          "fpr": 0.0,
+          "fpr_ci_95": [
+            0.0,
+            0.0096
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 0,
+          "fpr": 0.0,
+          "fpr_ci_95": [
+            0.0,
+            0.0096
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 3,
+          "fpr": 0.0078,
+          "fpr_ci_95": [
+            0.0016,
+            0.0227
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 3,
+          "fpr": 0.0078,
+          "fpr_ci_95": [
+            0.0016,
+            0.0227
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 3,
+          "fpr": 0.0078,
+          "fpr_ci_95": [
+            0.0016,
+            0.0227
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 1,
+          "fpr": 0.0026,
+          "fpr_ci_95": [
+            0.0001,
+            0.0144
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 1,
+          "fpr": 0.0026,
+          "fpr_ci_95": [
+            0.0001,
+            0.0144
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 0,
+          "fpr": 0.0,
+          "fpr_ci_95": [
+            0.0,
+            0.0096
+          ],
+          "passes": true
+        }
+      ],
+      "null_scenarios_passed": 15,
+      "minimum_effective_spatial_blocks": 14.931,
+      "pilot_genes_estimable_all_tilings": 29,
+      "pilot_genes_nominal_classification_changes_with_tiling": 2,
+      "calibration_gate_passed": true
+    },
+    "L4_vs_other5": {
+      "calibration": [
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 381,
+          "draws": 384,
+          "false_positives": 8,
+          "fpr": 0.021,
+          "fpr_ci_95": [
+            0.0091,
+            0.041
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 11,
+          "fpr": 0.0286,
+          "fpr_ci_95": [
+            0.0144,
+            0.0507
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 15,
+          "fpr": 0.0391,
+          "fpr_ci_95": [
+            0.022,
+            0.0636
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 383,
+          "draws": 384,
+          "false_positives": 7,
+          "fpr": 0.0183,
+          "fpr_ci_95": [
+            0.0074,
+            0.0373
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 11,
+          "fpr": 0.0286,
+          "fpr_ci_95": [
+            0.0144,
+            0.0507
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 14,
+          "fpr": 0.0365,
+          "fpr_ci_95": [
+            0.0201,
+            0.0604
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 379,
+          "draws": 384,
+          "false_positives": 10,
+          "fpr": 0.0264,
+          "fpr_ci_95": [
+            0.0127,
+            0.048
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 36,
+          "fpr": 0.0938,
+          "fpr_ci_95": [
+            0.0665,
+            0.1274
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 53,
+          "fpr": 0.138,
+          "fpr_ci_95": [
+            0.1051,
+            0.1766
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 12,
+          "fpr": 0.0312,
+          "fpr_ci_95": [
+            0.0162,
+            0.054
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 15,
+          "fpr": 0.0391,
+          "fpr_ci_95": [
+            0.022,
+            0.0636
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 9,
+          "fpr": 0.0234,
+          "fpr_ci_95": [
+            0.0108,
+            0.044
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 7,
+          "fpr": 0.0182,
+          "fpr_ci_95": [
+            0.0074,
+            0.0372
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 51,
+          "fpr": 0.1328,
+          "fpr_ci_95": [
+            0.1005,
+            0.1709
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 69,
+          "fpr": 0.1797,
+          "fpr_ci_95": [
+            0.1426,
+            0.2218
+          ],
+          "passes": false
+        }
+      ],
+      "null_scenarios_passed": 11,
+      "minimum_effective_spatial_blocks": 12.895,
+      "pilot_genes_estimable_all_tilings": 29,
+      "pilot_genes_nominal_classification_changes_with_tiling": 0,
+      "calibration_gate_passed": false
+    },
+    "L5_vs_other5": {
+      "calibration": [
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 371,
+          "draws": 384,
+          "false_positives": 9,
+          "fpr": 0.0243,
+          "fpr_ci_95": [
+            0.0112,
+            0.0455
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 13,
+          "fpr": 0.0339,
+          "fpr_ci_95": [
+            0.0181,
+            0.0572
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 12,
+          "fpr": 0.0312,
+          "fpr_ci_95": [
+            0.0162,
+            0.054
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 370,
+          "draws": 384,
+          "false_positives": 12,
+          "fpr": 0.0324,
+          "fpr_ci_95": [
+            0.0169,
+            0.056
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 21,
+          "fpr": 0.0547,
+          "fpr_ci_95": [
+            0.0342,
+            0.0824
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 15,
+          "fpr": 0.0391,
+          "fpr_ci_95": [
+            0.022,
+            0.0636
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 366,
+          "draws": 384,
+          "false_positives": 9,
+          "fpr": 0.0246,
+          "fpr_ci_95": [
+            0.0113,
+            0.0462
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 6,
+          "fpr": 0.0156,
+          "fpr_ci_95": [
+            0.0058,
+            0.0337
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 5,
+          "fpr": 0.013,
+          "fpr_ci_95": [
+            0.0042,
+            0.0301
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 18,
+          "fpr": 0.0469,
+          "fpr_ci_95": [
+            0.028,
+            0.0731
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 20,
+          "fpr": 0.0521,
+          "fpr_ci_95": [
+            0.0321,
+            0.0793
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 6,
+          "fpr": 0.0156,
+          "fpr_ci_95": [
+            0.0058,
+            0.0337
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 3,
+          "fpr": 0.0078,
+          "fpr_ci_95": [
+            0.0016,
+            0.0227
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 3,
+          "fpr": 0.0078,
+          "fpr_ci_95": [
+            0.0016,
+            0.0227
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 2,
+          "fpr": 0.0052,
+          "fpr_ci_95": [
+            0.0006,
+            0.0187
+          ],
+          "passes": true
+        }
+      ],
+      "null_scenarios_passed": 13,
+      "minimum_effective_spatial_blocks": 11.922,
+      "pilot_genes_estimable_all_tilings": 29,
+      "pilot_genes_nominal_classification_changes_with_tiling": 6,
+      "calibration_gate_passed": false
+    },
+    "L6_vs_other5": {
+      "calibration": [
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 377,
+          "draws": 384,
+          "false_positives": 3,
+          "fpr": 0.008,
+          "fpr_ci_95": [
+            0.0016,
+            0.0231
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 16,
+          "fpr": 0.0417,
+          "fpr_ci_95": [
+            0.024,
+            0.0668
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 10,
+          "fpr": 0.026,
+          "fpr_ci_95": [
+            0.0126,
+            0.0474
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 380,
+          "draws": 384,
+          "false_positives": 7,
+          "fpr": 0.0184,
+          "fpr_ci_95": [
+            0.0074,
+            0.0376
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 25,
+          "fpr": 0.0651,
+          "fpr_ci_95": [
+            0.0426,
+            0.0946
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 29,
+          "fpr": 0.0755,
+          "fpr_ci_95": [
+            0.0512,
+            0.1067
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 376,
+          "draws": 384,
+          "false_positives": 2,
+          "fpr": 0.0053,
+          "fpr_ci_95": [
+            0.0006,
+            0.0191
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 15,
+          "fpr": 0.0391,
+          "fpr_ci_95": [
+            0.022,
+            0.0636
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 12,
+          "fpr": 0.0312,
+          "fpr_ci_95": [
+            0.0162,
+            0.054
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 22,
+          "fpr": 0.0573,
+          "fpr_ci_95": [
+            0.0362,
+            0.0855
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 24,
+          "fpr": 0.0625,
+          "fpr_ci_95": [
+            0.0405,
+            0.0916
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 11,
+          "fpr": 0.0286,
+          "fpr_ci_95": [
+            0.0144,
+            0.0507
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 6,
+          "fpr": 0.0156,
+          "fpr_ci_95": [
+            0.0058,
+            0.0337
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 14,
+          "fpr": 0.0365,
+          "fpr_ci_95": [
+            0.0201,
+            0.0604
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 18,
+          "fpr": 0.0469,
+          "fpr_ci_95": [
+            0.028,
+            0.0731
+          ],
+          "passes": true
+        }
+      ],
+      "null_scenarios_passed": 11,
+      "minimum_effective_spatial_blocks": 9.747,
+      "pilot_genes_estimable_all_tilings": 29,
+      "pilot_genes_nominal_classification_changes_with_tiling": 1,
+      "calibration_gate_passed": false
+    },
+    "V1_vs_V2": {
+      "calibration": [
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 5,
+          "fpr": 0.013,
+          "fpr_ci_95": [
+            0.0042,
+            0.0301
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 6,
+          "fpr": 0.0156,
+          "fpr_ci_95": [
+            0.0058,
+            0.0337
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            1.5,
+            1.5
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 6,
+          "fpr": 0.0156,
+          "fpr_ci_95": [
+            0.0058,
+            0.0337
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 9,
+          "fpr": 0.0234,
+          "fpr_ci_95": [
+            0.0108,
+            0.044
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 37,
+          "fpr": 0.0964,
+          "fpr_ci_95": [
+            0.0688,
+            0.1304
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            6.0,
+            6.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 36,
+          "fpr": 0.0938,
+          "fpr_ci_95": [
+            0.0665,
+            0.1274
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.002,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 15,
+          "fpr": 0.0391,
+          "fpr_ci_95": [
+            0.022,
+            0.0636
+          ],
+          "passes": true
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 59,
+          "fpr": 0.1536,
+          "fpr_ci_95": [
+            0.1191,
+            0.1937
+          ],
+          "passes": false
+        },
+        {
+          "family": "isotropic",
+          "kernel_sigma_yx_bins": [
+            15.0,
+            15.0
+          ],
+          "kernel_log_rate_sd": 0.7,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 68,
+          "fpr": 0.1771,
+          "fpr_ci_95": [
+            0.1402,
+            0.219
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 66,
+          "fpr": 0.1719,
+          "fpr_ci_95": [
+            0.1355,
+            0.2134
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            3.0,
+            20.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 67,
+          "fpr": 0.1745,
+          "fpr_ci_95": [
+            0.1379,
+            0.2162
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 13,
+          "fpr": 0.0339,
+          "fpr_ci_95": [
+            0.0181,
+            0.0572
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            20.0,
+            3.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 18,
+          "fpr": 0.0469,
+          "fpr_ci_95": [
+            0.028,
+            0.0731
+          ],
+          "passes": true
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 0.5,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 70,
+          "fpr": 0.1823,
+          "fpr_ci_95": [
+            0.145,
+            0.2246
+          ],
+          "passes": false
+        },
+        {
+          "family": "long_range_or_anisotropic",
+          "kernel_sigma_yx_bins": [
+            30.0,
+            30.0
+          ],
+          "kernel_log_rate_sd": 1.0,
+          "mean_cp10k_under_null": 3.0,
+          "estimable": 384,
+          "draws": 384,
+          "false_positives": 78,
+          "fpr": 0.2031,
+          "fpr_ci_95": [
+            0.164,
+            0.2469
+          ],
+          "passes": false
+        }
+      ],
+      "null_scenarios_passed": 7,
+      "minimum_effective_spatial_blocks": 6.479,
+      "pilot_genes_estimable_all_tilings": 29,
+      "pilot_genes_nominal_classification_changes_with_tiling": 7,
+      "calibration_gate_passed": false
+    }
+  },
+  "scope": "Exploratory inference about bins of this T503 section. The simulations check the marginal false-positive rate at nominal alpha 0.05 for the specified fields. Smaller P-value tails, genome-wide FDR, and between-animal reproducibility were not assessed."
+}

@@ -132,3 +132,70 @@ test('MSI–ST comparison leaves unavailable layer areas blank and keeps other d
     assert.equal(result.msiValues.sections.Cor_13_6.measuredCount, 15);
   }
 });
+
+test('reference can only be loaded by its saved ID in the explicit T503 reference context', async () => {
+  const f = fixture(), api = f.context.MsiStProject;
+  const [registered, reference] = api.layerSources('T503');
+  assert.equal(registered.mode, 'registered');
+  assert.equal(registered.section, 'Cor_2_3');
+  assert.equal(reference.mode, 'reference');
+  assert.equal(reference.section, 'Cor_2_2');
+  assert.equal(api.layerSources('T512').length, 1);
+  assert.equal(api.layerSources('unknown').length, 0);
+  await assert.rejects(api.load(reference.projectId), { code: 'UNREGISTERED_PAIR' });
+  await assert.rejects(api.load(reference.projectId, { referenceFor: 'T512' }), { code: 'UNREGISTERED_PAIR' });
+  await assert.rejects(api.load(registered.projectId, { referenceFor: 'T503' }), { code: 'UNREGISTERED_PAIR' });
+  assert.equal(f.reads.length, 0);
+  await assert.rejects(api.load(reference.projectId, { referenceFor: 'T503' }), { code: 'PROJECT_MISMATCH' });
+  f.project.id = reference.projectId;
+  const section = (await api.load(reference.projectId, { referenceFor: 'T503' })).roiData.sections.Cor_2_2;
+  assert.equal(section.source.pairingMode, 'reference');
+  assert.equal(section.source.projectId, reference.projectId);
+  assert.equal(section.source.st, 'T503');
+  assert.equal(f.context.MsiStPairs.getPairForProject(f.project), null);
+  f.project.atlas = { species: 'mouse' };
+  await assert.rejects(api.load(reference.projectId, { referenceFor: 'T503' }), { code: 'PROJECT_MISMATCH' });
+});
+
+test('layer statistics use per-channel finite raw observations, include zeros and refresh saved boundaries', async () => {
+  const f = corticalFixture(), stats = async () => (await f.load()).roiData.sections.Cor_13_6;
+  const rows = (s, molecule) => f.context.MsiStProject.layerRows(s, molecule);
+  f.project.molecules = f.project.molecules.filter(m => m.name !== 'NE');
+  f.rasters['5-HT'][14] = NaN;
+  f.rasters.DA.fill(NaN);
+  const first = await stats(), l1 = rows(first, '5-HT')[0];
+  assert.equal(first.rois.find(r => r.id === l1.roiId).measuredCount, 2);
+  assert.deepEqual([l1.geometryPixels, l1.measuredPixels, l1.missingPixels, l1.median], [2, 1, 1, 0]);
+  assert.equal(l1.available, true);
+  assert.deepEqual(plain(l1.sourceKeys), ['whole', 'b1']);
+  assert.equal(l1.ruleVersion, 'cortical-difference-v1');
+  const allMissing = rows(first, 'DA')[0], absent = rows(first, 'NE')[0];
+  assert.deepEqual([allMissing.status, allMissing.measuredPixels, allMissing.missingPixels, allMissing.median], ['no_finite_pixels', 0, 2, null]);
+  assert.deepEqual([absent.status, absent.measuredPixels, absent.median], ['channel_unavailable', null, null]);
+  assert.equal(rows(first, '5-HT')[1].median, 7);
+  delete f.project.roi.roi_items.whole;
+  const partial = rows(await stats(), '5-HT');
+  assert.equal(partial[0].status, 'missing_roi');
+  assert.equal(partial[0].median, null);
+  assert.equal(partial[1].status, 'ok');
+});
+
+test('whole visual area identity uses exact saved aliases, detects ambiguity and never subdivides V1', async () => {
+  const f = fixture();
+  f.project.roi.roi_names.left = 'Occipital lobe (V1)';
+  const read = async () => f.context.MsiStProject.layerRows((await f.load()).roiData.sections.Cor_13_6, '5-HT');
+  const rows = await read();
+  assert.equal(rows[6].roiId, 'left');
+  assert.equal(rows[6].median, 0);
+  assert.equal(rows[6].measuredPixels, 1);
+  assert.equal(rows[6].geometryPixels, 4);
+  assert.ok(rows.slice(0, 6).every(r => r.status === 'missing_roi'));
+  f.project.roi.roi_items.copy = f.project.roi.roi_items.left;
+  f.project.roi.roi_names.copy = 'V1';
+  assert.equal((await read())[6].status, 'ambiguous_roi');
+  f.project.roi.roi_names.copy = 'V1 / Layer 1';
+  const clean = await read();
+  assert.equal(clean[6].status, 'ok');
+  assert.equal(clean[0].status, 'missing_roi');
+  assert.equal(f.context.MsiStProject.layerRows(null, '5-HT')[0].status, 'not_loaded');
+});

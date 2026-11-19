@@ -31,6 +31,15 @@ test('offline build bundles local dependencies, licenses, workers and no workspa
     assert.equal(data.length, record.bytes);
     assert.equal(crypto.createHash('sha256').update(data).digest('hex'), record.sha256);
   }
+  const summaryPath = 'app/comparison/data/layer-analysis/';
+  const manifestPaths = names.filter(name => /^app\/comparison\/data\/layer-analysis\/t\d+\.json$/.test(name));
+  assert.ok(manifestPaths.includes(summaryPath + 't503.json'));
+  for (const name of manifestPaths) {
+    const summary = JSON.parse(entries.get(name));
+    const binary = entries.get(summaryPath + summary.dataFile);
+    assert.ok(binary, 'online and offline include the same layer data: ' + name);
+    assert.equal(crypto.createHash('sha256').update(binary).digest('hex'), summary.dataSha256);
+  }
   assert.ok(names.includes('offline/server.cjs'));
   assert.ok(names.includes('START_ATLAS.cmd'));
   assert.ok(names.includes('LICENSES/Three.js.txt'));

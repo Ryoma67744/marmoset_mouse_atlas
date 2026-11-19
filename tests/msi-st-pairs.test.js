@@ -68,3 +68,34 @@ test('navigation registry matches the MSI project metadata and public ST payload
   for (const name of ['app.js', 'bootstrap.js', 'route.js'])
     assert.doesNotThrow(() => new vm.Script(fs.readFileSync(path.join(root, 'comparison', name), 'utf8'), { filename: name }));
 });
+
+test('the selected anatomical reference round-trips independently of the registered pair', () => {
+  const reference = registry.getReferenceForSt('T503');
+  assert.equal(reference.section, 'Cor_2_2');
+  for (const query of ['?msiReference=Cor_2_2', '?st=T503&section=Cor_2_3&msiReference=Cor_2_2']) {
+    const route = registry.resolveQuery(query);
+    assert.equal(route.error, null);
+    assert.equal(route.reference, reference);
+    assert.equal(route.pair.section, 'Cor_2_3');
+  }
+  assert.equal(registry.resolveQuery('?st=T503').reference, null);
+  for (const q of ['?st=T462&msiReference=Cor_2_2', '?st=T503&msiReference=unknown',
+    '?st=T503&msiReference=Cor_2_2&msiReference=Cor_2_2']) {
+    assert.ok(registry.resolveQuery(q).error);
+  }
+  const elements = new Map();
+  const location = new URL('https://example.com/atlas/comparison/index.html?st=T503');
+  const env = { URL, URLSearchParams, location, MsiStPairs: registry,
+    document: { getElementById(id) { if (!elements.has(id)) elements.set(id, {}); return elements.get(id); } },
+    history: { replaceState(_state, _title, url) { location.href = url.href; } } };
+  env.window = env;
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'comparison/route.js'), 'utf8'), env);
+  env.MSI_ST_ROUTE.update('T503', reference.projectId);
+  assert.equal(registry.resolveQuery(location.search).reference, reference);
+  for (const id of ['mx-atlas-link', 'comparison-stack3d']) {
+    assert.equal(new URL(elements.get(id).href).searchParams.get('project'), reference.projectId);
+  }
+  env.MSI_ST_ROUTE.update('T512');
+  assert.equal(location.searchParams.has('msiReference'), false);
+  assert.equal(registry.resolveQuery(location.search).pair.st, 'T512');
+});

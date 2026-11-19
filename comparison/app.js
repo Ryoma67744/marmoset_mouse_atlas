@@ -11,9 +11,49 @@
   const storageKey='marmoset-st-explorer-v2';
   let state={section:'T430',visible:[...defaults],active:'DRD1',mode:'gene',library:false,mappings:false,search:'',scope:'current',page:0};
   let sections={},catalogs={},union=[],unionSet=new Set(),availableSets={},ready=false,drawPending=false;
-  let unifiedSt=null;
+  const bundledSections = new Set(['T462', 'T503']);
+  let unifiedSt = null, corticalReader = null;
   let msiViewer=null,msiLoadToken=0;
   const msiProjectCache=new Map();
+  let layerPanel=null, msiSourceId=window.MSI_ST_ROUTE?.reference?.projectId||'', analysisMolecule='5-HT', activeLayerRegion='L4';
+  const msiSources=()=>window.MsiStProject.layerSources(state.section);
+  function analysisSource(){
+    const sources=msiSources();
+    return sources.find(source=>source.projectId===msiSourceId)||sources[0];
+  }
+  function syncLayerPanel(){
+    if(!layerPanel)return;
+    const source=analysisSource(), roiSection=roiSectionData();
+    layerPanel.update({section:state.section,gene:state.active,source,molecule:analysisMolecule,
+      msiRows:window.MsiStProject.layerRows(roiSection,analysisMolecule),roiSection,
+      msiStatus:$('mx-msi-load-status').textContent});
+  }
+  function showLayerRoi(region){
+    activeLayerRegion=region;
+    const row=window.MsiStProject.layerRows(roiSectionData(),analysisMolecule).find(r=>r.region===region);
+    roiSelected=row?.roiId!=null?String(row.roiId):null;
+    if(roiSelected)$('mx-roi-show').checked=true;
+    $('mx-roi-overlay').toggleAttribute('hidden',!roiSectionData()||!$('mx-roi-show').checked);
+    emphasizeRois();renderRoiDetail();
+  }
+  function renderAnalysisSource(){
+    const source=analysisSource(),sources=msiSources(),select=$('mx-msi-source');
+    if(select.dataset.st!==state.section){
+      select.replaceChildren();
+      for(const available of sources){
+        const option=element('option','',available.section+(available.mode==='reference'?'（同名層の参照）':'（登録ペア）'));
+        option.value=available.projectId;select.append(option);
+      }
+      select.dataset.st=state.section;
+    }
+    select.value=source.projectId;$('mx-msi-source-field').hidden=sources.length<2;
+    $('mx-msi-id').textContent=source.section;
+    $('mx-pair-badge').textContent=source.mode==='reference'?'同名領域の参照':'対応切片 採用済み';
+    if(source.mode==='reference'){
+      $('mx-section-name').textContent=source.section;
+      $('mx-section-context').textContent='登録ペア '+meta[state.section].section+' ↔ '+state.section+'　／　表示中は別切片の同名領域';
+    }
+  }
   let annotations={},annotationMetadata={},curated={},goJapanese={},searchIndex=new Map(),primarySearchIndex=new Map();
   const geneTypes={PROTEIN_CODING:'タンパク質を作る遺伝子','protein-coding':'タンパク質を作る遺伝子',ncRNA:'非コードRNA',PSEUDO:'偽遺伝子',pseudo:'偽遺伝子',pseudogene:'偽遺伝子',rRNA:'リボソームRNA',tRNA:'転移RNA',snRNA:'核内低分子RNA',snoRNA:'核小体低分子RNA',miscRNA:'非コードRNA',OTHER:'その他の遺伝子',other:'その他の遺伝子',unknown:'種類未確定'};
   const searchVocabulary={serotonin:'セロトニン',hydroxytryptamine:'セロトニン',dopamine:'ドーパミン',adrenergic:'アドレナリン ノルアドレナリン',norepinephrine:'ノルアドレナリン',glutamate:'グルタミン酸',glutamic:'グルタミン酸',aminobutyric:'GABA ギャバ',gaba:'GABA ギャバ',acetylcholine:'アセチルコリン',cholinergic:'アセチルコリン',histamine:'ヒスタミン',opioid:'オピオイド',oxytocin:'オキシトシン',receptor:'受容体',transporter:'輸送体 トランスポーター',channel:'チャネル',kinase:'キナーゼ リン酸化',ribosomal:'リボソーム',mitochondrial:'ミトコンドリア',collagen:'コラーゲン',olfactory:'嗅覚',immunoglobulin:'免疫グロブリン',uncharacterized:'機能未解明',pseudogene:'偽遺伝子'};
@@ -56,8 +96,17 @@
   }
   function decodeSparse(value,n){if(!value||!Array.isArray(value.indices)||!Array.isArray(value.values)||value.indices.length!==value.values.length)throw Error('APIから発現配列を取得できませんでした');const dense=new Array(n).fill(0),seen=new Set();for(let i=0;i<value.indices.length;i++){const index=value.indices[i],v=value.values[i];if(!Number.isInteger(index)||index<0||index>=n||seen.has(index)||!Number.isFinite(v)||v<0)throw Error('発現データと座標が一致しません');seen.add(index);dense[index]=v;}return dense;}
   async function request(url,options={}){const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),60000);try{const r=await fetch(url,{...options,signal:controller.signal,credentials:'omit'});let data;try{data=await r.json();}catch{throw Error('データサーバーの応答を読み取れません');}if(!r.ok)throw Error(data.error?.message||data.message||(typeof data.error==='string'?data.error:'データ取得に失敗しました（'+r.status+'）'));return data;}catch(e){if(e.name==='AbortError')throw Error('取得がタイムアウトしました。再試行できます。');throw e;}finally{clearTimeout(timer);}}
-  async function refreshCatalog(id){if(id==='T462')return;if(catalogRequests.has(id))return catalogRequests.get(id);const p=(async()=>{try{const result=await request(direct?upstream+'schema?id='+encodeURIComponent('MBCSTA_'+id):'/api/catalog?section='+id);const genes=direct?result.var:result.genes;if(!Array.isArray(genes)||!genes.length||genes.some(g=>typeof g!=='string'))throw Error('遺伝子一覧の形式が正しくありません');catalogs[id]=genes;refreshUnion();if(state.section===id){render();ensureGenes(id);}}catch(e){if(state.section===id)announce('保存済みの遺伝子一覧を使用中。一覧の更新に失敗しました：'+e.message,true);}finally{catalogRequests.delete(id);}})();catalogRequests.set(id,p);return p;}
-  async function fetchGenes(id,genes){if(id==='T462')return unifiedSt.fetchGenes(genes);const n=sections[id].x.length;if(direct){const result=await request(upstream+'data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'MBCSTA_'+id,embedding:[{name:'spatial'}],values:{measures:genes}})});const coords=result.embeddings?.[0]?.coordinates;if(!coords||coords.spatial_1?.length!==n||coords.spatial_2?.length!==n||coords.spatial_1.some((v,i)=>v!==sections[id].x[i])||coords.spatial_2.some((v,i)=>v!==sections[id].y[i]))throw Error('公開データの座標が保存済みの切片と一致しません');return Object.fromEntries(genes.map(g=>[g,{status:'ready',values:decodeSparse(result.values?.[g],n)}]));}const result=await request('/api/expression?section='+id+'&genes='+encodeURIComponent(genes.join(',')));if(result.section!==id||result.n!==n)throw Error('返却された切片と座標数を確認できません');return result.genes;}
+  async function refreshCatalog(id){if(bundledSections.has(id))return;if(catalogRequests.has(id))return catalogRequests.get(id);const p=(async()=>{try{const result=await request(direct?upstream+'schema?id='+encodeURIComponent('MBCSTA_'+id):'/api/catalog?section='+id);const genes=direct?result.var:result.genes;if(!Array.isArray(genes)||!genes.length||genes.some(g=>typeof g!=='string'))throw Error('遺伝子一覧の形式が正しくありません');catalogs[id]=genes;refreshUnion();if(state.section===id){render();ensureGenes(id);}}catch(e){if(state.section===id)announce('保存済みの遺伝子一覧を使用中。一覧の更新に失敗しました：'+e.message,true);}finally{catalogRequests.delete(id);}})();catalogRequests.set(id,p);return p;}
+  async function fetchGenes(id,genes){
+    if(id==='T462')return unifiedSt.fetchGenes(genes);
+    if(id==='T503'){
+      if(!corticalReader){
+        corticalReader=window.MsiStData.createCortical(sections[id],catalogs[id],window.MSI_ST_T503_COUNTS)
+          .catch(error=>{corticalReader=null;throw error;});
+      }
+      return (await corticalReader).fetchGenes(genes);
+    }
+    const n=sections[id].x.length;if(direct){const result=await request(upstream+'data',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:'MBCSTA_'+id,embedding:[{name:'spatial'}],values:{measures:genes}})});const coords=result.embeddings?.[0]?.coordinates;if(!coords||coords.spatial_1?.length!==n||coords.spatial_2?.length!==n||coords.spatial_1.some((v,i)=>v!==sections[id].x[i])||coords.spatial_2.some((v,i)=>v!==sections[id].y[i]))throw Error('公開データの座標が保存済みの切片と一致しません');return Object.fromEntries(genes.map(g=>[g,{status:'ready',values:decodeSparse(result.values?.[g],n)}]));}const result=await request('/api/expression?section='+id+'&genes='+encodeURIComponent(genes.join(',')));if(result.section!==id||result.n!==n)throw Error('返却された切片と座標数を確認できません');return result.genes;}
   function ensureGenes(id,{retry=false}={}){if(!ready)return;const pending=state.visible.filter(g=>{const e=entry(id,g);return e.status==='idle'||(retry&&e.status==='error');});for(let i=0;i<pending.length;i+=12){const batch=pending.slice(i,i+12);for(const g of batch)expressionCache.set(key(id,g),{status:'loading'});const requestKey=id+'|'+batch.join(',');if(requests.has(requestKey))continue;const p=(async()=>{try{const result=await fetchGenes(id,batch);for(const g of batch){const r=result?.[g];if(r?.status==='unavailable'){expressionCache.set(key(id,g),{status:'unavailable'});continue;}if(r?.status!=='ready'||!Array.isArray(r.values)||r.values.length!==sections[id].x.length)throw Error(g+'の発現配列を確認できません');expressionCache.set(key(id,g),makeReady(r.values));}if(state.section===id)announce(batch.join('・')+'の実データを読み込みました。');}catch(e){for(const g of batch){if(entry(id,g).status==='loading')expressionCache.set(key(id,g),{status:'error',message:e.message});}if(state.section===id)announce('発現値を取得できませんでした。再試行してください。'+e.message,true);}finally{requests.delete(requestKey);if(state.section===id)render();}})();requests.set(requestKey,p);}if(pending.length&&state.section===id)render();}
   function displayNumber(v){return Number.isInteger(v)?v.toLocaleString():Number(v.toPrecision(4)).toString();}
   const stRangeStorage='marmoset-st-display-ranges-v1',stRanges=new Map();
@@ -77,15 +126,19 @@
   const categoryColors=['#4f7dc9','#329f9a','#c48a3b','#a96db7','#dd7963','#75a24e','#8c80d2','#3e9cc2','#c46e98','#a39850'];
   function categorical(name){let h=0;for(const c of name)h=(h*31+c.charCodeAt(0))>>>0;return categoryColors[h%categoryColors.length];}
   let roiSection='',roiSelected=null,roiHovered=null;
-  const roiSectionData=()=>msiRoiData.sections[meta[state.section].section];
+  const roiSectionData=()=>msiRoiData.sections[analysisSource().section];
   function roiCountText(roi){if(roi.available===false)return '算出不可';return Number.isInteger(roi.measuredCount)?roi.measuredCount.toLocaleString()+'測定点':'測定点数未確認';}
   function emphasizeRois(){const target=roiHovered||roiSelected;$('mx-roi-overlay').querySelectorAll('[data-roi]').forEach(shape=>{shape.classList.toggle('is-emphasized',shape.dataset.roi===target);shape.classList.toggle('is-muted',!!target&&shape.dataset.roi!==target);});$('mx-roi-list').querySelectorAll('[data-roi]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.roi===roiSelected)));}
   function renderRoiDetail(){const panel=$('mx-roi-inspection'),data=roiSectionData(),roi=data?.rois.find(r=>String(r.id)===roiSelected);panel.replaceChildren();if(!data){panel.append(element('span','','MSI・ROIを読み込むと登録ROIを確認できます。'));return;}if(!roi){panel.append(element('span','',data.rois.length?'画像のROIにカーソルを合わせると名前を表示します。一覧または輪郭をクリックして選択。':'この切片には登録ROIがありません。'));return;}panel.append(element('strong','',roi.name));if(roi.available===false)panel.append(element('div','mx-info-notice',roi.reason||'層の境界を確認してください。'));const clear=element('button','mx-roi-clear','選択を解除');clear.type='button';clear.addEventListener('click',()=>{roiSelected=null;emphasizeRois();renderRoiDetail();});panel.append(clear,element('div','',(roi.kind==='cortical-layer'?roi.definition:roi.polygons.length+'箇所')+' · '+roiCountText(roi)),element('div','mx-roi-note','測定点数：保存済みMSIラスタで、ROI内にある測定座標の数。発現量や濃度ではありません。'));}
-  function selectRoi(id){roiSelected=roiSelected===id?null:id;if(roiSelected)$('mx-roi-show').checked=true;$('mx-roi-overlay').toggleAttribute('hidden',!$('mx-roi-show').checked);emphasizeRois();renderRoiDetail();}
+  function selectRoi(id){roiSelected=roiSelected===id?null:id;if(roiSelected){
+    $('mx-roi-show').checked=true;
+    const row=window.MsiStProject.layerRows(roiSectionData(),analysisMolecule).find(r=>r.roiId!=null&&String(r.roiId)===id);
+    if(row){activeLayerRegion=row.region;layerPanel?.setGroup(row.region);}
+  }$('mx-roi-overlay').toggleAttribute('hidden',!$('mx-roi-show').checked);emphasizeRois();renderRoiDetail();}
   function hideRoiTooltip(){roiHovered=null;$('mx-roi-tooltip').hidden=true;emphasizeRois();}
-  function showRoiTooltip(roi,event){roiHovered=String(roi.id);const tip=$('mx-roi-tooltip');tip.replaceChildren(element('strong','',roi.name),element('div','',(roi.kind==='cortical-layer'?roi.definition:roi.polygons.length+'箇所')+' · '+roiCountText(roi)),element('div','mx-inspect-meta',meta[state.section].section+' · MSI登録ROI'));tip.hidden=false;const rect=$('mx-msi-surface').getBoundingClientRect();tip.style.left=Math.max(6,Math.min(event.clientX-rect.left+14,rect.width-tip.offsetWidth-6))+'px';tip.style.top=Math.max(6,Math.min(event.clientY-rect.top+14,rect.height-tip.offsetHeight-6))+'px';emphasizeRois();}
+  function showRoiTooltip(roi,event){roiHovered=String(roi.id);const tip=$('mx-roi-tooltip');tip.replaceChildren(element('strong','',roi.name),element('div','',(roi.kind==='cortical-layer'?roi.definition:roi.polygons.length+'箇所')+' · '+roiCountText(roi)),element('div','mx-inspect-meta',analysisSource().section+' · MSI登録ROI'));tip.hidden=false;const rect=$('mx-msi-surface').getBoundingClientRect();tip.style.left=Math.max(6,Math.min(event.clientX-rect.left+14,rect.width-tip.offsetWidth-6))+'px';tip.style.top=Math.max(6,Math.min(event.clientY-rect.top+14,rect.height-tip.offsetHeight-6))+'px';emphasizeRois();}
   function renderMsiRois() {
-    const section = meta[state.section].section;
+    const section = analysisSource().section;
     if (section === roiSection) return;
     roiSection = section; roiSelected = null; roiHovered = null;
     const data = roiSectionData(), svg = $('mx-roi-overlay'), list = $('mx-roi-list');
@@ -129,6 +182,7 @@
     const notice=$('mx-msi-load-status');
     if(notice){notice.textContent=message;notice.classList.toggle('mx-error',status==='error');}
     $('mx-msi-surface').setAttribute('aria-busy',String(status==='loading'));
+    syncLayerPanel();
   }
   function clearMsiView(){
     msiViewer?.destroy();msiViewer=null;
@@ -147,14 +201,13 @@
     roiSection='';renderMsiRois();
   }
   async function loadMsiSection({force=false}={}){
-    const id=state.section,section=meta[id].section,token=++msiLoadToken;
-    const pair=window.MsiStPairs?.getPairForSt(id);
+    const id=state.section,pair=analysisSource(),section=pair.section,token=++msiLoadToken;
     clearMsiView();
     msiLoadNotice(section+'の保存済みMSI・ROIを読み込んでいます。');
     try{
       if(!pair||typeof window.MsiStProject?.load!=='function')throw Error('MSIの読み込み機能を確認できません。ページを再読み込みしてください。');
       if(force)msiProjectCache.delete(pair.projectId);
-      const loaded=msiProjectCache.get(pair.projectId)||await window.MsiStProject.load(pair.projectId);
+      const loaded=msiProjectCache.get(pair.projectId)||await window.MsiStProject.load(pair.projectId,pair.mode==='reference'?{referenceFor:id}:{});
       // A later section selection or reload always wins, including A → B → A.
       if(token!==msiLoadToken||state.section!==id)return;
       if(!loaded?.msiValues?.sections?.[section]||!loaded.msiValues.molecules?.length||!Array.isArray(loaded.roiData?.sections?.[section]?.rois)){
@@ -162,10 +215,13 @@
       }
       const roiData=structuredClone(loaded.roiData.sections[section]);
       for(const roi of roiData.rois)if(Array.isArray(roi.color))roi.color='rgb('+roi.color.join(',')+')';
-      msiViewer=window.createMsiViewer({root,data:loaded.msiValues,section});
+      msiViewer=window.createMsiViewer({root,data:loaded.msiValues,section,onSingleMolecule(molecule){
+        analysisMolecule=molecule;syncLayerPanel();
+      }});
+      if(msiViewer.singleMolecule())analysisMolecule=msiViewer.singleMolecule();
       msiRoiData.sections[section]=roiData;
       msiProjectCache.set(pair.projectId,loaded);
-      roiSection='';renderMsiRois();
+      roiSection='';renderMsiRois();showLayerRoi(activeLayerRegion);
       msiLoadNotice(section+'の保存済みMSI・ROIを表示中。個別ページで保存した変更は「MSI・ROIを再読込」で反映できます。','ready');
     }catch(error){
       if(token!==msiLoadToken||state.section!==id)return;
@@ -174,6 +230,9 @@
       msiLoadNotice(section+'のMSI・ROIを表示できません。'+String(error?.message||error),'error');
     }
   }
+  $('mx-msi-source').addEventListener('change',event=>{
+    msiSourceId=event.target.value;loadMsiSection();render();
+  });
   $('mx-msi-reload')?.addEventListener('click',()=>loadMsiSection({force:true}));
   let stHoverFrame=0,stPointer=null,stHovered=null,stPinned=null,stInspectionContext='';
   const stContext=()=>state.section+'|'+state.mode+'|'+(state.mode==='gene'?state.active:'');
@@ -199,7 +258,7 @@
   function draw(canvas,s,g,mode='gene',mini=false){if(!canvas||!s)return;const rect=canvas.getBoundingClientRect(),w=rect.width,h=rect.height;if(!w||!h)return;const dpr=Math.min(devicePixelRatio||1,2);canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);ctx.clearRect(0,0,w,h);const b=s.bounds,padding=mini?8:22,scale=Math.min((w-padding*2)/(b[1]-b[0]+2),(h-padding*2)/(b[3]-b[2]+2)),ox=(w-(b[1]-b[0])*scale)/2,oy=(h-(b[3]-b[2])*scale)/2,dot=Math.max(mini?.65:1,scale*.82),e=entry(s.id,g),zero=color('--mx-zero'),missing=color('--mx-missing'),hatch=color('--mx-muted'),annotation=mode==='layer'?s.layer:s.region;const range=stRange(s.id,g,e),points=[];ctx.globalAlpha=mode==='gene'&&e?.status!=='ready'?.25:1;
     for(let i=0;i<s.x.length;i++){const x=ox+(s.x[i]-b[0])*scale,y=oy+(b[3]-s.y[i])*scale;let fill=zero;if(mode==='gene'){if(e?.status==='ready'){if(e.values[i]===null)fill=missing;else if(e.values[i]>0)fill=heat(stRangeFraction(e.values[i],range));}}else fill=categorical(annotation.categories[annotation.values[i]]);ctx.fillStyle=fill;ctx.fillRect(x-dot/2,y-dot/2,dot,dot);if(mode==='gene'&&e?.status==='ready'&&e.values[i]===null&&!mini){ctx.strokeStyle=hatch;ctx.lineWidth=.6;ctx.beginPath();ctx.moveTo(x-dot/2,y+dot/2);ctx.lineTo(x+dot/2,y-dot/2);ctx.stroke();}if(!mini)points.push([x,y,i]);}ctx.globalAlpha=1;if(!mini){canvas._points=points;canvas._section=s;canvas._context=stContext();canvas._hitRadius=Math.max(dot,scale)/2+.15;canvas.setAttribute('aria-label',meta[s.id].section+'に対応する'+s.id+'、'+(mode==='gene'?g+' '+(e?.status==='ready'?'発現値':'データ未表示'):mode==='layer'?'皮質層':'領域注釈')+'、'+s.x.length+'空間bin。カーソルで注釈、クリックで固定。');if(stPinned)stPinned=points[stPinned[2]];if(stHovered)stHovered=points[stHovered[2]];showStMarker(stHovered||stPinned);if(stHovered)showStTooltip(stHovered);if(stPinned||stHovered)renderStInspection();}}
   function scheduleDraw(){if(drawPending)return;drawPending=true;requestAnimationFrame(()=>{drawPending=false;if(!ready)return;const s=sections[state.section];draw($('mx-st-canvas'),s,state.active,state.active?state.mode:(state.mode==='gene'?'region':state.mode));root.querySelectorAll('canvas[data-gene]').forEach(c=>draw(c,s,c.dataset.gene,'gene',true));});}
-  function switchSection(id){state.section=id;state.page=0;loadMsiSection();render();save();ensureGenes(id);refreshCatalog(id);announce(meta[id].section+'と'+id+'に切り替えました。');}
+  function switchSection(id){msiSourceId='';activeLayerRegion='L4';state.section=id;state.page=0;loadMsiSection();render();save();ensureGenes(id);refreshCatalog(id);announce(meta[id].section+'と'+id+'に切り替えました。');}
   function chooseGene(g){state.active=g;state.mode='gene';render();save();ensureGenes(state.section);}
   function toggleGene(g,on){if(on&&!state.visible.includes(g))state.visible.push(g);if(!on)state.visible=state.visible.filter(v=>v!==g);if(!state.visible.includes(state.active))state.active=state.visible[0]||null;if(on){state.active=g;state.mode='gene';}if(!state.active&&state.mode==='gene')state.mode='region';render();save();ensureGenes(state.section);announce(g+(on?'を追加しました。':'を非表示にしました。'));}
   function resultGenes(){let list=state.scope==='union'?union:state.scope==='selected'?state.visible:state.scope==='recommended'?defaults:(catalogs[state.section]||[]);const q=state.search.trim().toUpperCase();if(q){const tokens=q.toLowerCase().split(/\s+/);list=list.filter(g=>tokens.every(token=>(searchIndex.get(g)||g.toLowerCase()).includes(token)));list=[...list].sort((a,b)=>{const x=a.toUpperCase(),y=b.toUpperCase();return (x===q?0:x.startsWith(q)?1:tokens.every(t=>(primarySearchIndex.get(a)||'').includes(t))?2:3)-(y===q?0:y.startsWith(q)?1:tokens.every(t=>(primarySearchIndex.get(b)||'').includes(t))?2:3)||a.localeCompare(b,'en');});}else{const chosen=new Set(defaults);list=[...list].sort((a,b)=>(chosen.has(b)?1:0)-(chosen.has(a)?1:0)||a.localeCompare(b,'en'));}return list;}
@@ -213,12 +272,13 @@
       :'表示範囲：皮質 · 公開viewerに収録された皮質binを表示しています。切片全面ではありません。';
     $('mx-st-data-note').textContent=unified
       ?'ST：RNAカウント · 皮質＋視床・線条体 · MSIとの位置合わせ未実施'
+      :state.section==='T503'?'ST：皮質7,205 binのRNAカウント · 層別表はbinごとのCP10k'
       :'ST：公開viewerの皮質データ（正規化未確認） · MSIとの位置合わせ未実施';
   }
-  function render(){renderStCoverage();syncStInspection();renderMsiRois();const m=meta[state.section],s=sections[state.section];$('mx-section-name').textContent=m.section;$('mx-section-context').textContent=m.area+' · Coronal · ST '+m.st+(catalogs[m.st]?' · '+catalogs[m.st].length.toLocaleString()+'遺伝子':'');$('mx-pair-select').value=state.section;$('mx-msi-id').textContent=m.section;$('mx-st-id').textContent=m.st;$('mx-atlas-link').href=m.app_url;window.MSI_ST_ROUTE?.update(state.section);$('mx-st-link').href=m.st_url;$('mx-st-mode').value=state.mode;$('mx-mappings').hidden=!state.mappings;$('mx-mapping-toggle').setAttribute('aria-expanded',String(state.mappings));$('mx-library').hidden=!state.library;$('mx-library-toggle').setAttribute('aria-expanded',String(state.library));$('mx-library-toggle').textContent=state.library?'遺伝子リストを閉じる':'＋ 全遺伝子から追加';$('mx-gene-count').textContent=state.visible.length+'遺伝子';$('mx-set-label').textContent=state.visible.length===defaults.length&&defaults.every(g=>state.visible.includes(g))?'推奨セット':'カスタムセット';$('mx-all-hidden').hidden=state.visible.length>0;
+  function render(){renderStCoverage();syncStInspection();renderMsiRois();const m=meta[state.section],s=sections[state.section];$('mx-section-name').textContent=m.section;$('mx-section-context').textContent=m.area+' · Coronal · ST '+m.st+(catalogs[m.st]?' · '+catalogs[m.st].length.toLocaleString()+'遺伝子':'');$('mx-pair-select').value=state.section;$('mx-msi-id').textContent=m.section;$('mx-st-id').textContent=m.st;$('mx-atlas-link').href=m.app_url;window.MSI_ST_ROUTE?.update(state.section,msiSourceId);$('mx-st-link').href=m.st_url;$('mx-st-mode').value=state.mode;$('mx-mappings').hidden=!state.mappings;$('mx-mapping-toggle').setAttribute('aria-expanded',String(state.mappings));$('mx-library').hidden=!state.library;$('mx-library-toggle').setAttribute('aria-expanded',String(state.library));$('mx-library-toggle').textContent=state.library?'遺伝子リストを閉じる':'＋ 全遺伝子から追加';$('mx-gene-count').textContent=state.visible.length+'遺伝子';$('mx-set-label').textContent=state.visible.length===defaults.length&&defaults.every(g=>state.visible.includes(g))?'推奨セット':'カスタムセット';$('mx-all-hidden').hidden=state.visible.length>0;
     const geneMode=state.mode==='gene'&&state.active,e=entry(state.section,state.active);$('mx-st-heading').textContent=geneMode?state.active+(labels[state.active]?' / '+labels[state.active]:''):state.mode==='layer'?'皮質層':'領域注釈';$('mx-legend-wrap').hidden=!geneMode||e?.status!=='ready'||!e.positive;$('mx-overlay').hidden=!geneMode||e?.status==='ready';$('mx-overlay').textContent=e?.status==='unavailable'?'この切片では未収録':e?.status==='error'?'取得できませんでした':'発現データを読み込み中…';$('mx-retry').hidden=!state.visible.some(g=>entry(state.section,g)?.status==='error');if(ready){if(geneMode&&e?.status==='ready'){$('mx-min').textContent=displayNumber(e.min);$('mx-max').textContent=displayNumber(e.max);$('mx-st-stat').textContent=e.positive?'値>0：'+e.percent+'% · '+e.positive.toLocaleString()+'/'+e.measured.toLocaleString()+' 収録bin':'収録された'+e.measured.toLocaleString()+' binはすべて値0';}else if(geneMode)$('mx-st-stat').textContent=statusText(e);else $('mx-st-stat').textContent=s.x.length.toLocaleString()+'空間bin · '+(state.mode==='layer'?s.layer.categories.join(' / '):s.region.categories.length+'領域');}
     const availability=$('mx-st-availability');availability.hidden=!geneMode||e?.status!=='ready'||!e.missing;availability.textContent=e?.missing?'斜線：この遺伝子が未収録の領域（'+e.missing.toLocaleString()+' bin）。検出率は収録された'+e.measured.toLocaleString()+' binで計算。':'';
-    const shelf=$('mx-gene-list');shelf.replaceChildren();for(const g of state.visible){const box=document.createElement('div');box.className='mx-gene'+(state.active===g&&state.mode==='gene'?' is-active':'');const b=document.createElement('button');b.type='button';b.className='mx-gene-select';b.setAttribute('aria-label',g+'を拡大表示');b.setAttribute('aria-pressed',String(state.active===g&&state.mode==='gene'));const strong=document.createElement('strong'),c=document.createElement('canvas');strong.textContent=g;c.dataset.gene=g;c.setAttribute('aria-hidden','true');const short=element('span','mx-gene-short',shortDescription(g));short.title=shortDescription(g);b.append(strong,short,c);b.addEventListener('click',()=>chooseGene(g));const bottom=document.createElement('div');bottom.className='mx-gene-meta';const rate=document.createElement('span');rate.textContent=ready?statusText(entry(state.section,g)):'準備中';const hide=document.createElement('button');hide.type='button';hide.className='mx-hide';hide.textContent='非表示';hide.setAttribute('aria-label',g+'を非表示');hide.addEventListener('click',()=>toggleGene(g,false));bottom.append(rate,hide);box.append(b,bottom);shelf.append(box);}renderGeneInfo();renderLibrary();renderMappings();renderStCategories();renderStControls();scheduleDraw();}
+    const shelf=$('mx-gene-list');shelf.replaceChildren();for(const g of state.visible){const box=document.createElement('div');box.className='mx-gene'+(state.active===g&&state.mode==='gene'?' is-active':'');const b=document.createElement('button');b.type='button';b.className='mx-gene-select';b.setAttribute('aria-label',g+'を拡大表示');b.setAttribute('aria-pressed',String(state.active===g&&state.mode==='gene'));const strong=document.createElement('strong'),c=document.createElement('canvas');strong.textContent=g;c.dataset.gene=g;c.setAttribute('aria-hidden','true');const short=element('span','mx-gene-short',shortDescription(g));short.title=shortDescription(g);b.append(strong,short,c);b.addEventListener('click',()=>chooseGene(g));const bottom=document.createElement('div');bottom.className='mx-gene-meta';const rate=document.createElement('span');rate.textContent=ready?statusText(entry(state.section,g)):'準備中';const hide=document.createElement('button');hide.type='button';hide.className='mx-hide';hide.textContent='非表示';hide.setAttribute('aria-label',g+'を非表示');hide.addEventListener('click',()=>toggleGene(g,false));bottom.append(rate,hide);box.append(b,bottom);shelf.append(box);}renderGeneInfo();renderLibrary();renderMappings();renderStCategories();renderStControls();renderAnalysisSource();syncLayerPanel();scheduleDraw();}
   $('mx-pair-select').addEventListener('change',e=>switchSection(e.target.value));$('mx-st-mode').addEventListener('change',e=>{state.mode=e.target.value;render();save();});$('mx-mapping-toggle').addEventListener('click',()=>{state.mappings=!state.mappings;render();});$('mx-library-toggle').addEventListener('click',()=>{state.library=!state.library;render();if(state.library)$('mx-gene-search').focus();});let searchTimer;$('mx-gene-search').addEventListener('input',e=>{state.search=e.target.value;state.page=0;clearTimeout(searchTimer);searchTimer=setTimeout(renderLibrary,120);});$('mx-gene-category').addEventListener('change',e=>{state.scope=e.target.value;state.page=0;renderLibrary();});$('mx-prev-page').addEventListener('click',()=>{state.page=Math.max(0,state.page-1);renderLibrary();});$('mx-next-page').addEventListener('click',()=>{state.page++;renderLibrary();});$('mx-retry').addEventListener('click',()=>ensureGenes(state.section,{retry:true}));$('mx-recommend').addEventListener('click',()=>{state.visible=[...defaults];state.active='HTR2A';state.mode='gene';render();save();ensureGenes(state.section);announce('推奨6遺伝子に戻しました。');});
   $('mx-st-canvas').tabIndex=0;
   $('mx-st-canvas').addEventListener('pointermove',e=>{stPointer={x:e.clientX,y:e.clientY};if(!stHoverFrame)stHoverFrame=requestAnimationFrame(inspectStPointer);});
@@ -226,6 +286,11 @@
   $('mx-st-canvas').addEventListener('click',e=>{const point=nearestStPoint(e.clientX,e.clientY);if(!point){clearStInspection();return;}stPinned=point;stHovered=point;showStTooltip(point);showStMarker(point);renderStInspection();announce('STの位置を固定しました。'+stText(stDescription(point)));});
   root.addEventListener('keydown',e=>{if(e.key==='Escape'){clearStInspection();}});
   let stCanvasSize='';new ResizeObserver(entries=>{const box=entries[0].contentRect,size=box.width+'|'+box.height;if(size!==stCanvasSize){stCanvasSize=size;clearStInspection();scheduleDraw();}}).observe($('mx-st-canvas'));
+  layerPanel=window.STLayerPanel.create($('mx-layer-panel'),{
+    gene(g){if(state.visible.includes(g))chooseGene(g);else toggleGene(g,true);},
+    group:showLayerRoi,
+    molecule(id){analysisMolecule=id;msiViewer?.showMolecule(id);syncLayerPanel();}
+  });
   new ResizeObserver(scheduleDraw).observe(root);matchMedia('(prefers-color-scheme: dark)').addEventListener('change',scheduleDraw);render();loadMsiSection();
   (async()=>{
     try{
